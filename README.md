@@ -1,3 +1,5 @@
+**简体中文** | [English](README.en.md)
+
 # dsh-memory-manager
 
 把 [lantern 的 memory-function-org skill](https://github.com/Chandlersn/lantern/tree/main/skills/memory-function-org)
@@ -167,34 +169,3 @@ Host 安装目录探测不到时需要 `DSH_INSTALL_DIR`（测试进程的 CLI �
 ## 许可
 
 MIT，见 [LICENSE](./LICENSE)。
-
----
-
-## English
-
-`dsh-memory-manager` is a [DeepSeek Harness](https://github.com/deepseek-ai) plugin for
-**function-area long-term memory**. Memory is organized by what you re-run (`functions/`) and what
-you re-apply (`insights/`), never per project. It ships six tools
-(`memory_read` / `memory_write` / `memory_insight` / `memory_fold` / `memory_rename` / `memory_check`),
-a system-prompt discipline section, a pre-step recall hook, and a read-only Web panel.
-
-- `memory_write` requires both `summary` and `currentState`, so the index row never drifts
-- Iteration blocks are distilled conclusions (动因 / 改动 / 判据 / 待观察, one line each): a block over
-  900 chars or an index row over 110 chars warns at write time and is flagged by lint rule R14 —
-  process logs stay in the session and the code, never in memory
-- `memory_check` enforces eleven mechanical rules (index size, missing summaries, backlinks, date
-  ordering, dangling links, cold areas, legacy headers, un-distilled blocks/rows)
-- The panel is built for growth: a cross-zone recent-changes timeline, one-line summaries pulled from
-  the index, per-kind section folding, in-panel `.md` links and `/` search
-- Panel visuals are copied from the shipped primitives (14/22 type, 36/28px controls, 32px inputs on
-  `--dsw-alias-border-l4` + `--dsw-alias-bg-layer-1`, `color-mix()` tag tones, `--dsw-focus-ring-*`),
-  and the panel API field names are pinned by a contract assertion in `api-test.mjs` (`results`,
-  `counts`, `snippet`, `heading`) so the two halves cannot drift apart silently
-- The panel API resolves the memory root server-side; client-supplied paths are ignored
-- Host packages are located by discovery (config → env → CLI entry → cwd → profile), never hardcoded
-- Client-only edits take effect on a page refresh; server edits need a DSH restart
-- `npm test` runs three suites: the tool loop, the panel HTTP handlers, and a render test of the panel
-  views (a minimal React shim stands in for the browser)
-
-Install it into the current profile with `plugin_manager install_bundle <this-directory>`.
-Node ≥ 22.12 is required (`require(esm)`). Licensed under MIT.

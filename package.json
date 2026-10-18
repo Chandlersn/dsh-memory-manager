@@ -43,6 +43,7 @@
     "client.js",
     "icon.svg",
     "README.md",
+    "README.en.md",
     "LICENSE"
   ],
   "dsh": {
