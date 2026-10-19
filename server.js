@@ -1939,7 +1939,11 @@ export function apply(ctx, config) {
 				if (userText.trim() && recallServed.get(payload.agent.id) !== signature) {
 					const indexText = await readIndexCached();
 					if (indexText) {
-						const rows = matchIndexRows(indexText, tokensOf(userText));
+						const rows = matchIndexRows(indexText, tokensOf(userText))
+							// Pointer dedupe: when the user's own text already cites a memory
+							// file (they quoted an earlier recall or wrote the link), re-
+							// injecting the same row just echoes what is already on screen.
+							.filter((l) => !userText.includes(l.href));
 						recallServed.set(payload.agent.id, signature);
 						if (rows.length) recall = createUserMessage(buildRecallMessage(rows));
 					}

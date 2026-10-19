@@ -240,6 +240,24 @@ if (typeof ps === 'function') {
 		nextEnter,
 	);
 	ok(miss.kind === 'enter' && miss.messages.length === 0, 'no recall on unrelated input');
+	// 13d) pointer dedupe: user text already cites the file (e.g. quoting an
+	// earlier recall) -> that row is NOT injected again. Other rows may still be
+	// (generic bigrams can match unrelated rows); the cited one must be gone.
+	const agent2 = { id: 'sess-quote' };
+	const cited = await ps(
+		{ agent: agent2, messages: [{ role: 'user', content: [{ type: 'text', text: 'functions/测试功能.md 这个文件怎么样' }] }], turn: 1, step: 1, signal: new AbortController().signal },
+		nextEnter,
+	);
+	const citedText = cited.messages?.[0]?.content?.[0]?.text ?? '';
+	ok(citedText.length === 0 || !citedText.includes('functions/测试功能.md'), 'user-cited pointer not re-injected');
+	// mixed: one cited row + one uncited hit -> only the uncited one stays
+	const idxNow13 = await readFile(await (async () => w1.indexFile)(), 'utf8');
+	const mixed = await ps(
+		{ agent: agent2, messages: [{ role: 'user', content: [{ type: 'text', text: '看看 insights/闭环验证.md 和无引用功能 的记忆' }] }], turn: 2, step: 1, signal: new AbortController().signal },
+		nextEnter,
+	);
+	const mixedText = mixed.messages?.[0]?.content?.[0]?.text ?? '';
+	ok(mixed.kind === 'enter' && !mixedText.includes('insights/闭环验证.md') && mixedText.includes('无引用功能'), `cited row dropped, uncited kept (${mixed.messages?.length} msgs)`);
 }
 
 // 14) distillation gate (R14): a block is a conclusion, not a process log —
