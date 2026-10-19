@@ -225,16 +225,38 @@ ok(dayBody.indexOf('待验证项') < dayBody.lastIndexOf('alpha'), `daily bullet
 ok(dayBody.indexOf('今日待观察') < dayBody.lastIndexOf('功能：alpha'), 'daily section order unchanged, only bullet order flips');
 
 // --- search results use the API's snippet + heading --------------------------
+let searchZoneCalls = 0;
 const searchView = serialize(
 	FakeReact.createElement(T.SearchPane, {
 		res: fixtures['/api/memory-org/search?q=%E5%86%B7%E8%AE%B0%E5%BF%86'],
 		q: '冷记忆',
+		zone: 'all',
+		setZone: () => searchZoneCalls++,
 		onOpen() {},
 	}),
 );
-ok(searchView.includes('…冷记忆相关命中…'), 'search hits render the API snippet text');
+ok(searchView.includes('相关命中'), 'search hits render the API snippet text');
+ok(searchView.includes('dmo-mark') && searchView.includes('冷记忆'), 'the query is highlighted inside the snippet');
 ok(searchView.includes('今日待观察'), 'search hits show their section heading');
 ok(searchView.includes('第 3 行'), 'search hits show the line number');
+ok(count(searchView, 'data-dmo="search-zone"') === 5, `search offers a zone filter (${count(searchView, 'data-dmo="search-zone"')} chips)`);
+ok(searchView.includes('dmo-chip btn active'), 'the active zone chip is marked');
+// a filtered empty result explains itself instead of looking broken
+const emptyFiltered = serialize(
+	FakeReact.createElement(T.SearchPane, {
+		res: { data: { hits: [] }, loading: false, error: null },
+		q: '冷记忆',
+		zone: 'insights',
+		setZone: () => {},
+		onOpen() {},
+	}),
+);
+ok(emptyFiltered.includes('这个分区没有命中'), 'empty zone-filtered result explains the filter');
+// highlight() splits the text around the match and marks it
+const hl = T.highlight('abc冷记忆def', '冷记忆');
+ok(hl.length === 3 && hl[0] === 'abc' && hl[1]?.type === 'mark' && hl[1].props.children === '冷记忆' && hl[2] === 'def', 'highlight marks the matched span');
+const noQ = T.highlight('纯文本', '');
+ok(noQ.length === 1 && noQ[0] === '纯文本', 'highlight is a no-op without a query');
 
 // --- pure logic -------------------------------------------------------------
 const tables = T.parseIndexTables(indexText);

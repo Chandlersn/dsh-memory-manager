@@ -156,8 +156,11 @@ accumulation (dozens of function areas, hundreds of daily threads) rather than a
   page renders the function-module and innovation-insight index tables as **clickable navigation tables** and folds the rest
 - **Navigation**: `functions/x.md`, `insights/y.md` and `YYYY-MM-DD.md` links inside a body navigate within
   the panel, without leaving the memory view
-- **Search**: global search in the header (350 ms debounce, ≥2 characters) with a snippet per hit; `/` focuses
-  the field, `Esc` clears or goes back, `↑`/`↓` move between rows
+- **Search**: global search in the header (350 ms debounce, ≥2 characters) sharing the `memory_search` ranker;
+  each hit shows the **highlighted match**, zone tag, line number and section heading, and the **zone filter**
+  (all / index / functions / insights / daily) re-queries with `zone` so it narrows the current keyword instead
+  of replacing it; an empty filtered result says "check the other zones" rather than looking broken;
+  `/` focuses the field, `Esc` clears or goes back, `↑`/`↓` move between rows
 - A silent refresh every 30 seconds; the panel's own `<style>` applies only to the panel root and is removed
   on unmount
 - **Visually host-native**: 14/22 type scale, 36/28px controls, a 32px search field on `--dsw-alias-border-l4`

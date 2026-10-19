@@ -85,6 +85,8 @@ window.__ModuleLoader__.load({
 .dmo-chip.fail{background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 10%,transparent);border-color:transparent;color:var(--dsw-alias-state-error-primary)}
 .dmo-chip.btn{cursor:pointer}
 .dmo-chip.btn:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.dmo-chip.active{background:var(--dsw-alias-interactive-bg-active);border-color:transparent;color:var(--dsw-alias-label-primary);font-weight:600}
+.dmo-mark{background:color-mix(in srgb,var(--dsw-alias-state-business-primary) 18%,transparent);color:inherit;border-radius:3px;padding:0 2px}
 .dmo-resolve{display:inline-flex;align-items:center;padding:0 8px;border-radius:999px;font-size:11px;line-height:18px;font-weight:500;white-space:nowrap;background:color-mix(in srgb,var(--dsw-alias-state-success-primary) 10%,transparent);color:var(--dsw-alias-state-success-primary);vertical-align:1px}
 .dmo-tl{display:flex;flex-direction:column}
 .dmo-tl-row{display:flex;align-items:center;gap:8px;width:100%;padding:6px 8px;border:none;border-radius:var(--dsw-radius-sm);background:transparent;color:inherit;text-align:left;cursor:pointer;font:inherit}
@@ -751,12 +753,64 @@ window.__ModuleLoader__.load({
 			);
 		}
 
-		function SearchPane({ res, q, onOpen }) {
+		/** Mark every occurrence of the query inside a snippet (case-insensitive). */
+		function highlight(text, q) {
+			const src = String(text ?? '');
+			const needle = String(q ?? '').trim();
+			if (!needle) return [src];
+			const out = [];
+			const lower = src.toLowerCase();
+			const needleLower = needle.toLowerCase();
+			let at = 0;
+			let i = 0;
+			for (;;) {
+				const next = lower.indexOf(needleLower, at);
+				if (next === -1) break;
+				if (next > at) out.push(src.slice(at, next));
+				out.push(h('mark', { key: `m${i++}`, className: 'dmo-mark' }, src.slice(next, next + needle.length)));
+				at = next + needle.length;
+			}
+			if (at < src.length) out.push(src.slice(at));
+			return out;
+		}
+
+		function SearchPane({ res, q, zone, setZone, onOpen }) {
 			const hits = res.data?.hits ?? [];
+			const zones = [
+				{ key: 'all', label: '全部' },
+				{ key: 'index', label: '索引' },
+				{ key: 'functions', label: '功能' },
+				{ key: 'insights', label: '思想' },
+				{ key: 'daily', label: '每日' },
+			];
 			return h(
 				'div',
 				{ style: { display: 'flex', flexDirection: 'column', gap: 8 } },
-				h('div', { className: 'dmo-toolbar' }, h('span', { style: { fontSize: 14, fontWeight: 600 } }, `搜索“${q}”`), h('span', { className: 'dmo-meta' }, `${hits.length} 处命中`)),
+				h(
+					'div',
+					{ className: 'dmo-toolbar' },
+					h('span', { style: { fontSize: 14, fontWeight: 600 } }, `搜索“${q}”`),
+					h('span', { className: 'dmo-meta' }, `${hits.length} 处命中`),
+					h('span', { className: 'grow' }),
+					setZone
+						? h(
+								'div',
+								{ className: 'dmo-chips' },
+								zones.map((z) =>
+									h(
+										'button',
+										{
+											key: z.key, type: 'button',
+											className: `dmo-chip btn${(zone ?? 'all') === z.key ? ' active' : ''}`,
+											'data-dmo': 'search-zone',
+											onClick: () => setZone(z.key),
+										},
+										z.label,
+									),
+								),
+							)
+						: null,
+				),
 				res.loading ? h('div', { className: 'dmo-empty' }, '搜索中…') : null,
 				res.error ? h('div', { className: 'dmo-empty' }, `搜索失败：${res.error}`) : null,
 				h(
@@ -773,11 +827,17 @@ window.__ModuleLoader__.load({
 								h('span', { className: 'dmo-row-name' }, hit.name.replace(/\.md$/, '')),
 								hit.line ? h('span', { className: 'dmo-row-meta' }, `第 ${hit.line} 行`) : null,
 							),
-							(hit.snippet ?? hit.text) ? h('div', { className: 'dmo-snippet' }, hit.heading ? `${hit.heading} · ${hit.snippet ?? hit.text}` : (hit.snippet ?? hit.text)) : null,
+							(hit.snippet ?? hit.text) ? h('div', { className: 'dmo-snippet' }, highlight(hit.heading ? `${hit.heading} · ${hit.snippet ?? hit.text}` : (hit.snippet ?? hit.text), q)) : null,
 						),
 					),
 				),
-				!res.loading && !hits.length ? h('div', { className: 'dmo-empty' }, '没有命中。换个关键词试试（≥2 字符，支持中文）。') : null,
+				!res.loading && !hits.length
+					? h(
+							'div',
+							{ className: 'dmo-empty' },
+							(zone ?? 'all') === 'all' ? '没有命中。换个关键词试试（≥2 字符，支持中文）。' : '这个分区没有命中——点「全部」看其它分区。',
+						)
+					: null,
 			);
 		}
 
@@ -792,6 +852,7 @@ window.__ModuleLoader__.load({
 			const [filter, setFilter] = useState('');
 			const [query, setQuery] = useState('');
 			const [live, setLive] = useState('');
+			const [searchZone, setSearchZone] = useState('all');
 			const [tick, setTick] = useState(0);
 			const searchRef = useRef(null);
 			const mainRef = useRef(null);
@@ -801,7 +862,7 @@ window.__ModuleLoader__.load({
 			const insights = useApi(`${API}/list?zone=insights&v=${tick}`, fixtures);
 			const dailies = useApi(`${API}/list?zone=daily&v=${tick}`, fixtures);
 			const indexFile = useApi(`${API}/file?name=MEMORY.md&v=${tick}`, fixtures);
-			const search = useApi(live.length >= 2 ? `${API}/search?q=${enc(live)}` : null, fixtures);
+			const search = useApi(live.length >= 2 ? `${API}/search?q=${enc(live)}${searchZone !== 'all' ? `&zone=${searchZone}` : ''}` : null, fixtures);
 
 			const ws = overview.data?.[0];
 			const counts = ws?.counts ?? {};
@@ -888,7 +949,7 @@ window.__ModuleLoader__.load({
 			};
 
 			let main = null;
-			if (live.length >= 2) main = h(SearchPane, { res: search, q: live, onOpen: openFile });
+			if (live.length >= 2) main = h(SearchPane, { res: search, q: live, zone: searchZone, setZone: setSearchZone, onOpen: openFile });
 			else if (!ws && overview.loading) main = h('div', { className: 'dmo-empty' }, '读取记忆体检…');
 			else if (overview.error) main = h('div', { className: 'dmo-empty' }, `API 不可用：${overview.error}`);
 			else if (!ws) main = h('div', { className: 'dmo-empty' }, '没有已注册的 workspace。');
@@ -985,7 +1046,7 @@ window.__ModuleLoader__.load({
 			},
 			// Pure view logic, exposed so ui-test.mjs can assert the panel's
 			// parsing/folding behaviour without a browser.
-			__internalsForTest: { relTime, plain, parseIndexTables, splitSections, resolveHref, defaultOpen, SearchPane, reverseBullets },
+			__internalsForTest: { relTime, plain, parseIndexTables, splitSections, resolveHref, defaultOpen, SearchPane, reverseBullets, highlight },
 		};
 	},
 });
