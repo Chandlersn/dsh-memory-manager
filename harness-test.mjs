@@ -135,6 +135,27 @@ const ranked = mod.matchIndexRows(rankIndex, mod.tokensOf('记忆 面板 逐帧 
 ok(ranked[0]?.name === '戊域', `IDF ranking prefers the rare-token row (${ranked[0]?.name})`);
 ok(ranked.length >= 2, `relative threshold keeps the strong common row too (${ranked.length} rows)`);
 
+// 3b) RRF fusion (MemOS borrow): the lexical IDF rank is fused with a USAGE
+// rank, so a topically-relevant row that is also heavily used outranks one that
+// is merely relevant. Without a usage map the behavior must stay lexical.
+const fusionIndex = [
+	'| 冷门域 | 逐帧 渲染 稀有词 | [functions/冷门域.md](functions/冷门域.md) |',
+	'| 热门域 | 逐帧 渲染 也稀有 | [functions/热门域.md](functions/热门域.md) |',
+].join('\n');
+const noUsage = mod.matchIndexRows(fusionIndex, mod.tokensOf('逐帧 渲染'), 3);
+ok(noUsage.length === 2, `no usage map -> pure lexical ranking (${noUsage.length} rows)`);
+const usageMap = new Map([['functions/热门域.md', { uses: 20, positives: 3, badRate: 0 }]]);
+const fused = mod.matchIndexRows(fusionIndex, mod.tokensOf('逐帧 渲染'), 3, usageMap);
+ok(fused[0]?.href === 'functions/热门域.md', `usage fusion promotes the heavily-used row (${fused[0]?.href})`);
+// A row that keeps getting corrected is demoted even when used often (R18's raw
+// material, now feeding ranking instead of only the circuit breaker).
+const badUsage = new Map([
+	['functions/热门域.md', { uses: 20, positives: 0, badRate: 0.8 }],
+	['functions/冷门域.md', { uses: 10, positives: 2, badRate: 0 }],
+]);
+const demoted = mod.matchIndexRows(fusionIndex, mod.tokensOf('逐帧 渲染'), 3, badUsage);
+ok(demoted[0]?.href === 'functions/冷门域.md', `high correction rate demotes a hot row (${demoted[0]?.href})`);
+
 // 4) second write same day -> 补 suffix
 const w2 = await T.memory_write.execute(
 	{ feature: '测试功能', title: '第二次迭代', summary: '同日第二块加补后缀', currentState: '两块后仍稳定', result: 'pending' },
@@ -526,7 +547,8 @@ const check4 = await FED.memory_federation.execute({ action: 'check' }, exec);
 ok(check4.findings.some((f) => f.rule === 'F2'), 'F2 flags a dangling federation link');
 // unconfigured federation -> explicit error, not silence
 mod.apply(fakeCtx, { memoryRoot: root });
-const NOFED = Object.fromEntries(registered.filter((r) => r?.name && r.execute).slice(-11).map((t) => [t.name, t]));
+// Name-keyed (not count-based): adding a tool must never shift this window.
+const NOFED = Object.fromEntries(registered.filter((r) => r?.name && r.execute).map((t) => [t.name, t]));
 let fedThrew = null;
 try {
 	await NOFED.memory_federation.execute({ action: 'check' }, exec);

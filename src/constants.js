@@ -1,0 +1,58 @@
+/**
+ * Shared constants: tool identity, size/temperature defaults, and every
+ * canonical table heading + header row the index and the tools agree on.
+ */
+
+export const name = 'memory-manager';
+export const inject = ['tools', 'systemPrompt', 'webServer'];
+
+export const DEFAULTS = {
+	maxIndexBytes: 10 * 1024, // 索引舒适线
+	maxIndexHardBytes: 15 * 1024, // 索引硬上限（达到即拒绝写入）
+	maxFunctionBytes: 30 * 1024, // 单个功能文件上限
+	newFeatureGraceDays: 3, // TEMP 冷记忆宽限期：最近改动过的不报冷
+};
+
+export const FUNC_TABLE_HEADING = '## 功能模块索引';
+export const INSIGHT_TABLE_HEADING = '## 创新优化思想索引';
+export const CAP_TABLE_HEADING = '## 能力台账（可用工具 / MCP / CLI）';
+export const CAP_TABLE_HEADER = '| 能力 | 一句话用途 | 台账 | 类型 |';
+export const FUNC_TABLE_HEADER = '| 功能域摘要 | 一句话状态 / 待验证 | 过程链接 | 摘要 |';
+export const INSIGHT_TABLE_HEADER = '| 思想主题 | 一句话内涵 / 解决的权衡 | 思想内容 | 相关（来源功能） |';
+
+// skills — the crystallization layer. Statuses mirror MemOS's lifecycle:
+// candidate → active (verified) → retired (environment changed; kept as history).
+export const SKILL_DIR = 'skills';
+export const SKILL_STATUSES = ['candidate', 'active', 'retired'];
+export const SKILL_TABLE_HEADING = '## 技能台账（可复用操作程序）';
+export const SKILL_TABLE_HEADER = '| 技能 | 一句话用途 | 台账 | 状态 |';
+// Nomination thresholds (the mechanical half of MemOS's support/gain floors,
+// fed by .usage.jsonl): an area earns a look when it has been USED repeatedly,
+// CONFIRMED at least once, and is not mostly corrections.
+export const SKILL_NOMINATE = { minUses: 6, minPositives: 1, maxBadRate: 0.2 };
+
+export const CAP_DIR = 'capabilities';
+
+// federation (three-tier mode): project truth sources -> federation layer -> global
+export const FED_TABLE_HEADING = '## 项目索引（联邦层）';
+export const FED_TABLE_HEADER = '| 项目 | 记忆规模 | 来源副本 |';
+export const FED_CONSENSUS_HEADING = '## 跨项目共识';
+
+// Daily-log structure is no longer imposed: the raw layer is free-form, so the
+// plugin cannot assume a fixed '今日功能线索' heading. resolveOpenItems scans the
+// whole file for still-open (non-✅) lines referencing the feature instead.
+export const DAILY_SECTION = '## 今日功能线索'; // legacy template heading, kept for old logs
+export const DAILY_OPEN_SECTION = '## 今日待观察'; // legacy template heading
+export const RESULT_LABEL = { done: '完成', reverted: '已回滚', pending: '进行中' };
+
+// Guard marker: a low-frequency, high-value memory that must never be judged
+// cold just because it is not written to often (the "守护型" channel).
+export const GUARD_MARK = '🛡 守护型';
+export const GUARD_LINE = `> ${GUARD_MARK}：低频高价值，不做冷记忆判定（memory_write guard=true 写入，删除该行即恢复判定）。`;
+
+// Granularity gates: a block/summary is a conclusion, not a process log.
+export const MAX_BLOCK_CHARS = 900;
+export const MAX_ROW_SUMMARY_CHARS = 110;
+export const MAX_PRINCIPLE_CHARS = 200;
+export const MAX_CONSENSUS_CHARS = 150;
+export const CONSENSUS_HEADING = '## 决策共识 / 规范';

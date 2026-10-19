@@ -2780,7 +2780,14 @@ function tokensOf(text) {
  *    so one strong hit does not drag three weak ones into the injection.
  *  - Dedupe by href (a table split into ### sub-sections can repeat a row).
  */
-function matchIndexRows(indexText, userTokens, limit = 3) {
+/**
+ * @param {Map<string, {uses:number,positives:number,badRate:number}>} [usage]
+ *   Per-href usage signals (from .usage.jsonl). When present, the lexical IDF
+ *   rank is FUSED with a usage rank via RRF (borrowed from MemOS's hybrid
+ *   retrieval: FTS5 + vector → RRF), so a row that is both topically relevant
+ *   AND repeatedly used wins, and a heavily-corrected row is demoted.
+ */
+function matchIndexRows(indexText, userTokens, limit = 3, usage) {
 	const candidates = [];
 	for (const raw of indexText.split('\n')) {
 		const s = raw.trim();
@@ -2826,10 +2833,39 @@ function matchIndexRows(indexText, userTokens, limit = 3) {
 		if (score > 0) scored.push({ name: c.name, summary: c.summary, href: c.href, zone: c.zone, score });
 	}
 	scored.sort((a, b) => b.score - a.score);
-	const best = scored[0]?.score ?? 0;
+	// ---- RRF fusion with the usage rank -------------------------------------
+	// Two independent rankings (lexical IDF, usage heat) are combined by
+	// Reciprocal Rank Fusion: a row's score is SUM(1/(k + rank_i)) over the
+	// rankings it appears in. RRF is scale-free, so the two signals need no
+	// normalization — the thing MemOS gets from blending FTS5 + vectors.
+	let ranked = scored;
+	if (usage && usage.size) {
+		const k = 60; // standard RRF constant
+		const lexicalRank = new Map();
+		scored.forEach((r, i) => lexicalRank.set(r.href, i));
+		// Usage rank: heat = uses + 2*positives, demoted by correction rate.
+		const heat = new Map();
+		for (const [href, u] of usage) {
+			const penalty = 1 - Math.min(0.9, u.badRate ?? 0);
+			heat.set(href, (u.uses + 2 * (u.positives ?? 0)) * penalty);
+		}
+		const usageRank = new Map();
+		[...heat.entries()]
+			.sort((a, b) => b[1] - a[1])
+			.forEach(([href], i) => usageRank.set(href, i));
+		const fused = scored.map((r) => {
+			let s = 1 / (k + (lexicalRank.get(r.href) ?? scored.length));
+			if (usageRank.has(r.href)) s += 1 / (k + usageRank.get(r.href));
+			return { ...r, score: s, lexical: r.score };
+		});
+		fused.sort((a, b) => b.score - a.score);
+		ranked = fused;
+	}
+	const best = ranked[0]?.score ?? 0;
 	const seen = new Set();
 	const out = [];
-	for (const r of scored) {
+	for (const r of ranked) {
+		// Relative cutoff: under 40% of the best fused score.
 		if (r.score < best * 0.4) break;
 		if (seen.has(r.href)) continue;
 		seen.add(r.href);
@@ -3284,6 +3320,23 @@ export function apply(ctx, config) {
 	// signature dedupe). Registration is global; dispatch is agent-scoped.
 	const recallServed = new Map(); // agentId -> signature of last served batch
 	const indexCache = { text: undefined, at: 0 };
+	const usageCache = { map: undefined, at: 0 };
+	const readUsageCached = async () => {
+		const now = Date.now();
+		if (usageCache.map === undefined || now - usageCache.at > 60_000) {
+			// Fusion input: which rows are actually USED (recall/read) and how they
+			// were judged (positives / correction rate). Cheap: one dot-file read
+			// per minute, and a failure just means "rank lexically only".
+			try {
+				const items = summarizeUsage(await readUsage(resolveRoot(opts)));
+				usageCache.map = new Map(items.map((it) => [it.href, it]));
+			} catch {
+				usageCache.map = new Map();
+			}
+			usageCache.at = now;
+		}
+		return usageCache.map;
+	};
 	const readIndexCached = async () => {
 		const now = Date.now();
 		if (indexCache.text === undefined || now - indexCache.at > 10_000) {
@@ -3310,7 +3363,11 @@ export function apply(ctx, config) {
 				if (userText.trim() && recallServed.get(payload.agent.id) !== signature) {
 					const indexText = await readIndexCached();
 					if (indexText) {
-						const rows = matchIndexRows(indexText, tokensOf(userText))
+						// RRF fusion: lexical IDF rank + usage-heat rank (see
+						// matchIndexRows). Signals already exist in .usage.jsonl;
+						// without this they were collected but never used to rank.
+						const usage = await readUsageCached();
+						const rows = matchIndexRows(indexText, tokensOf(userText), 3, usage)
 							// Pointer dedupe: when the user's own text already cites a memory
 							// file (they quoted an earlier recall or wrote the link), re-
 							// injecting the same row just echoes what is already on screen.
