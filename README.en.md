@@ -11,7 +11,7 @@ The one-line difference: it is not "notes per project" but an **iteration histor
 will **re-apply** is distilled into `insights/`, the index keeps a single line per row, and every session
 starts with that discipline injected into its system prompt.
 
-- Nine memory tools + an injected system-prompt discipline + an `agent/pre-step` recall hook + a read-only Web panel
+- Ten memory tools + an injected system-prompt discipline + an `agent/pre-step` recall hook + a read-only Web panel
 - Writing is filing: `summary` and `currentState` are required parameters, so the index row never drifts
 - Eleven mechanical lint rules, so rot gets detected instead of remembered
 - **Granularity gate**: iteration blocks hold distilled conclusions only; a block over 900 chars or an index
@@ -83,7 +83,8 @@ Layer 3 · MEMORY.md index + panel overview: one-line summaries + counts — a d
 | `memory_insight` | distil a transferable principle from the function division into `insights/`, backlink its source areas, `supersedes` to replace an older idea |
 | `memory_fold` | past 30KB, fold the oldest iteration blocks into an "early evolution" paragraph (conclusions and every date tag preserved) |
 | `memory_rename` | rename / merge a function area, rewrite every reference and verify zero dangling links |
-| `memory_check` | lint: index size, missing summaries, orphan files, backlinks, date ordering, dangling links, cold memory, head-summary guardrail, env-path liveness, over-long blocks/rows (R14), duplicated rows/sections (R15) |
+| `memory_check` | lint: index size, missing summaries, orphan files, backlinks, date ordering, dangling links, cold memory, head-summary guardrail, env-path liveness, over-long blocks/rows (R14), duplicated rows/sections (R15), correction-rate circuit breaker (R18) |
+| `memory_usage` | **usage signals**: `record` logs one correction/confirmation (recalls and reads are logged automatically); `report` aggregates a window and suggests a layer (experiment / specialist / general) — advice only, it never moves files |
 | `memory_federation` | **federation mode** (optional): `sync` copies each project's `MEMORY.md` into `sources/` and rebuilds the project index table; `check` lints F1–F5 (index present, links resolve, rows/copies complete, no orphans, absolute paths alive) |
 
 A discipline section is injected into the system prompt; the `agent/pre-step` hook scores the user's input
@@ -92,6 +93,33 @@ tokens nearly every row carries (「功能」「记忆」) weigh little, rare to
 name/filename hits are doubled, rows under 40% of the best score are dropped, and one file is injected once.
 Once per batch per session, a failure there never affects the step, and files the user already cited are not
 re-injected. The panel's `/search` and `memory_search` share the same ranker.
+
+## Usage signals and self-sorting layers
+
+"Written" and "actually used" are different signals — the former is the model's job, the latter can only be
+recorded. Signals land in `<memory-root>/.usage.jsonl` (a dot-file: no zone listing, search or lint sees it):
+
+| Signal | Source | Meaning |
+|---|---|---|
+| `recall` | logged by `agent/pre-step` injection | demand side: this memory really reached the model |
+| `read` | logged when `memory_read` opens a specific file | demand side: the model went to look |
+| `correction` | model calls `memory_usage(record, kind=correction)` | quality side: the user corrected/rejected it |
+| `positive` | model calls `memory_usage(record, kind=positive)` | quality side: explicit confirmation ("that's it") |
+
+`memory_usage(action=report)` aggregates and suggests a layer — the "let the data sort it" idea, deliberately
+reduced to **advice, never automatic file moves**:
+
+- **experiment**: fewer than 3 uses
+- **specialist**: ≥3 uses and at least one confirmation
+- **general**: ≥10 uses, ≥2 confirmations, correction rate under 20%
+- correction rate over 40% with ≥3 uses → rebuild before appending; lint **R18** reports the breaker
+
+Two deliberate limits: the tool never moves files (layer is human judgement plus data advice, not a script
+shuffle), and corrections/confirmations cannot be inferred (only explicit ones count — no guessing at tone).
+
+Low-frequency, high-value memories (security audits, key pitfalls, fallback rules) get hurt by the cold-memory
+rule — mark them with `memory_write(guard=true)`, which stamps `🛡 守护型` into the file head and exempts them
+from cold judgement: **"rarely written" is not "safe to drop"**.
 
 ## Install (as a profile bundle)
 

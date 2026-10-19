@@ -14,7 +14,7 @@
  *
  * @module dsh-memory-manager
  */
-import { readFile, writeFile, rename, unlink, mkdir, readdir, stat } from 'node:fs/promises';
+import { readFile, writeFile, rename, unlink, mkdir, readdir, stat, appendFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import * as path from 'node:path';
 import { homedir } from 'node:os';
@@ -143,6 +143,85 @@ const INSIGHT_TABLE_HEADER = '| 思想主题 | 一句话内涵 / 解决的权衡
 const DAILY_SECTION = '## 今日功能线索'; // legacy template heading, kept for old logs
 const DAILY_OPEN_SECTION = '## 今日待观察'; // legacy template heading
 const RESULT_LABEL = { done: '完成', reverted: '已回滚', pending: '进行中' };
+// Guard marker: a low-frequency, high-value memory that must never be judged
+// cold just because it is not written to often (the "守护型" channel).
+const GUARD_MARK = '🛡 守护型';
+const GUARD_LINE = `> ${GUARD_MARK}：低频高价值，不做冷记忆判定（memory_write guard=true 写入，删除该行即恢复判定）。`;
+
+// ---------------------------------------------------------------------------
+// usage signals — the data that lets the memory sort itself
+// ---------------------------------------------------------------------------
+//
+// The index/insight layer is written by the model; which rows are actually USED
+// is a different signal, and the plugin never captured it. Every recall
+// injection, explicit file read, correction and positive confirmation appends
+// one line here, and memory_check / memory_usage turn those lines into layer
+// suggestions. Kept as a dot-file so no zone listing, search or lint sees it.
+
+function usagePath(root) {
+	return path.join(root, '.usage.jsonl');
+}
+
+async function appendUsage(root, entry) {
+	try {
+		await mkdir(root, { recursive: true });
+		await appendFile(usagePath(root), `${JSON.stringify({ t: new Date().toISOString(), ...entry })}\n`, 'utf8');
+	} catch {
+		/* usage logging must never break a step or a tool call */
+	}
+}
+
+/** Usage entries newer than `days`, newest last. Bad lines are skipped. */
+async function readUsage(root, days = 30) {
+	const text = await readIfExists(usagePath(root));
+	if (text === undefined) return [];
+	const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+	const out = [];
+	for (const line of text.split('\n')) {
+		const s = line.trim();
+		if (!s) continue;
+		try {
+			const e = JSON.parse(s);
+			const t = Date.parse(e.t);
+			if (!Number.isFinite(t) || t < cutoff) continue;
+			out.push({ ...e, ms: t });
+		} catch {
+			/* skip corrupt line */
+		}
+	}
+	return out;
+}
+
+/** Aggregate usage per target and suggest a layer (实验 / 专项 / 通用). */
+function summarizeUsage(entries) {
+	const map = new Map();
+	for (const e of entries) {
+		const href = String(e.href ?? '').trim();
+		if (!href) continue;
+		const cur = map.get(href) ?? { href, recalls: 0, reads: 0, corrections: 0, positives: 0, last: 0 };
+		if (e.kind === 'recall') cur.recalls++;
+		else if (e.kind === 'read') cur.reads++;
+		else if (e.kind === 'correction') cur.corrections++;
+		else if (e.kind === 'positive') cur.positives++;
+		cur.last = Math.max(cur.last, e.ms);
+		map.set(href, cur);
+	}
+	const items = [...map.values()];
+	for (const it of items) {
+		const uses = it.recalls + it.reads;
+		const badRate = uses ? it.corrections / uses : it.corrections ? 1 : 0;
+		// Layer suggestion mirrors the article's data-driven promotion: usage wins,
+		// confirmation gates promotion, correction rate gates generality.
+		if (uses >= 10 && it.positives >= 2 && badRate < 0.2) it.layer = '通用';
+		else if (uses >= 3 && it.positives >= 1) it.layer = '专项';
+		else it.layer = '实验';
+		it.uses = uses;
+		it.badRate = Number(badRate.toFixed(2));
+	}
+	items.sort((a, b) => b.uses - a.uses || b.last - a.last);
+	return items;
+}
+
 
 // ---------------------------------------------------------------------------
 // small helpers
@@ -332,11 +411,12 @@ function memoryIndexTemplate() {
 	].join('\n');
 }
 
-function functionFileTemplate(feature, date) {
+function functionFileTemplate(feature, date, guard = false) {
 	return [
 		`# ${feature}迭代历程`,
 		'',
 		`> 范围：${feature} 的代码路径、约束与迭代决策；本文件自包含，细节不回指 MEMORY.md。`,
+		...(guard ? [GUARD_LINE] : []),
 		'',
 		`## 当前状态摘要（截至 ${date}）`,
 		'',
@@ -896,6 +976,9 @@ async function runHealthCheck(root, opts) {
 				const mtime = fnMtimes.get(name);
 				if (graceMs > 0 && typeof mtime === 'number' && Date.now() - mtime < graceMs) continue;
 				const own = fnTexts.get(name) ?? '';
+				// Guarded memories opt out: a low-frequency, high-value area (security
+				// audit, a兜底 rule) must not be judged cold for being quiet.
+				if (own.includes(GUARD_MARK)) continue;
 				// Two link spellings exist: index-style `functions/<name>.md` and
 				// bare sibling `](<name>.md)` inside functions/ files. Count both,
 				// minus the file's own occurrences.
@@ -903,12 +986,38 @@ async function runHealthCheck(root, opts) {
 				const bareStyle = refText.split(`](${name}.md)`).length - 1 - (own.split(`](${name}.md)`).length - 1);
 				const inbound = idxStyle + bareStyle;
 				if (inbound === 0) {
-					add('WARN', 'TEMP', `functions/${name}.md 除索引行外没有任何其他记忆引用（冷记忆）：确认它是仍在活跃维护，还是应并入相关功能域（memory_rename）或折叠（memory_fold）`);
+					add('WARN', 'TEMP', `functions/${name}.md 除索引行外没有任何其他记忆引用（冷记忆）：确认它是仍在活跃维护，还是应并入相关功能域（memory_rename）或折叠（memory_fold）；低频高价值的记忆请用 memory_write guard=true 标为守护型`);
 				}
 			}
 		}
 	} catch {
 		/* temperature analysis is best-effort */
+	}
+
+	// R18 (circuit breaker): a function area that keeps getting corrected is not
+	// "another iteration" — the article's rule is that a hot area whose error
+	// rate spikes should stop automatic appends and be rebuilt instead. Uses the
+	// usage log (correction signals) when it exists; silent without signals.
+	try {
+		const usage = await readUsage(root, 7);
+		if (usage.length) {
+			const perHref = new Map();
+			for (const e of usage) {
+				const href = String(e.href ?? '');
+				if (!href.startsWith('functions/')) continue;
+				const cur = perHref.get(href) ?? { uses: 0, corrections: 0 };
+				if (e.kind === 'recall' || e.kind === 'read') cur.uses++;
+				else if (e.kind === 'correction') cur.corrections++;
+				perHref.set(href, cur);
+			}
+			for (const [href, c] of perHref) {
+				if (c.corrections >= 3 && c.corrections / Math.max(1, c.uses + c.corrections) > 0.4) {
+					add('WARN', 'R18', `${href} 近 7 天被纠正 ${c.corrections} 次、使用 ${c.uses} 次（纠正率 > 40%）：熔断——先重构该域再继续追加迭代，别把问题压进历史`);
+				}
+			}
+		}
+	} catch {
+		/* usage log is optional */
 	}
 
 	const warnCount = results.filter((r) => r.level === 'WARN').length;
@@ -1009,12 +1118,14 @@ function memoryReadTool(opts) {
 					const listing = await listMdDir(dir);
 					return { found: false, path: p, content: '', listing };
 				}
+				await appendUsage(root, { href: `${args.kind === 'function' ? 'functions' : 'insights'}/${slug}.md`, kind: 'read' });
 				return { found: true, path: p, content: text, listing: [] };
 			}
 			// daily
 			if (typeof args.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(args.date.trim())) {
 				const p = path.join(root, `${args.date.trim()}.md`);
 				const text = await readIfExists(p);
+				if (text !== undefined) await appendUsage(root, { href: `${args.date.trim()}.md`, kind: 'read' });
 				return { found: text !== undefined, path: p, content: text ?? '', listing: [] };
 			}
 			let latest;
@@ -1142,6 +1253,98 @@ function federationIndexText(rows) {
 		'- ',
 		'',
 	].join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// memory_usage — usage signals and data-driven layer suggestions
+// ---------------------------------------------------------------------------
+
+function memoryUsageTool(opts) {
+	return defineTool({
+		name: 'memory_usage',
+		description:
+			'Record and read USAGE signals, the data that lets the memory sort itself. action=record logs one event against a memory file (kind: correction = the user corrected / rejected what was recalled or written; positive = explicit confirmation like "对了/就是这个"; recall/read are logged automatically). action=report aggregates the last N days per file and suggests a layer: 实验 (<3 uses), 专项 (>=3 uses + >=1 confirmation), 通用 (>=10 uses + >=2 confirmations + correction rate <20%). Layers are suggestions for the model to act on — this tool never moves files.',
+		parameters: {
+			action: { type: 'string', required: true, enum: ['record', 'report'], description: 'record=记一次信号；report=按天聚合出分层建议。' },
+			href: { type: 'string', description: 'record 必填：目标记忆文件，如 `functions/批印坊工程加固.md`、`insights/逐帧渲染取帧三闸.md`、`2026-10-18.md`。' },
+			kind: { type: 'string', enum: ['correction', 'positive', 'recall', 'read'], description: 'record 必填：correction=用户纠正/否定，positive=用户明确认可，recall/read 一般由插件自动记录。' },
+			note: { type: 'string', description: 'record 可选：一句话说明（例如用户原话），便于日后复盘。' },
+			days: { type: 'integer', description: 'report 的统计窗口（天，默认 30）。' },
+		},
+		output: {
+			schema: {
+				type: 'object',
+				additionalProperties: false,
+				properties: {
+					action: { type: 'string', required: true },
+					days: { type: 'integer', required: true },
+					items: {
+						type: 'array',
+						required: true,
+						items: {
+							type: 'object',
+							additionalProperties: false,
+							properties: {
+								href: { type: 'string', required: true },
+								uses: { type: 'integer', required: true },
+								recalls: { type: 'integer', required: true },
+								reads: { type: 'integer', required: true },
+								corrections: { type: 'integer', required: true },
+								positives: { type: 'integer', required: true },
+								badRate: { type: 'number', required: true },
+								layer: { type: 'string', required: true },
+								lastUsed: { type: 'string', required: true },
+							},
+						},
+					},
+					warnings: { type: 'array', required: true, items: { type: 'string' } },
+				},
+			},
+			render: (_args, v) => {
+				if (!v.items.length) return [{ type: 'text', text: '还没有使用信号。信号来自召回注入、memory_read、以及你用 memory_usage(action=record) 记录的纠正/认可。' }];
+				const lines = [`近 ${v.days} 天使用信号（按使用次数排序）：`];
+				for (const it of v.items) {
+					lines.push(`- [${it.layer}] ${it.href} · 用 ${it.uses}（召回 ${it.recalls}/读 ${it.reads}）· 纠正 ${it.corrections} · 认可 ${it.positives} · 纠正率 ${it.badRate}`);
+				}
+				for (const w of v.warnings) lines.push(`⚠ ${w}`);
+				lines.push('层只是建议：通用=可进默认推荐，专项=常规池，实验=仍在小范围验证。');
+				return [{ type: 'text', text: lines.join('\n') }];
+			},
+		},
+		presentCall: (args) => ({ card: 'generic', title: `Memory usage: ${args.action ?? ''}`, kind: 'other', rawInput: args }),
+		async execute(args, exec) {
+			const root = resolveRoot(opts);
+			const days = Math.min(Math.max(1, Number(args.days) || 30), 365);
+			const warnings = [];
+			if (args.action === 'record') {
+				const href = oneLine(args.href);
+				if (!/^(functions|insights)\/[^/]+\.md$/.test(href) && !/^\d{4}-\d{2}-\d{2}\.md$/.test(href)) {
+					throw new Error('href 必须是 functions/<名>.md、insights/<名>.md 或 YYYY-MM-DD.md');
+				}
+				const kind = ['correction', 'positive', 'recall', 'read'].includes(args.kind) ? args.kind : null;
+				if (!kind) throw new Error('kind 必须是 correction / positive / recall / read');
+				await appendUsage(root, { href, kind, note: oneLine(args.note ?? '') || undefined });
+				return { action: 'record', days, items: [], warnings: [`已记录：${kind} → ${href}${args.note ? `（${oneLine(args.note)}）` : ''}`] };
+			}
+			const entries = await readUsage(root, days);
+			const items = summarizeUsage(entries).map((it) => ({
+				href: it.href,
+				uses: it.uses,
+				recalls: it.recalls,
+				reads: it.reads,
+				corrections: it.corrections,
+				positives: it.positives,
+				badRate: it.badRate,
+				layer: it.layer,
+				lastUsed: new Date(it.last).toISOString(),
+			}));
+			const hot = items.filter((it) => it.layer === '通用').length;
+			if (hot) warnings.push(`${hot} 条已达到「通用」建议线：可考虑在索引行里标明它是标配工具，或让它进默认推荐`);
+			const bad = items.filter((it) => it.uses >= 3 && it.badRate > 0.4);
+			for (const b of bad) warnings.push(`${b.href} 纠正率 ${Math.round(b.badRate * 100)}%（>40%）：先重构这条记忆，别继续往上叠迭代`);
+			return { action: 'report', days, items, warnings };
+		},
+	});
 }
 
 function memoryFederationTool(opts) {
@@ -1315,6 +1518,7 @@ function memoryWriteTool(opts) {
 			verification: { type: 'string', description: '验证（一句话 + 关键数字）：测试名/命令/实测现象；不要复述全部断言细节。' },
 			result: { type: 'string', enum: ['done', 'reverted', 'pending'], description: '结果：done=完成 / reverted=已回滚 / pending=进行中。' },
 			open: { type: 'string', description: '待观察（一句话）：遗留风险或下一步要确认什么。' },
+			guard: { type: 'boolean', description: '守护型标记：低频高价值、绝不能因为"很久没写"被判冷记忆的记忆（安全审计、关键踩坑、兜底规则）。写入后文件头带 🛡 标记，体检 TEMP 跳过它；传 false 不解除已有标记（删掉文件头那行才真正解除）。' },
 			related: { type: 'array', description: '相关功能域 slug 列表，渲染为迭代块内的“相关”链接。', items: { type: 'string' } },
 			summary: { type: 'string', required: true, description: '本块的一句话概括（≤60 字）：从每日原始记录蒸馏本迭代时，它回答“这次迭代做了什么/解决了什么”。功能域稳定后由 memory_index 把它收进索引行。' },
 			currentState: { type: 'string', description: '刷新文件头部“当前状态摘要”：只写当前稳定行为/关键约束/隐患（3-5 条），不写历史与过程。' },
@@ -1397,7 +1601,15 @@ function memoryWriteTool(opts) {
 			const fnPath = path.join(root, 'functions', `${feature}.md`);
 			let fnText = await readIfExists(fnPath);
 			const created = fnText === undefined;
-			if (created) fnText = functionFileTemplate(feature, date);
+			if (created) fnText = functionFileTemplate(feature, date, args.guard === true);
+			if (args.guard === true && !fnText.includes(GUARD_MARK)) {
+				// Marking an existing file as guarded: insert the marker line right
+				// after the scope line so the head reads top-down without surprises.
+				const lines = fnText.split('\n');
+				const scopeAt = lines.findIndex((l) => l.startsWith('> 范围：'));
+				lines.splice(scopeAt === -1 ? 2 : scopeAt + 1, 0, GUARD_LINE);
+				fnText = lines.join('\n');
+			}
 			if (args.currentState !== undefined) {
 				const cs = String(args.currentState).trim();
 				if (cs) fnText = refreshSummarySection(fnText, date, cs);
@@ -2067,7 +2279,7 @@ function buildRecallMessage(lines) {
 function memoryCheckTool(opts) {	return defineTool({
 		name: 'memory_check',
 		description:
-			'Lint the memory root (read-only): MEMORY.md size caps + rows missing one-line summaries (R5), dangling / root-escaping links (R10), function files reverse-linking to MEMORY.md detail (R8), function-file size (R9), over-detailed iteration blocks and index rows that were not distilled (R14), duplicated index rows or table sections (R15), head stable-state summary older than the newest iteration block or missing (R3), env-constant absolute paths that no longer exist (R16), iteration date tags not append-ordered (R3), legacy/ files missing the 历史原貌 header (R13). Run it after batch memory edits or when memory_check has never run on this root.',
+			'Lint the memory root (read-only): MEMORY.md size caps + rows missing one-line summaries (R5), dangling / root-escaping links (R10), function files reverse-linking to MEMORY.md detail (R8), function-file size (R9), over-detailed iteration blocks and index rows that were not distilled (R14), duplicated index rows or table sections (R15), head stable-state summary older than the newest iteration block or missing (R3), env-constant absolute paths that no longer exist (R16), a function area corrected over 40% of the time in the last 7 days (R18 circuit breaker), iteration date tags not append-ordered (R3), legacy/ files missing the 历史原貌 header (R13). Guarded files (🛡 守护型) are exempt from the cold-memory rule. Run it after batch memory edits or when memory_check has never run on this root.',
 		parameters: {},
 		output: {
 			schema: {
@@ -2209,7 +2421,7 @@ function memoryIndexTool(opts) {
 const DISCIPLINE_TEXT = [
 	'## 持久记忆纪律（memory-manager）',
 	'',
-	'本 Harness 维护**全局**跨会话记忆（`~/.dsh/memory/`，即 dshHome 的 memory/ 目录；九个工具：memory_read / memory_search / memory_write / memory_index / memory_insight / memory_fold / memory_rename / memory_check / memory_federation；结构见 memory/MEMORY.md）。记忆对全部项目、全部会话通用，按功能域组织而非按项目隔离。**数据流单向四层，每层只吃上一层的产出**：',
+	'本 Harness 维护**全局**跨会话记忆（`~/.dsh/memory/`，即 dshHome 的 memory/ 目录；十个工具：memory_read / memory_search / memory_write / memory_index / memory_insight / memory_fold / memory_rename / memory_check / memory_usage / memory_federation；结构见 memory/MEMORY.md）。记忆对全部项目、全部会话通用，按功能域组织而非按项目隔离。**数据流单向四层，每层只吃上一层的产出**：',
 	'',
 	'- **第 0 层 · 每日记录（原始层）**：`YYYY-MM-DD.md` 是任务与对话过程的第一手数据，**本插件不约束其内容与格式**——用任何工具、任何方式自由记录（决策、对话、试错、片段都行）。它是一切蒸馏的原料；同一事实只在这里是"过程"，其余层只见结论。',
 	'- **第 1 层 · 功能域（memory_write）**：从每日原始记录中**归纳汲取**功能划分——一次实质工作 = 一个 functions/<功能域>.md 迭代块（蒸馏结论：动因/改动/判据/待观察 各一句）。`summary` 是本块的一句话概括；功能域该新建还是并入既有的，判断依据就是每日记录里反复出现的主题。',
@@ -2218,6 +2430,8 @@ const DISCIPLINE_TEXT = [
 	'- **先查后写**：涉及"项目里怎么做 / 为什么这么做 / 环境常量"时，先 `memory_read kind=index`（行内摘要判断相关性，再打开对应文件）；只记得片段、说不清在哪个域或哪天时用 `memory_search`（全库排序检索，返回命中的分区/文件/行号/小节/片段）。不要凭空重推已有结论。',
 	'- **蒸馏不搬过程**：迭代块只写结论；逐条实现清单、调试经过属于每日原始层与会话/代码。块 >900 字或概括 >110 字写入告警，体检 R14 复查。',
 	'- **经验二分**：会**重跑**的操作进 functions/；会**重套**的原则用 memory_insight 进 insights/；跨功能共识与环境常量只在 MEMORY.md。',
+	'- **使用信号让记忆自己排序**：召回命中与 memory_read 会自动记信号；用户纠正/明确认可时用 `memory_usage(action=record, kind=correction|positive)` 记一笔（这是分层判断里唯一不能自动获得的信号）。`memory_usage(action=report)` 给出 实验/专项/通用 建议；某域近 7 天纠正率 >40% 时体检 R18 报熔断——先重构再追加。',
+	'- **守护型**：低频但高价值的记忆（安全审计、关键踩坑、兜底规则）用 `memory_write(guard=true)` 标记，体检的冷记忆规则会跳过它——不要因为"很久没写"就删掉兜底经验。',
 	'- **项目归属**：涉及特定项目的记忆，在功能域 slug 或正文里注明项目名（如 `toolbox-login`）。功能域多到单根过大时，可启用**联邦模式**（`federation: { root, projects }`）：项目真相源留在各项目记忆根，`memory_federation` 负责刷副本与跨项目索引，项目细节不上升。',
 	'- **收缩机制**：功能文件超 30KB 用 `memory_fold` 折叠最旧块；MEMORY.md 超线按 ### 子分区拆分；重命名/合并用 `memory_rename`（自动改写引用并验证死链清零）。',
 	'- 批量改动记忆后跑 `memory_check` 体检。',
@@ -2378,6 +2592,7 @@ export function apply(ctx, config) {
 		ctx.tools.register(memoryFoldTool(opts)),
 		ctx.tools.register(memoryRenameTool(opts)),
 		ctx.tools.register(memoryCheckTool(opts)),
+		ctx.tools.register(memoryUsageTool(opts)),
 		ctx.tools.register(memoryFederationTool(opts)),
 	];
 
@@ -2420,7 +2635,13 @@ export function apply(ctx, config) {
 							// injecting the same row just echoes what is already on screen.
 							.filter((l) => !userText.includes(l.href));
 						recallServed.set(payload.agent.id, signature);
-						if (rows.length) recall = createUserMessage(buildRecallMessage(rows));
+						if (rows.length) {
+							recall = createUserMessage(buildRecallMessage(rows));
+							// Usage signal: what recall actually put in front of the model
+							// is the demand side of the memory's popularity. Fire and
+							// forget — logging must never delay or break the step.
+							for (const r of rows) void appendUsage(resolveRoot(opts), { href: r.href, kind: 'recall' });
+						}
 					}
 				}
 			} catch {

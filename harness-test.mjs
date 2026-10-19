@@ -47,7 +47,7 @@ const statExists = async (p) => { try { await (await import('node:fs/promises'))
 // temperature rule can be asserted deterministically (see 11d for the grace).
 const disposer2 = mod.apply(fakeCtx, { memoryRoot: root, newFeatureGraceDays: 0 });
 const tools2 = Object.fromEntries(
-	registered.filter((r) => r?.name && r.execute).slice(-9).map((t) => [t.name, t]),
+	registered.filter((r) => r?.name && r.execute).slice(-10).map((t) => [t.name, t]),
 );
 const T = tools2;
 const disposer = noop;
@@ -275,7 +275,7 @@ ok(w6.warnings.some((x) => x.includes('疑似与已有功能域')), `dedupe warn
 // backlinked, so the default window suppresses the cold flag for it.
 mod.apply(fakeCtx, { memoryRoot: root });
 const tools3 = Object.fromEntries(
-	registered.filter((r) => r?.name && r.execute).slice(-9).map((t) => [t.name, t]),
+	registered.filter((r) => r?.name && r.execute).slice(-10).map((t) => [t.name, t]),
 );
 const c3 = await tools3.memory_check.execute({}, exec);
 ok(!c3.results.some((r) => r.rule === 'TEMP'), `grace window suppresses cold flag on fresh files (TEMP=${c3.results.filter((r) => r.rule === 'TEMP').length})`);
@@ -462,7 +462,7 @@ for (const [dir, label] of [[projA, 'A'], [projB, 'B']]) {
 	await writeFile(path.join(dir, 'functions', `${label}功能.md`), '# x\n', 'utf8');
 }
 mod.apply(fakeCtx, { memoryRoot: root, federation: { root: fedRoot, projects: [{ key: 'proj-a', root: projA }, { key: 'proj-b', root: projB }] } });
-const FED = Object.fromEntries(registered.filter((r) => r?.name && r.execute).slice(-9).map((t) => [t.name, t]));
+const FED = Object.fromEntries(registered.filter((r) => r?.name && r.execute).slice(-10).map((t) => [t.name, t]));
 ok(typeof FED.memory_federation?.execute === 'function', 'memory_federation registered');
 const synced = await FED.memory_federation.execute({ action: 'sync' }, exec);
 ok(synced.projects.length === 2 && synced.projects.every((p) => p.copied), 'sync copies every project index');
@@ -492,7 +492,7 @@ const check4 = await FED.memory_federation.execute({ action: 'check' }, exec);
 ok(check4.findings.some((f) => f.rule === 'F2'), 'F2 flags a dangling federation link');
 // unconfigured federation -> explicit error, not silence
 mod.apply(fakeCtx, { memoryRoot: root });
-const NOFED = Object.fromEntries(registered.filter((r) => r?.name && r.execute).slice(-9).map((t) => [t.name, t]));
+const NOFED = Object.fromEntries(registered.filter((r) => r?.name && r.execute).slice(-10).map((t) => [t.name, t]));
 let fedThrew = null;
 try {
 	await NOFED.memory_federation.execute({ action: 'check' }, exec);
@@ -503,6 +503,57 @@ ok(fedThrew && fedThrew.includes('federation'), `unconfigured federation fails l
 await rm(fedRoot, { recursive: true, force: true });
 await rm(projA, { recursive: true, force: true });
 await rm(projB, { recursive: true, force: true });
+
+// 18) usage signals -> self-sorting layers, guard channel, circuit breaker.
+// The article's model: usage frequency + correction frequency decide the layer,
+// and a low-frequency/high-value memory must be able to opt out of the cold
+// judgement entirely.
+const US = T.memory_usage;
+ok(typeof US?.execute === 'function', 'memory_usage registered');
+// guard: a marked file is skipped by the TEMP cold rule
+const gw = await T.memory_write.execute(
+	{ feature: '守护域', title: '低频高价值的兜底规则', summary: '安全审计类低频高价值记忆', result: 'done', guard: true },
+	exec,
+);
+const guardText = await readFile(gw.featureFile, 'utf8');
+ok(guardText.includes('🛡 守护型'), 'guard=true writes the guard marker');
+const cg = await T.memory_check.execute({}, exec);
+const coldNames = cg.results.filter((r) => r.rule === 'TEMP').map((r) => r.message).join(' ');
+ok(!coldNames.includes('守护域'), 'guarded file is exempt from the cold-memory rule');
+// un-guarded control file IS flagged
+await T.memory_write.execute({ feature: '普通冷域', title: '没人引用的块', summary: '会被判冷的普通域', result: 'done' }, exec);
+const cg2 = await T.memory_check.execute({}, exec);
+ok(cg2.results.some((r) => r.rule === 'TEMP' && r.message.includes('普通冷域')), 'unguarded cold file still flagged');
+// usage recording: recalls from the pre-step hook are logged automatically
+const psH = globalThis.__preStepListener;
+ok(typeof psH === 'function', 'pre-step listener available for usage logging');
+const usageLog = await readFile(path.join(root, '.usage.jsonl'), 'utf8').catch(() => '');
+ok(usageLog.length > 0 && usageLog.includes('recall'), 'recall injections are logged as usage');
+// manual record: correction + positive, then report layers
+await US.execute({ action: 'record', href: 'functions/检索目标.md', kind: 'correction', note: '用户说不对' }, exec);
+await US.execute({ action: 'record', href: 'functions/检索目标.md', kind: 'positive', note: '这次对了' }, exec);
+const rep = await US.execute({ action: 'report', days: 30 }, exec);
+const target = rep.items.find((i) => i.href === 'functions/检索目标.md');
+ok(target && target.corrections >= 1 && target.positives >= 1, `usage report aggregates correction/positive (${target?.corrections}/${target?.positives})`);
+ok(target.layer === '专项' || target.layer === '实验', `layer suggestion present (${target?.layer})`);
+ok(rep.items.some((i) => i.href.startsWith('functions/')), 'report lists function targets');
+// circuit breaker: 3 corrections with few uses trips R18
+await US.execute({ action: 'record', href: 'functions/熔断域.md', kind: 'correction' }, exec);
+await US.execute({ action: 'record', href: 'functions/熔断域.md', kind: 'correction' }, exec);
+await US.execute({ action: 'record', href: 'functions/熔断域.md', kind: 'correction' }, exec);
+await T.memory_write.execute({ feature: '熔断域', title: '反复被纠正的域', summary: '用来验证熔断规则', result: 'pending' }, exec);
+const cg3 = await T.memory_check.execute({}, exec);
+ok(cg3.results.some((r) => r.rule === 'R18' && r.message.includes('熔断')), `R18 trips on a repeatedly corrected area (${cg3.results.filter((r) => r.rule === 'R18').length} R18)`);
+// bad href / bad kind are rejected loudly
+let usageThrew = 0;
+for (const args of [{ action: 'record', href: '../escape.md', kind: 'correction' }, { action: 'record', href: 'functions/x.md', kind: 'bogus' }]) {
+	try {
+		await US.execute(args, exec);
+	} catch {
+		usageThrew++;
+	}
+}
+ok(usageThrew === 2, 'invalid usage records are rejected');
 
 await rm(root, { recursive: true, force: true });
 console.log(failures === 0 ? 'ALL PASS' : `${failures} FAILURES`);
