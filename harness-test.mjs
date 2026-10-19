@@ -41,12 +41,12 @@ const root = await mkdtemp(path.join(tmpdir(), 'dsh-memfo-'));
 const exec = {};
 // Second apply with an explicit root: this instance's tools and pre-step
 // listener both read the temp index. registered now holds BOTH applies' tool
-// definitions (same names), so take the LAST seven — the second apply's.
+// definitions (same names), so take the LAST eight — the second apply's.
 // `newFeatureGraceDays: 0` disables the cold-memory grace window so the
 // temperature rule can be asserted deterministically (see 11d for the grace).
 const disposer2 = mod.apply(fakeCtx, { memoryRoot: root, newFeatureGraceDays: 0 });
 const tools2 = Object.fromEntries(
-	registered.filter((r) => r?.name && r.execute).slice(-7).map((t) => [t.name, t]),
+	registered.filter((r) => r?.name && r.execute).slice(-8).map((t) => [t.name, t]),
 );
 const T = tools2;
 const disposer = noop;
@@ -88,6 +88,49 @@ const ix2 = await T.memory_index.execute(
 	exec,
 );
 ok(ix2.created === false, 'memory_index upserts (created=false on update)');
+
+// 3b) memory_search: ranked retrieval over the whole root (bodies, not just
+// index summaries). A rare token must win over a token every row shares.
+await T.memory_write.execute(
+	{ feature: '检索目标', title: '逐帧渲染静默失败的三类事故', summary: '检索测试素材', change: '写一段只有这里才有的稀有词：逐帧渲染。', result: 'done' },
+	exec,
+);
+const s1 = await T.memory_search.execute({ q: '逐帧' }, exec);
+ok(s1.count >= 1 && s1.hits[0].name === '检索目标.md', `search finds the rare token (${s1.hits[0]?.name})`);
+ok(s1.hits.every((h) => ['zone', 'name', 'line', 'heading', 'snippet'].every((k) => k in h)), 'search hits carry zone/name/line/heading/snippet');
+ok(s1.hits[0].line > 0 && s1.hits[0].snippet.includes('逐帧'), 'search hit carries line number + snippet');
+const s2 = await T.memory_search.execute({ q: '逐帧', zone: 'insights' }, exec);
+ok(s2.count === 0, 'search honours the zone filter');
+const s3 = await T.memory_search.execute({ q: '完全不存在的词条xyzzy' }, exec);
+ok(s3.count === 0, 'search returns empty for a miss');
+let searchThrew = false;
+try {
+	await T.memory_search.execute({ q: 'x' }, exec);
+} catch {
+	searchThrew = true;
+}
+ok(searchThrew, 'search rejects a query shorter than 2 chars');
+// CRLF regression: a daily log written by another tool carries \r, and `.` does
+// not match \r — a naive `^#{1,3}\s+(.+)$` leaves every hit heading-less.
+const crlfDay = path.join(root, '1999-01-01.md');
+await writeFile(crlfDay, '# 1999-01-01 记录\r\n\r\n## 今日线索\r\n\r\n- 冷启动 关键字只在换行风格异常的文件里\r\n', 'utf8');
+const s4 = await T.memory_search.execute({ q: '冷启动' }, exec);
+ok(s4.count >= 1 && s4.hits[0].heading === '今日线索', `search survives CRLF input (heading=${JSON.stringify(s4.hits[0]?.heading)})`);
+await rm(crlfDay, { force: true });
+// Ranking: a token shared by most rows must not beat a rare token. With 5 rows
+// where 4 share 「记忆/面板」 and 1 owns 「逐帧/渲染」, IDF gives the rare row
+// roughly twice the weight per token, so it must rank first — and the common
+// row must still survive the 40%-of-best threshold.
+const rankIndex = [
+	'| 甲域 | 记忆 面板 是通用词 | [functions/甲域.md](functions/甲域.md) |',
+	'| 乙域 | 记忆 面板 也是通用词 | [functions/乙域.md](functions/乙域.md) |',
+	'| 丙域 | 记忆 面板 还是通用词 | [functions/丙域.md](functions/丙域.md) |',
+	'| 丁域 | 记忆 面板 一样通用词 | [functions/丁域.md](functions/丁域.md) |',
+	'| 戊域 | 逐帧 渲染 稀有词 | [functions/戊域.md](functions/戊域.md) |',
+].join('\n');
+const ranked = mod.matchIndexRows(rankIndex, mod.tokensOf('记忆 面板 逐帧 渲染'));
+ok(ranked[0]?.name === '戊域', `IDF ranking prefers the rare-token row (${ranked[0]?.name})`);
+ok(ranked.length >= 2, `relative threshold keeps the strong common row too (${ranked.length} rows)`);
 
 // 4) second write same day -> 补 suffix
 const w2 = await T.memory_write.execute(
@@ -231,7 +274,7 @@ ok(w6.warnings.some((x) => x.includes('疑似与已有功能域')), `dedupe warn
 // backlinked, so the default window suppresses the cold flag for it.
 mod.apply(fakeCtx, { memoryRoot: root });
 const tools3 = Object.fromEntries(
-	registered.filter((r) => r?.name && r.execute).slice(-7).map((t) => [t.name, t]),
+	registered.filter((r) => r?.name && r.execute).slice(-8).map((t) => [t.name, t]),
 );
 const c3 = await tools3.memory_check.execute({}, exec);
 ok(!c3.results.some((r) => r.rule === 'TEMP'), `grace window suppresses cold flag on fresh files (TEMP=${c3.results.filter((r) => r.rule === 'TEMP').length})`);

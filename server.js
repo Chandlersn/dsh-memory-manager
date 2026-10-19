@@ -931,6 +931,66 @@ function memoryReadTool(opts) {
 	});
 }
 
+// ---------------------------------------------------------------------------
+// memory_search — on-demand ranked retrieval over the whole memory root
+// ---------------------------------------------------------------------------
+
+function memorySearchTool(opts) {
+	return defineTool({
+		name: 'memory_search',
+		description:
+			'Ranked full-text search across the ENTIRE memory root (index, functions/, insights/, daily logs) and return the best matching lines with their zone, file, line number, section heading and a snippet. Use it when you remember something was recorded but cannot tell which function area or which day: memory_read kind=index only scans one-line summaries, while this scans the bodies. Ranking is lexical (query substring, token hits, section heading, file name) with per-file caps, so a broad keyword does not return one file\'s whole history. Read the file afterwards with memory_read before re-deriving anything.',
+		parameters: {
+			q: { type: 'string', required: true, description: '检索词：一个词或短句（≥2 字符）。中文子串与英文单词都支持。' },
+			zone: { type: 'string', enum: ['all', 'functions', 'insights', 'daily'], description: '限定检索分区，缺省 all（含索引）。' },
+			limit: { type: 'integer', description: '最多返回多少条命中（默认 20，最大 50）。' },
+		},
+		output: {
+			schema: {
+				type: 'object',
+				additionalProperties: false,
+				properties: {
+					count: { type: 'integer', required: true },
+					hits: {
+						type: 'array',
+						required: true,
+						items: {
+							type: 'object',
+							additionalProperties: false,
+							properties: {
+								zone: { type: 'string', required: true },
+								name: { type: 'string', required: true },
+								line: { type: 'integer', required: true },
+								heading: { type: 'string', required: true },
+								snippet: { type: 'string', required: true },
+							},
+						},
+					},
+				},
+			},
+			render: (_args, v) => {
+				if (!v.count) return [{ type: 'text', text: '没有命中：换一个更具体的关键词，或先 memory_read kind=index 看分区摘要。' }];
+				const lines = [`命中 ${v.count} 条（按相关度排序）：`];
+				for (const h of v.hits) {
+					lines.push(`- [${h.zone}] ${h.name}:${h.line}${h.heading ? ` · ${h.heading}` : ''} — ${h.snippet}`);
+				}
+				lines.push('调用 memory_read 打开命中文件确认上下文，再决定是否追加迭代。');
+				return [{ type: 'text', text: lines.join('\n') }];
+			},
+		},
+		presentCall: (args) => ({ card: 'generic', title: `Search memory: ${args.q ?? ''}`, kind: 'other', rawInput: args }),
+		async execute(args, exec) {
+			const root = resolveRoot(opts);
+			const q = oneLine(args.q);
+			if (charLen(q) < 2) throw new Error('q must be at least 2 characters');
+			const zone = ['functions', 'insights', 'daily'].includes(args.zone) ? args.zone : 'all';
+			const limit = Math.min(Math.max(1, Number(args.limit) || 20), 50);
+			const hits = await searchMemory(root, q, { zone, limit });
+			return { count: hits.length, hits };
+		},
+	});
+}
+
 async function listMdDir(dir) {
 	let entries = [];
 	try {
@@ -1550,9 +1610,19 @@ function tokensOf(text) {
 /**
  * Score index rows against the user's tokens and return the top rows whose
  * overlap clears a small threshold. Pure and synchronous: runs in pre-step.
+ *
+ * v2 ranking (same cost class, much better precision):
+ *  - IDF weighting: tokens shared by every row (e.g. 「功能」「记忆」) count for
+ *    little; a rare token (「逐帧」「懒加载」) dominates. Without this, a query
+ *    mentioning a common word outranks the row that is actually about it.
+ *  - Name/slug hits are boosted: the row's own identity matching beats a
+ *    passing mention inside its summary.
+ *  - Relative threshold: rows scoring under 40% of the best match are dropped,
+ *    so one strong hit does not drag three weak ones into the injection.
+ *  - Dedupe by href (a table split into ### sub-sections can repeat a row).
  */
 function matchIndexRows(indexText, userTokens, limit = 3) {
-	const rows = [];
+	const candidates = [];
 	for (const raw of indexText.split('\n')) {
 		const s = raw.trim();
 		if (!s.startsWith('|') || s.includes('---')) continue;
@@ -1566,13 +1636,115 @@ function matchIndexRows(indexText, userTokens, limit = 3) {
 		const zone = href.startsWith('insights/') ? 'insight' : href.startsWith('functions/') ? 'function' : null;
 		if (!zone) continue;
 		const name = href.split('/').pop().replace(/\.md$/, '');
-		const rowTokens = tokensOf(`${cells[0]} ${cells[1]} ${cells[3] ?? ''}`);
-		let overlap = 0;
-		for (const tk of userTokens) if (rowTokens.has(tk)) overlap++;
-		if (overlap > 0) rows.push({ name, summary: cells[1], href, zone, overlap });
+		candidates.push({
+			name,
+			summary: cells[1],
+			href,
+			zone,
+			nameTokens: tokensOf(name),
+			bodyTokens: tokensOf(`${cells[1]} ${cells[3] ?? ''}`),
+		});
 	}
-	rows.sort((a, b) => b.overlap - a.overlap);
-	return rows.slice(0, limit);
+	if (!candidates.length) return [];
+	// Document frequency per token across rows → IDF weights.
+	const df = new Map();
+	for (const c of candidates) {
+		for (const tk of new Set([...c.nameTokens, ...c.bodyTokens])) df.set(tk, (df.get(tk) ?? 0) + 1);
+	}
+	const n = candidates.length;
+	const idf = (tk) => 1 + Math.log(n / Math.max(1, df.get(tk) ?? n));
+	const scored = [];
+	for (const c of candidates) {
+		let score = 0;
+		for (const tk of userTokens) {
+			if (c.nameTokens.has(tk)) score += 2 * idf(tk);
+			else if (c.bodyTokens.has(tk)) score += idf(tk);
+		}
+		if (score > 0) scored.push({ name: c.name, summary: c.summary, href: c.href, zone: c.zone, score });
+	}
+	scored.sort((a, b) => b.score - a.score);
+	const best = scored[0]?.score ?? 0;
+	const seen = new Set();
+	const out = [];
+	for (const r of scored) {
+		if (r.score < best * 0.4) break;
+		if (seen.has(r.href)) continue;
+		seen.add(r.href);
+		out.push(r);
+		if (out.length >= limit) break;
+	}
+	return out;
+}
+
+/**
+ * Ranked full-text search over the whole memory root. Shared by the
+ * `memory_search` tool and the panel's /search route so both rank identically
+ * (the panel used to do a naive indexOf, whose order was file order).
+ */
+async function searchMemory(root, rawQuery, { zone = 'all', limit = 20 } = {}) {
+	const q = String(rawQuery ?? '').trim().toLowerCase();
+	if (q.length < 2) return [];
+	const tokens = tokensOf(q);
+	const zones = zone === 'all' ? ['index', 'functions', 'insights', 'daily'] : [zone];
+	const files = [];
+	if (zones.includes('index')) files.push({ zone: 'index', name: 'MEMORY.md', file: path.join(root, 'MEMORY.md') });
+	for (const z of ['functions', 'insights']) {
+		if (!zones.includes(z)) continue;
+		let names = [];
+		try {
+			names = (await readdir(path.join(root, z))).filter((n) => n.endsWith('.md')).sort();
+		} catch {
+			/* zone absent */
+		}
+		for (const n of names) files.push({ zone: z, name: n, file: path.join(root, z, n) });
+	}
+	if (zones.includes('daily')) {
+		let names = [];
+		try {
+			names = (await readdir(root)).filter((n) => /^\d{4}-\d{2}-\d{2}\.md$/.test(n)).sort().reverse();
+		} catch {
+			/* root absent */
+		}
+		for (const n of names) files.push({ zone: 'daily', name: n, file: path.join(root, n) });
+	}
+	const hits = [];
+	for (const f of files) {
+		const text = await readIfExists(f.file);
+		if (text === undefined) continue;
+		// Split on CRLF too: files written by other tools (or on Windows) carry
+		// \r, and `.` never matches \r — a `^#{1,3}\s+(.+)$` test on a raw CRLF
+		// line silently fails, which left every daily hit without its heading.
+		const lines = text.split(/\r?\n/);
+		const nameHit = f.name.toLowerCase().includes(q) || tokensOf(f.name).size && [...tokens].some((t) => tokensOf(f.name).has(t));
+		let heading = '';
+		const fileHits = [];
+		for (let i = 0; i < lines.length; i++) {
+			const line = lines[i];
+			const lower = line.toLowerCase();
+			const hm = lower.match(/^#{1,3}\s+(.+)$/);
+			if (hm) heading = hm[1].trim();
+			let score = 0;
+			if (lower.includes(q)) score += 3;
+			if (heading && heading.toLowerCase().includes(q)) score += 2;
+			let tokenHits = 0;
+			for (const tk of tokens) if (lower.includes(tk)) tokenHits++;
+			score += tokenHits;
+			if (score === 0) continue;
+			fileHits.push({
+				zone: f.zone,
+				name: f.name,
+				line: i + 1,
+				heading: heading.slice(0, 60),
+				snippet: line.trim().slice(0, 160),
+				score: score + (nameHit ? 2 : 0),
+			});
+		}
+		// At most 3 lines per file: one file should not monopolise the ranking.
+		fileHits.sort((a, b) => b.score - a.score);
+		hits.push(...fileHits.slice(0, 3));
+	}
+	hits.sort((a, b) => b.score - a.score);
+	return hits.slice(0, limit).map(({ zone: z, name, line, heading, snippet }) => ({ zone: z, name, line, heading, snippet }));
 }
 
 /** Build one recall UserMessage (form 'recall', plugin producer kind). */
@@ -1742,13 +1914,13 @@ function memoryIndexTool(opts) {
 const DISCIPLINE_TEXT = [
 	'## 持久记忆纪律（memory-manager）',
 	'',
-	'本 Harness 维护**全局**跨会话记忆（`~/.dsh/memory/`，即 dshHome 的 memory/ 目录；七个工具：memory_read / memory_write / memory_index / memory_insight / memory_fold / memory_rename / memory_check；结构见 memory/MEMORY.md）。记忆对全部项目、全部会话通用，按功能域组织而非按项目隔离。**数据流单向四层，每层只吃上一层的产出**：',
+	'本 Harness 维护**全局**跨会话记忆（`~/.dsh/memory/`，即 dshHome 的 memory/ 目录；八个工具：memory_read / memory_search / memory_write / memory_index / memory_insight / memory_fold / memory_rename / memory_check；结构见 memory/MEMORY.md）。记忆对全部项目、全部会话通用，按功能域组织而非按项目隔离。**数据流单向四层，每层只吃上一层的产出**：',
 	'',
 	'- **第 0 层 · 每日记录（原始层）**：`YYYY-MM-DD.md` 是任务与对话过程的第一手数据，**本插件不约束其内容与格式**——用任何工具、任何方式自由记录（决策、对话、试错、片段都行）。它是一切蒸馏的原料；同一事实只在这里是"过程"，其余层只见结论。',
 	'- **第 1 层 · 功能域（memory_write）**：从每日原始记录中**归纳汲取**功能划分——一次实质工作 = 一个 functions/<功能域>.md 迭代块（蒸馏结论：动因/改动/判据/待观察 各一句）。`summary` 是本块的一句话概括；功能域该新建还是并入既有的，判断依据就是每日记录里反复出现的主题。',
 	'- **第 2 层 · 创新思想（memory_insight）**：从功能划分中**再提取**可迁移原则（会重套的、不绑定单一功能机制的），回链来源功能域；取代旧思想传 `supersedes`。',
 	'- **第 3 层 · 索引与总览（memory_index）**：**整合层**——功能域稳定后（有 ≥2 个迭代块，或用户可感知为独立主题时）用 memory_index 把它收进 MEMORY.md 索引；索引行摘要 = 从各迭代块的概括中提炼的"这个功能是什么"。索引是展示与检索的派生物，不与单次写入强绑。',
-	'- **先查后写**：涉及"项目里怎么做 / 为什么这么做 / 环境常量"时，先 `memory_read kind=index`（行内摘要判断相关性，再打开对应文件）；不要凭空重推已有结论。',
+	'- **先查后写**：涉及"项目里怎么做 / 为什么这么做 / 环境常量"时，先 `memory_read kind=index`（行内摘要判断相关性，再打开对应文件）；只记得片段、说不清在哪个域或哪天时用 `memory_search`（全库排序检索，返回命中的分区/文件/行号/小节/片段）。不要凭空重推已有结论。',
 	'- **蒸馏不搬过程**：迭代块只写结论；逐条实现清单、调试经过属于每日原始层与会话/代码。块 >900 字或概括 >110 字写入告警，体检 R14 复查。',
 	'- **经验二分**：会**重跑**的操作进 functions/；会**重套**的原则用 memory_insight 进 insights/；跨功能共识与环境常量只在 MEMORY.md。',
 	'- **项目归属**：涉及特定项目的记忆，在功能域 slug 或正文里注明项目名（如 `toolbox-login`）。',
@@ -1858,66 +2030,14 @@ function memoryPanelApi(opts) {
 				return json(res, 200, panelizeHealth(await runHealthCheck(root, opts)));
 			}
 			if (seg === 'search') {
-				const q = (url.searchParams.get('q') ?? '').trim().toLowerCase();
+				const q = (url.searchParams.get('q') ?? '').trim();
 				if (q.length < 2) return json(res, 200, { hits: [] });
-				const hits = [];
-				const scan = async (zone, dir, name) => {
-					const text = await readIfExists(dir);
-					if (text === undefined) return;
-					const lines = text.split('\n');
-					for (let i = 0; i < lines.length; i++) {
-						const at = lines[i].toLowerCase().indexOf(q);
-						if (at === -1) continue;
-						hits.push({
-							zone,
-							name,
-							line: i + 1,
-							// Context: the hit line plus the nearest heading above it.
-							heading: (() => {
-								for (let j = i; j >= 0; j--) {
-									const hm = lines[j].match(/^#{1,3}\s+(.+)$/);
-									if (hm) return hm[1].slice(0, 60);
-								}
-								return '';
-							})(),
-							snippet: lines[i].trim().slice(0, 160),
-						});
-						if (hits.length >= 60) return;
-					}
-				};
-				const idxText = await readIfExists(path.join(root, 'MEMORY.md'));
-				if (idxText) {
-					for (const line of idxText.split('\n')) {
-						if (line.toLowerCase().includes(q)) {
-							hits.push({ zone: 'index', name: 'MEMORY.md', line: 0, heading: '索引', snippet: line.trim().slice(0, 160) });
-							break;
-						}
-					}
-				}
-				try {
-					for (const f of (await readdir(path.join(root, 'functions'))).filter((n) => n.endsWith('.md')).sort()) {
-						if (hits.length >= 60) break;
-						await scan('functions', path.join(root, 'functions', f), f);
-					}
-				} catch {
-					/* zone absent */
-				}
-				try {
-					for (const f of (await readdir(path.join(root, 'insights'))).filter((n) => n.endsWith('.md')).sort()) {
-						if (hits.length >= 60) break;
-						await scan('insights', path.join(root, 'insights', f), f);
-					}
-				} catch {
-					/* zone absent */
-				}
-				try {
-					for (const f of (await readdir(root)).filter((n) => /^\d{4}-\d{2}-\d{2}\.md$/.test(n)).sort().reverse()) {
-						if (hits.length >= 60) break;
-						await scan('daily', path.join(root, f), f);
-					}
-				} catch {
-					/* no dailies */
-				}
+				// Same ranker as the memory_search tool: the panel used to scan in
+				// file order, so a hit in the first file always outranked a better
+				// one further down.
+				const zoneParam = url.searchParams.get('zone');
+				const zone = ['functions', 'insights', 'daily'].includes(zoneParam) ? zoneParam : 'all';
+				const hits = await searchMemory(root, q, { zone, limit: 60 });
 				return json(res, 200, { hits });
 			}
 			htmlPage(
@@ -1954,6 +2074,7 @@ export function apply(ctx, config) {
 
 	const disposers = [
 		ctx.tools.register(memoryReadTool(opts)),
+		ctx.tools.register(memorySearchTool(opts)),
 		ctx.tools.register(memoryWriteTool(opts)),
 		ctx.tools.register(memoryIndexTool(opts)),
 		ctx.tools.register(memoryInsightTool(opts)),

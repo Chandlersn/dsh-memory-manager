@@ -11,7 +11,7 @@ The one-line difference: it is not "notes per project" but an **iteration histor
 will **re-apply** is distilled into `insights/`, the index keeps a single line per row, and every session
 starts with that discipline injected into its system prompt.
 
-- Seven memory tools + an injected system-prompt discipline + an `agent/pre-step` recall hook + a read-only Web panel
+- Eight memory tools + an injected system-prompt discipline + an `agent/pre-step` recall hook + a read-only Web panel
 - Writing is filing: `summary` and `currentState` are required parameters, so the index row never drifts
 - Eleven mechanical lint rules, so rot gets detected instead of remembered
 - **Granularity gate**: iteration blocks hold distilled conclusions only; a block over 900 chars or an index
@@ -73,6 +73,7 @@ Layer 3 · MEMORY.md index + panel overview: one-line summaries + counts — a d
 | Tool | What it does |
 |---|---|
 | `memory_read` | read the index / a function file / an insight file / a daily log (`kind=index` first, to judge relevance) |
+| `memory_search` | **ranked full-text search** across the whole root: scans bodies, not just one-line summaries, and returns zone/file/line/section/snippet. Use it when you remember a fragment but not the area or the day |
 | `memory_write` | **append one iteration block** (a conclusion distilled from the raw daily record) and refresh the head stable-state summary; `summary` is the block's one-line takeaway. **Writes no index row, never touches the daily log** |
 | `memory_index` | **the integration layer**: once an area/theme stabilizes, upsert its row into the MEMORY.md index (row summary distilled from the block summaries) |
 | `memory_insight` | distil a transferable principle from the function division into `insights/`, backlink its source areas, `supersedes` to replace an older idea |
@@ -81,8 +82,11 @@ Layer 3 · MEMORY.md index + panel overview: one-line summaries + counts — a d
 | `memory_check` | lint: index size, missing summaries, orphan files, backlinks, date ordering, dangling links, cold memory, head-summary guardrail, env-path liveness, over-long blocks/rows (R14), duplicated rows/sections (R15) |
 
 A discipline section is injected into the system prompt; the `agent/pre-step` hook scores the user's input
-against index rows and injects the matching rows as a single `recall` message (once per batch per session,
-and a failure there never affects the step).
+against index rows and injects the matching rows as a single `recall` message. Scoring is **IDF-weighted**:
+tokens nearly every row carries (「功能」「记忆」) weigh little, rare tokens (「逐帧」「懒加载」) dominate;
+name/filename hits are doubled, rows under 40% of the best score are dropped, and one file is injected once.
+Once per batch per session, a failure there never affects the step, and files the user already cited are not
+re-injected. The panel's `/search` and `memory_search` share the same ranker.
 
 ## Install (as a profile bundle)
 
