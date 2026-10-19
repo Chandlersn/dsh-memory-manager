@@ -34,10 +34,10 @@ window.__ModuleLoader__.load({
 
 		const NAV = [
 			{ key: 'overview', label: '总览', icon: '⌂' },
+			{ key: 'index', label: '索引', icon: '☰' },
 			{ key: 'functions', label: '功能', icon: '⬡' },
 			{ key: 'insights', label: '思想', icon: '✦' },
 			{ key: 'daily', label: '每日', icon: '🕘' },
-			{ key: 'index', label: '索引', icon: '☰' },
 		];
 		const ZONE_LABEL = { functions: '功能', insights: '思想', daily: '每日', '': '索引' };
 		const ZONE_DIR = { functions: 'functions', insights: 'insights', daily: '' };
