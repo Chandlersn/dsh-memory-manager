@@ -246,7 +246,7 @@ window.__ModuleLoader__.load({
 			const open = {};
 			const small = String(text ?? '').length < 4000;
 			sections.forEach((s, i) => {
-				if (kind === 'functions') open[i] = small || i === sections.length - 1;
+				if (kind === 'functions') open[i] = small || i === 0; // reversed: index 0 is the newest
 				else if (kind === 'index') open[i] = /功能模块|思想/.test(s.heading);
 				else open[i] = true;
 			});
@@ -496,8 +496,25 @@ window.__ModuleLoader__.load({
 					h('span', { className: 'dmo-sec-title' }, section.heading),
 					h('span', { className: 'dmo-meta', style: { marginLeft: 'auto' } }, `${section.body.length}B`),
 				),
-				open ? h('div', { className: 'dmo-sec-body' }, h(MarkdownBody, { text: section.body, zone, onNavigate })) : null,
+				open ? h('div', { className: 'dmo-sec-body' }, h(MarkdownBody, { text: reverseBullets(section.body), zone, onNavigate })) : null,
 			);
+		}
+
+		/**
+		 * Daily threads are append-only audit trails (oldest line first on disk),
+		 * but every time-ordered surface reads newest-first — flip the bullet
+		 * order of a section body for display. Non-bullet lines (headings, prose,
+		 * tables) keep their positions so structure never shuffles.
+		 */
+		function reverseBullets(body) {
+			const lines = String(body ?? '').split('\n');
+			const idx = lines.map((l, i) => (/^\s*[-*]\s/.test(l) ? i : -1)).filter((i) => i >= 0);
+			if (idx.length < 2) return body;
+			const out = lines.slice();
+			idx.forEach((orig, k) => {
+				out[orig] = lines[idx[idx.length - 1 - k]];
+			});
+			return out.join('\n');
 		}
 
 		function Reader({ view, text, meta, kind, root, onBack, onNavigate }) {
@@ -538,7 +555,13 @@ window.__ModuleLoader__.load({
 				}
 			};
 
-			const chipRows = kind === 'functions' ? sections.map((s, i) => ({ i, label: s.date ? `${s.date}${/补$/.test(s.heading) ? '补' : ''}` : `#${i + 1}` })) : sections.map((s, i) => ({ i, label: s.heading.slice(0, 14) }));
+			// Every time-ordered surface reads newest-first: the section cards are
+			// rendered in reverse file order (file stays append-only oldest-first;
+			// the reader flips it), so the top card is always the latest state.
+			// Index maps (`open[i]`, `refs`, `jump(i)`) keep the ORIGINAL section
+			// indices — only the render order changes.
+			const shown = sections.map((s, i) => ({ s, i })).reverse();
+			const chipRows = kind === 'functions' ? shown.map(({ s, i }) => ({ i, label: s.date ? `${s.date}${/补$/.test(s.heading) ? '补' : ''}` : `#${i + 1}` })) : shown.map(({ s, i }) => ({ i, label: s.heading.slice(0, 14) }));
 
 			return h(
 				'div',
@@ -566,16 +589,13 @@ window.__ModuleLoader__.load({
 					? h(
 							'div',
 							{ className: 'dmo-toc' },
-							chipRows
-								.map((c) => c)
-								.reverse()
-								.map((c) =>
-									h(
-										'button',
-										{ key: c.i, type: 'button', className: 'dmo-chip btn', onClick: () => jump(c.i), title: sections[c.i].heading, 'data-dmo': 'toc-chip' },
-										c.label,
-									),
+							chipRows.map((c) =>
+								h(
+									'button',
+									{ key: c.i, type: 'button', className: 'dmo-chip btn', onClick: () => jump(c.i), title: sections[c.i].heading, 'data-dmo': 'toc-chip' },
+									c.label,
 								),
+							),
 						)
 					: null,
 				kind === 'index' ? h(IndexTables, { text: text ?? '', onNavigate }) : null,
@@ -593,7 +613,7 @@ window.__ModuleLoader__.load({
 					: h(
 							'div',
 							{ style: { display: 'flex', flexDirection: 'column', gap: 6 } },
-							sections.map((s, i) => h(Section, { key: `${s.heading}-${i}`, index: i, section: s, open: Boolean(open[i]), onToggle: (x) => setOpen((m) => ({ ...m, [x]: !m[x] })), zone: view.zone, onNavigate, registerRef })),
+							shown.map(({ s, i }) => h(Section, { key: `${s.heading}-${i}`, index: i, section: s, open: Boolean(open[i]), onToggle: (x) => setOpen((m) => ({ ...m, [x]: !m[x] })), zone: view.zone, onNavigate, registerRef })),
 						),
 			);
 		}
@@ -943,7 +963,7 @@ window.__ModuleLoader__.load({
 			},
 			// Pure view logic, exposed so ui-test.mjs can assert the panel's
 			// parsing/folding behaviour without a browser.
-			__internalsForTest: { relTime, plain, parseIndexTables, splitSections, resolveHref, defaultOpen, SearchPane },
+			__internalsForTest: { relTime, plain, parseIndexTables, splitSections, resolveHref, defaultOpen, SearchPane, reverseBullets },
 		};
 	},
 });

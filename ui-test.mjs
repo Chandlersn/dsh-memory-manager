@@ -181,10 +181,12 @@ ok(count(dailyList, 'class="dmo-month"') === 2, `daily zone groups days by month
 ok(dailyList.indexOf('2026-10') < dailyList.indexOf('2026-09'), 'months run newest-first');
 
 // --- reader: long function file folds to the newest block -------------------
+// Sections render newest-first (the file is append-only oldest-first; the
+// reader flips the order so the top card is always the latest state).
 const fnRead = render({ kind: 'file', zone: 'functions', name: 'alpha.md' });
 ok(count(fnRead, 'data-dmo="section"') === 4, `function file shows 4 iteration blocks (${count(fnRead, 'data-dmo="section"')})`);
 ok(count(fnRead, 'dmo-sec-body') === 1, 'only the newest block is expanded by default');
-ok(fnRead.includes('第四次迭代') && fnRead.includes('第一次迭代'), 'all block headings stay visible');
+ok(fnRead.indexOf('第四次迭代') < fnRead.indexOf('第一次迭代'), 'blocks render newest-first');
 ok(count(fnRead, 'data-dmo="toc-chip"') === 4, 'jump strip lists every block');
 ok(fnRead.indexOf('2026-10-18') < fnRead.indexOf('2026-09-01'), 'jump strip is newest-first');
 ok(fnRead.includes('当前状态摘要'), 'head summary stays visible above the blocks');
@@ -206,6 +208,12 @@ ok(insRead.includes('核心原则') && insRead.includes('适用面'), 'insight s
 const dayRead = render({ kind: 'file', zone: 'daily', name: '2026-10-18.md' });
 ok(dayRead.includes('今日线索') && dayRead.includes('今日待观察'), 'daily threads render their sections');
 ok(dayRead.includes('clickable'), 'daily bullet links navigate in-panel');
+// Daily bullet lines flip to newest-first inside the reader (the file is an
+// append-only audit trail; the latest situation must sit on top). The fixture
+// body has alpha's bullet before 待观察's; after the flip 待观察 must come first.
+const dayBody = dayRead.slice(dayRead.indexOf('今日线索'));
+ok(dayBody.indexOf('待验证项') < dayBody.lastIndexOf('alpha'), `daily bullets render newest-first (${dayBody.indexOf('待验证项')} < ${dayBody.lastIndexOf('alpha')})`);
+ok(dayBody.indexOf('今日待观察') < dayBody.lastIndexOf('功能：alpha'), 'daily section order unchanged, only bullet order flips');
 
 // --- search results use the API's snippet + heading --------------------------
 const searchView = serialize(
@@ -226,7 +234,7 @@ ok(tables.insights.gamma?.href === 'insights/gamma.md', 'parseIndexTables keeps 
 const split = T.splitSections(fnText);
 ok(split.sections.length === 4 && split.sections[3].date === '2026-10-18', 'splitSections extracts dated blocks');
 ok(split.preamble.includes('当前状态摘要'), 'splitSections keeps the head summary as preamble');
-ok(T.defaultOpen('functions', split.sections, fnText)[3] === true && T.defaultOpen('functions', split.sections, fnText)[0] === false, 'fold policy opens the newest block only');
+ok(T.defaultOpen('functions', split.sections, fnText)[0] === true && T.defaultOpen('functions', split.sections, fnText)[3] === false, 'fold policy opens the newest block only (reversed order: index 0 is newest)');
 ok(T.defaultOpen('insights', split.sections, 'short')[0] === true, 'fold policy opens everything in short files');
 const idxSections = T.splitSections(indexText).sections;
 ok(T.defaultOpen('index', idxSections, indexText)[0] === true && T.defaultOpen('index', idxSections, indexText)[2] === false, 'index opens the tables and folds the rest');

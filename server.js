@@ -909,6 +909,9 @@ async function listMdDir(dir) {
 		const st = await stat(path.join(dir, f));
 		out.push({ name: f.replace(/\.md$/, ''), bytes: st.size, mtime: st.mtime.toISOString() });
 	}
+	// Newest-first: every listing consumer (model recall, panel) wants the
+	// latest state at the top, not a file-manager's alphabetical order.
+	out.sort((a, b) => String(b.mtime).localeCompare(String(a.mtime)));
 	return out;
 }
 
@@ -1755,6 +1758,10 @@ function memoryPanelApi(opts) {
 					const st = await stat(path.join(dir, n));
 					files.push({ name: n, bytes: st.size, mtime: st.mtime.toISOString() });
 				}
+				// Newest-first for every zone (the panel and any other consumer
+				// display the top row first). Names were pre-sorted per zone, so
+				// this single mtime pass makes the order uniform.
+				files.sort((a, b) => String(b.mtime).localeCompare(String(a.mtime)));
 				return json(res, 200, { files });
 			}
 			if (seg === 'check') {
