@@ -554,6 +554,12 @@ for (const args of [{ action: 'record', href: '../escape.md', kind: 'correction'
 	}
 }
 ok(usageThrew === 2, 'invalid usage records are rejected');
+// record must return a visible receipt: the renderer used to fall through to the
+// "no signals yet" placeholder for a successful record (items is empty by design).
+const recRes = await US.execute({ action: 'record', href: 'functions/回执测试.md', kind: 'positive', note: '这次对了' }, exec);
+ok(recRes.action === 'record' && recRes.warnings.length > 0, 'record returns a receipt');
+const renderedRec = US.output.render({}, recRes).map((b) => b.text).join('\n');
+ok(renderedRec.includes('已记录') && !renderedRec.includes('还没有使用信号'), `record receipt is rendered (${renderedRec.slice(0, 30)})`);
 
 // 19) 道层验证闸门 (P0): a transferable principle must clear the mechanically
 // checkable half of the four gates — >=2 unrelated source areas, and no

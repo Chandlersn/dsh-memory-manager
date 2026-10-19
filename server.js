@@ -1347,6 +1347,12 @@ function memoryUsageTool(opts) {
 				},
 			},
 			render: (_args, v) => {
+				// action=record carries its confirmation in `warnings` with an empty
+				// items list; the generic "no signals yet" branch below swallowed
+				// that receipt, so a successful record looked like a no-op.
+				if (v.action === 'record') {
+					return [{ type: 'text', text: v.warnings.length ? v.warnings.join('\n') : '已记录使用信号。' }];
+				}
 				if (!v.items.length) return [{ type: 'text', text: '还没有使用信号。信号来自召回注入、memory_read、以及你用 memory_usage(action=record) 记录的纠正/认可。' }];
 				const lines = [`近 ${v.days} 天使用信号（按使用次数排序）：`];
 				for (const it of v.items) {
