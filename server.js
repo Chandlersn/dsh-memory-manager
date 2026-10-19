@@ -671,6 +671,24 @@ async function runHealthCheck(root, opts) {
 
 	await checkLinks(memText, memPath, root, add);
 
+	// R16 (ported from the workbuddy skill's F4): env-constant lines often carry
+	// absolute backtick paths (install dirs, DB files, scripts). A moved or
+	// renamed path silently poisons every future recall that trusts it — check
+	// they still exist. Only the index is scanned: it is the env-constants home.
+	const checkedPaths = new Set();
+	for (const m of memText.matchAll(/`([^`\n|]+)`/g)) {
+		const raw = m[1].trim();
+		const pm = /^([A-Za-z]:[\\/].*)$/.exec(raw);
+		if (!pm) continue;
+		const p = pm[1].replace(/[/\\]+$/, '');
+		const key = p.toLowerCase();
+		if (checkedPaths.has(key)) continue;
+		checkedPaths.add(key);
+		if (!(await statExists(p))) {
+			add('WARN', 'R16', `环境常量引用的路径已不存在 -> ${p}（索引里的环境常量被未来召回盲信，确认新路径后更新）`);
+		}
+	}
+
 	// Collected during the pass below so the temperature analysis can reuse these
 	// reads instead of hitting the disk a second time for every file.
 	const fnTexts = new Map();
@@ -713,6 +731,20 @@ async function runHealthCheck(root, opts) {
 						add('WARN', 'R3', `functions/${f} 迭代日期标签非递增（不是追加写入）`);
 						break;
 					}
+				}
+				// R3 head guardrail (from the workbuddy skill variant): the head
+				// 「当前状态摘要（截至 date）」 must not be older than the newest
+				// iteration block — appending without refreshing the head is exactly
+				// the "改头忘尾" drift this check makes visible.
+				const mHead = /当前状态摘要（截至\s*(\d{4})-(\d{2})-(\d{2})/.exec(stripped);
+				if (mHead && dates.length) {
+					const head = `${mHead[1]}${mHead[2]}${mHead[3]}`;
+					const newest = dates[dates.length - 1];
+					if (head < newest) {
+						add('WARN', 'R3', `functions/${f} 头部状态摘要截至 ${mHead.slice(1).join('-')} 早于最新迭代块 ${newest.slice(0, 4)}-${newest.slice(4, 6)}-${newest.slice(6)}：追加迭代须成对刷新头部摘要`);
+					}
+				} else if (!mHead && dates.length) {
+					add('WARN', 'R3', `functions/${f} 缺少「当前状态摘要（截至 YYYY-MM-DD）」头部摘要`);
 				}
 				// R14: an iteration block is a distilled conclusion, not a process log.
 				for (const b of splitIterationBlocks(text)) {
@@ -1610,7 +1642,7 @@ function buildRecallMessage(lines) {
 function memoryCheckTool(opts) {	return defineTool({
 		name: 'memory_check',
 		description:
-			'Lint the memory root (read-only): MEMORY.md size caps + rows missing one-line summaries (R5), dangling / root-escaping links (R10), function files reverse-linking to MEMORY.md detail (R8), function-file size (R9), over-detailed iteration blocks and index rows that were not distilled (R14), duplicated index rows or table sections (R15), iteration date tags not append-ordered (R3), legacy/ files missing the 历史原貌 header (R13). Run it after batch memory edits or when memory_check has never run on this root.',
+			'Lint the memory root (read-only): MEMORY.md size caps + rows missing one-line summaries (R5), dangling / root-escaping links (R10), function files reverse-linking to MEMORY.md detail (R8), function-file size (R9), over-detailed iteration blocks and index rows that were not distilled (R14), duplicated index rows or table sections (R15), head stable-state summary older than the newest iteration block or missing (R3), env-constant absolute paths that no longer exist (R16), iteration date tags not append-ordered (R3), legacy/ files missing the 历史原貌 header (R13). Run it after batch memory edits or when memory_check has never run on this root.',
 		parameters: {},
 		output: {
 			schema: {

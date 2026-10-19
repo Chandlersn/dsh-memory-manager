@@ -335,6 +335,29 @@ ok(rows === 1, `index has exactly one 测试功能 row (rows=${rows})`);
 const c6 = await T.memory_check.execute({}, exec);
 ok(c6.results.every((r) => r.rule !== 'R15'), `R15 clean after self-heal (${c6.results.filter((r) => r.rule === 'R15').length})`);
 
+// 16) R3 head guardrail: a head summary whose 截至 date is older than the newest
+// iteration block is flagged (append must pair with head refresh); a missing
+// head summary is flagged too. R16: env-constant absolute paths must exist.
+const fnPath15 = w1.featureFile;
+const fnText15 = await readFile(fnPath15, 'utf8');
+const staleHead = fnText15.replace(/当前状态摘要（截至\s*\d{4}-\d{2}-\d{2}/, '当前状态摘要（截至 2000-01-01');
+await writeFile(fnPath15, staleHead, 'utf8');
+const c7 = await T.memory_check.execute({}, exec);
+ok(c7.results.some((r) => r.rule === 'R3' && r.message.includes('早于最新迭代块')), `R3 flags a stale head summary (${c7.results.filter((r) => r.rule === 'R3').length} R3)`);
+await writeFile(fnPath15, fnText15.replace(/当前状态摘要（截至\s*\d{4}-\d{2}-\d{2}/, '当前状态摘要（截至'), 'utf8');
+const c8 = await T.memory_check.execute({}, exec);
+ok(c8.results.some((r) => r.rule === 'R3' && r.message.includes('缺少')), 'R3 flags a missing head summary');
+// R16: a dead absolute path in the index's env-constants is flagged.
+const idxPath16 = w1.indexFile;
+const idxText16 = await readFile(idxPath16, 'utf8');
+await writeFile(idxPath16, idxText16 + '\n- 旧工具链：`Z:/definitely/gone/tool.cmd`', 'utf8');
+const c9 = await T.memory_check.execute({}, exec);
+ok(c9.results.some((r) => r.rule === 'R16' && r.message.includes('Z:/definitely/gone')), 'R16 flags a dead env-constant path');
+// a live path must NOT be flagged
+await writeFile(idxPath16, idxText16 + '\n- 临时目录：' + '`' + root.replace(/\\/g, '/') + '`', 'utf8');
+const c10 = await T.memory_check.execute({}, exec);
+ok(!c10.results.some((r) => r.rule === 'R16'), 'R16 silent on live paths');
+
 await rm(root, { recursive: true, force: true });
 console.log(failures === 0 ? 'ALL PASS' : `${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);
