@@ -131,6 +131,11 @@ const DEFAULTS = {
 	maxIndexHardBytes: 15 * 1024, // 索引硬上限（达到即拒绝写入）
 	maxFunctionBytes: 30 * 1024, // 单个功能文件上限
 	newFeatureGraceDays: 3, // TEMP 冷记忆宽限期：最近改动过的不报冷
+	// MemOS borrow ⑤: every non-empty user turn does one recall under an
+	// ABSOLUTE foreground budget. Local files are fast, but the budget is a
+	// discipline — recall must never become the reason a step feels slow, and
+	// on timeout it degrades to no recall (never a partial/stale injection).
+	recallTimeoutMs: 3000,
 };
 
 const FUNC_TABLE_HEADING = '## 功能模块索引';
@@ -3381,6 +3386,9 @@ export function apply(ctx, config) {
 		maxIndexHardBytes: Number.isFinite(config?.maxIndexHardBytes) ? config.maxIndexHardBytes : DEFAULTS.maxIndexHardBytes,
 		maxFunctionBytes: Number.isFinite(config?.maxFunctionBytes) ? config.maxFunctionBytes : DEFAULTS.maxFunctionBytes,
 		newFeatureGraceDays: Number.isFinite(config?.newFeatureGraceDays) ? config.newFeatureGraceDays : DEFAULTS.newFeatureGraceDays,
+		// Foreground recall budget (ms). Config may SHORTEN it but never extend
+		// past the default — recall must stay bounded no matter the config.
+		recallTimeoutMs: resolveRecallBudget(config?.recallTimeoutMs),
 		// Opt-in three-tier federation: { root, projects: [{ key, root }] }.
 		federation: config?.federation && typeof config.federation === 'object' ? config.federation : undefined,
 	};
@@ -3447,49 +3455,57 @@ export function apply(ctx, config) {
 					.map((b) => b.text)
 					.join('\n');
 				const signature = `${payload.agent.id}:${userText.slice(0, 400)}`;
-				if (userText.trim() && recallServed.get(payload.agent.id) !== signature) {
+				// MemOS borrow ⑤: every non-empty user turn gets a recall attempt,
+				// but the whole attempt is bounded by an absolute budget. On timeout
+				// we inject NOTHING (rather than a slow or half-built recall), so the
+				// step proceeds normally — the failure mode is silence, not latency.
+				const budgetMs = Math.min(Number(opts.recallTimeoutMs) || DEFAULTS.recallTimeoutMs, DEFAULTS.recallTimeoutMs);
+				const buildRecall = async () => {
+					if (!userText.trim()) return null;
+					if (recallServed.get(payload.agent.id) === signature) return null;
 					const indexText = await readIndexCached();
-					if (indexText) {
-						// RRF fusion: lexical IDF rank + usage-heat rank (see
-						// matchIndexRows). Signals already exist in .usage.jsonl;
-						// without this they were collected but never used to rank.
-						const usage = await readUsageCached();
-						const base = matchIndexRows(indexText, tokensOf(userText), 3, usage)
-							// Pointer dedupe: when the user's own text already cites a memory
-							// file (they quoted an earlier recall or wrote the link), re-
-							// injecting the same row just echoes what is already on screen.
-							.filter((l) => !userText.includes(l.href));
-						const rows = [...base];
-						// Decision-repair (④): an area corrected repeatedly is where a
-						// mistake is about to be repeated — force it into the NEXT step's
-						// context even when the current wording doesn't match it. The
-						// current step is never interrupted or modified.
-						if (usage && usage.size) {
-							const repairs = decisionRepairTargets([...usage.values()]).filter(
-								(r) => !rows.some((l) => l.href === r.href) && !userText.includes(r.href),
-							);
-							if (repairs.length) {
-								const indexRows = indexRowsOf(indexText);
-								for (const r of repairs) {
-									const row = indexRows.find((x) => x.href === r.href);
-									if (!row) continue;
-									rows.push({
-										...row,
-										repair: { corrections: r.corrections, badRate: r.badRate },
-									});
-								}
+					if (!indexText) return null;
+					// RRF fusion: lexical IDF rank + usage-heat rank (see
+					// matchIndexRows). Signals already exist in .usage.jsonl;
+					// without this they were collected but never used to rank.
+					const usage = await readUsageCached();
+					const base = matchIndexRows(indexText, tokensOf(userText), 3, usage)
+						// Pointer dedupe: when the user's own text already cites a memory
+						// file (they quoted an earlier recall or wrote the link), re-
+						// injecting the same row just echoes what is already on screen.
+						.filter((l) => !userText.includes(l.href));
+					const rows = [...base];
+					// Decision-repair (④): an area corrected repeatedly is where a
+					// mistake is about to be repeated — force it into the NEXT step's
+					// context even when the current wording doesn't match it. The
+					// current step is never interrupted or modified.
+					if (usage && usage.size) {
+						const repairs = decisionRepairTargets([...usage.values()]).filter(
+							(r) => !rows.some((l) => l.href === r.href) && !userText.includes(r.href),
+						);
+						if (repairs.length) {
+							const indexRows = indexRowsOf(indexText);
+							for (const r of repairs) {
+								const row = indexRows.find((x) => x.href === r.href);
+								if (!row) continue;
+								rows.push({ ...row, repair: { corrections: r.corrections, badRate: r.badRate } });
 							}
 						}
-						recallServed.set(payload.agent.id, signature);
-						if (rows.length) {
-							recall = createUserMessage(buildRecallMessage(rows));
-							// Usage signal: what recall actually put in front of the model
-							// is the demand side of the memory's popularity. Fire and
-							// forget — logging must never delay or break the step.
-							for (const r of rows) void appendUsage(resolveRoot(opts), { href: r.href, kind: 'recall' });
-						}
 					}
-				}
+					recallServed.set(payload.agent.id, signature);
+					if (!rows.length) return null;
+					// Usage signal: what recall actually put in front of the model is
+					// the demand side of the memory's popularity. Fire and forget —
+					// logging must never delay or break the step.
+					for (const r of rows) void appendUsage(resolveRoot(opts), { href: r.href, kind: 'recall' });
+					return createUserMessage(buildRecallMessage(rows));
+				};
+				// Absolute budget: whichever settles first wins. A timeout injects
+				// nothing (silence), never a slow or partial recall.
+				recall = await Promise.race([
+					buildRecall(),
+					new Promise((resolve) => setTimeout(() => resolve(null), budgetMs)),
+				]);
 			} catch {
 				recall = null; // degrade to plain admission
 			}
@@ -3526,4 +3542,15 @@ export function apply(ctx, config) {
 	};
 }
 
-export { name, inject, dshHome, joinDshHome, resolveRoot, resolveDshRoot, runHealthCheck, panelizeHealth, zoneCounts, tokensOf, matchIndexRows, buildRecallMessage, decisionRepairTargets, indexRowsOf, DISCIPLINE_TEXT };
+/**
+ * Recall budget (MemOS borrow ⑤): config may SHORTEN the budget but never
+ * extend it past the default ceiling — recall must stay bounded no matter how
+ * it is configured. Pure so the clamping rule is testable.
+ */
+export function resolveRecallBudget(configured) {
+	const ceiling = DEFAULTS.recallTimeoutMs;
+	if (!Number.isFinite(configured)) return ceiling;
+	return Math.min(Math.max(0, configured), ceiling);
+}
+
+export { name, inject, dshHome, joinDshHome, resolveRoot, resolveDshRoot, runHealthCheck, panelizeHealth, zoneCounts, tokensOf, matchIndexRows, buildRecallMessage, decisionRepairTargets, indexRowsOf, DEFAULTS, DISCIPLINE_TEXT };

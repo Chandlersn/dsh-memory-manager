@@ -153,6 +153,14 @@ const repairMsg = mod.buildRecallMessage([
 ]).content[0].text;
 ok(repairMsg.includes('决策修复') && repairMsg.includes('纠正 4 次'), 'repair row is marked with its correction count');
 ok(repairMsg.includes('未被打断'), 'repair note says the current step was not interrupted');
+// 3d) Recall budget (MemOS borrow ⑤): every non-empty turn attempts a recall,
+// but under an absolute foreground budget. Config may shorten, never extend.
+ok(mod.DEFAULTS.recallTimeoutMs === 3000, `recall budget default is 3s (${mod.DEFAULTS.recallTimeoutMs})`);
+ok(mod.resolveRecallBudget(undefined) === 3000, 'missing config -> default budget');
+ok(mod.resolveRecallBudget(60_000) === 3000, 'config cannot EXTEND the budget past the ceiling');
+ok(mod.resolveRecallBudget(200) === 200, 'config can shorten the budget');
+ok(mod.resolveRecallBudget(-5) === 0, 'negative budget clamps to 0 (still bounded)');
+
 // indexRowsOf turns an href into a recallable row (used by the repair hook).
 const idxRows = mod.indexRowsOf('| 甲域 | 摘要甲 | [functions/甲域.md](functions/甲域.md) |');
 ok(idxRows.some((r) => r.href === 'functions/甲域.md' && r.zone === 'function'), 'indexRowsOf lists index rows by href');
