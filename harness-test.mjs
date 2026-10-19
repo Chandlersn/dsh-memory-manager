@@ -555,6 +555,49 @@ for (const args of [{ action: 'record', href: '../escape.md', kind: 'correction'
 }
 ok(usageThrew === 2, 'invalid usage records are rejected');
 
+// 19) 道层验证闸门 (P0): a transferable principle must clear the mechanically
+// checkable half of the four gates — >=2 unrelated source areas, and no
+// operation-manual phrasing. Consensus entries (the binding layer) must carry
+// evidence and stay one sentence; usage flips expose unstable conclusions.
+const i4 = await T.memory_insight.execute({ theme: '单源原则', principle: '只有一个来源的原则', summary: '单源测试', sources: ['测试功能'] }, exec);
+ok(i4.warnings.some((w) => w.includes('跨域闸门')), 'insight warns when it has only one source area');
+const i5 = await T.memory_insight.execute({ theme: '双源原则', principle: '两个来源支持的原则', summary: '双源测试', sources: ['测试功能', '检索目标'] }, exec);
+ok(!i5.warnings.some((w) => w.includes('跨域闸门')), 'no cross-domain warning with two source areas');
+const i6 = await T.memory_insight.execute({ theme: '步骤原则', principle: '1. 先运行 npm test；2. 再部署上线', summary: '步骤测试', sources: ['测试功能'] }, exec);
+ok(i6.warnings.some((w) => w.includes('可降级')), 'insight warns when the principle reads like a procedure');
+const longPrinciple = '这是一个非常长的原则句子用来验证长度闸门'.repeat(12);
+const i7 = await T.memory_insight.execute({ theme: '超长原则', principle: longPrinciple, summary: '超长测试', sources: ['测试功能'] }, exec);
+ok(i7.warnings.some((w) => w.includes('字 >')), 'insight warns when the principle is too long');
+// R19: consensus section — long entry / no evidence / cross-domain claim on one source
+const memPath19 = path.join(root, 'MEMORY.md');
+const memBefore19 = await readFile(memPath19, 'utf8');
+const consensusHeading = '## 决策共识 / 规范（跨功能、约束级）';
+const injected = [
+	'## 决策共识 / 规范（跨功能、约束级）',
+	'',
+	`- ${'这条共识非常长'.repeat(20)}`,
+	'- 没有依据的共识：靠感觉定规矩',
+	'- 跨功能结论只有单来源 [functions/测试功能.md](functions/测试功能.md)',
+	'- 两条来源的跨功能结论 [functions/测试功能.md](functions/测试功能.md)、[insights/双源原则.md](insights/双源原则.md)',
+	'',
+].join('\n');
+const memAfter19 = memBefore19.includes(consensusHeading)
+	? memBefore19.replace(new RegExp(`${consensusHeading}[\\s\\S]*?(?=\\n## )`), injected)
+	: `${memBefore19}\n${injected}\n`;
+await writeFile(memPath19, memAfter19, 'utf8');
+const c19 = await T.memory_check.execute({}, exec);
+const r19 = c19.results.filter((r) => r.rule === 'R19');
+ok(r19.length >= 3, `R19 flags long / evidence-free / single-source consensus (${r19.length} R19)`);
+ok(!r19.some((r) => r.message.includes('两条来源的跨功能结论')), 'a properly sourced consensus entry is not flagged');
+// usage flips: positive -> correction -> positive is two verdict changes
+await US.execute({ action: 'record', href: 'functions/翻转域.md', kind: 'positive' }, exec);
+await US.execute({ action: 'record', href: 'functions/翻转域.md', kind: 'correction' }, exec);
+await US.execute({ action: 'record', href: 'functions/翻转域.md', kind: 'positive' }, exec);
+const rep2 = await US.execute({ action: 'report', days: 30 }, exec);
+const flipItem = rep2.items.find((i) => i.href === 'functions/翻转域.md');
+ok(flipItem && flipItem.flips >= 2, `usage report counts verdict flips (${flipItem?.flips})`);
+ok(rep2.warnings.some((w) => w.includes('反复推翻')), 'a flip warning surfaces for unstable conclusions');
+
 await rm(root, { recursive: true, force: true });
 console.log(failures === 0 ? 'ALL PASS' : `${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);

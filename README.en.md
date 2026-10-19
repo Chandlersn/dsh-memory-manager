@@ -47,10 +47,19 @@ Layer 0 · daily log YYYY-MM-DD.md (raw layer; the plugin imposes no format)
         │归纳 distilled (memory_write)
 Layer 1 · functions/<area>.md iteration blocks: motivation / what changed / evidence / open questions (one line each)
         │ further distilled (memory_insight)
-Layer 2 · insights/<theme>.md: re-appliable principles (backlinked to their source areas)
+Layer 2 · insights/<theme>.md: re-appliable principles (backlinked to their source areas, gated on cross-domain + non-procedure)
         │ integrated for display (memory_index, once an area stabilizes)
 Layer 3 · MEMORY.md index + panel overview: one-line summaries + counts — a derived retrieval surface
 ```
+
+- **Principles have a verification gate** (the mechanically checkable half of a "four-gate" model):
+  `memory_insight` warns at write time when ① it has fewer than **2 source areas** ("still a specialist
+  experience — do not use it as a universal principle"), ② the principle reads like a **procedure**
+  (numbered steps / command lines / click here), ③ the principle exceeds **200 chars**. All three are WARN,
+  not FAIL: they are judgement inputs for the model, not automatic rejection.
+- **The consensus layer must carry evidence**: the MEMORY.md 「决策共识 / 规范」 section is linted by **R19** —
+  an entry over 150 chars, with no memory-file link, or claiming "cross-feature / global" while pointing at a
+  single source area, is flagged. A constraint is not an opinion; it must point back at its evidence.
 
 - **The daily log is the free raw layer**: the plugin dictates neither content nor form — it is the
   first-hand data of task and conversation, recorded however the model and harness decide. The plugin
@@ -80,10 +89,10 @@ Layer 3 · MEMORY.md index + panel overview: one-line summaries + counts — a d
 | `memory_search` | **ranked full-text search** across the whole root: scans bodies, not just one-line summaries, and returns zone/file/line/section/snippet. Use it when you remember a fragment but not the area or the day |
 | `memory_write` | **append one iteration block** (a conclusion distilled from the raw daily record) and refresh the head stable-state summary; `summary` is the block's one-line takeaway. **Writes no index row, never touches the daily log** |
 | `memory_index` | **the integration layer**: once an area/theme stabilizes, upsert its row into the MEMORY.md index (row summary distilled from the block summaries); pass `group` to land in a `### 索引·<domain>` sub-table when the table has been split |
-| `memory_insight` | distil a transferable principle from the function division into `insights/`, backlink its source areas, `supersedes` to replace an older idea |
+| `memory_insight` | distil a transferable principle from the function division into `insights/`, backlink its source areas, `supersedes` to replace an older idea; three soft gates at write time (≥2 source areas / not a procedure / ≤200 chars) |
 | `memory_fold` | past 30KB, fold the oldest iteration blocks into an "early evolution" paragraph (conclusions and every date tag preserved) |
 | `memory_rename` | rename / merge a function area, rewrite every reference and verify zero dangling links |
-| `memory_check` | lint: index size, missing summaries, orphan files, backlinks, date ordering, dangling links, cold memory, head-summary guardrail, env-path liveness, over-long blocks/rows (R14), duplicated rows/sections (R15), correction-rate circuit breaker (R18) |
+| `memory_check` | lint: index size, missing summaries, orphan files, backlinks, date ordering, dangling links, cold memory, head-summary guardrail, env-path liveness, over-long blocks/rows (R14), duplicated rows/sections (R15), correction-rate circuit breaker (R18), consensus entries without evidence / too long / fake cross-domain (R19) |
 | `memory_usage` | **usage signals**: `record` logs one correction/confirmation (recalls and reads are logged automatically); `report` aggregates a window and suggests a layer (experiment / specialist / general) — advice only, it never moves files |
 | `memory_federation` | **federation mode** (optional): `sync` copies each project's `MEMORY.md` into `sources/` and rebuilds the project index table; `check` lints F1–F5 (index present, links resolve, rows/copies complete, no orphans, absolute paths alive) |
 
@@ -113,6 +122,10 @@ reduced to **advice, never automatic file moves**:
 - **specialist**: ≥3 uses and at least one confirmation
 - **general**: ≥10 uses, ≥2 confirmations, correction rate under 20%
 - correction rate over 40% with ≥3 uses → rebuild before appending; lint **R18** reports the breaker
+- **verdict flips**: how often a memory goes back and forth between confirmation and correction.
+  Two or more flips means the conclusion itself is unstable (not occasional bad luck) — the report names it:
+  "settle which verdict holds, then decide which version to keep". It covers what the correction rate cannot:
+  a memory with few corrections but repeated about-faces is still unusable as evidence.
 
 Two deliberate limits: the tool never moves files (layer is human judgement plus data advice, not a script
 shuffle), and corrections/confirmations cannot be inferred (only explicit ones count — no guessing at tone).

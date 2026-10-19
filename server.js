@@ -195,6 +195,10 @@ async function readUsage(root, days = 30) {
 /** Aggregate usage per target and suggest a layer (实验 / 专项 / 通用). */
 function summarizeUsage(entries) {
 	const map = new Map();
+	// Keep the correction/positive order per href so a flip (positive -> correction
+	// or the other way round) can be counted: a memory that keeps being confirmed
+	// and then overturned is not the same as one that is simply used.
+	const verdicts = new Map();
 	for (const e of entries) {
 		const href = String(e.href ?? '').trim();
 		if (!href) continue;
@@ -203,6 +207,11 @@ function summarizeUsage(entries) {
 		else if (e.kind === 'read') cur.reads++;
 		else if (e.kind === 'correction') cur.corrections++;
 		else if (e.kind === 'positive') cur.positives++;
+		if (e.kind === 'correction' || e.kind === 'positive') {
+			const seq = verdicts.get(href) ?? [];
+			seq.push({ kind: e.kind, ms: e.ms });
+			verdicts.set(href, seq);
+		}
 		cur.last = Math.max(cur.last, e.ms);
 		map.set(href, cur);
 	}
@@ -217,6 +226,10 @@ function summarizeUsage(entries) {
 		else it.layer = '实验';
 		it.uses = uses;
 		it.badRate = Number(badRate.toFixed(2));
+		const seq = (verdicts.get(it.href) ?? []).sort((a, b) => a.ms - b.ms);
+		let flips = 0;
+		for (let i = 1; i < seq.length; i++) if (seq[i].kind !== seq[i - 1].kind) flips++;
+		it.flips = flips;
 	}
 	items.sort((a, b) => b.uses - a.uses || b.last - a.last);
 	return items;
@@ -308,6 +321,11 @@ function safeSlug(raw) {
 const MAX_BLOCK_CHARS = 900;
 /** 索引行摘要必须是一句话；超过即视为把迭代细节塞进了索引（R14）。 */
 const MAX_ROW_SUMMARY_CHARS = 110;
+/** 思想原则是一句判断；超过就要压（四关之「不可降级」的机械化近似）。 */
+const MAX_PRINCIPLE_CHARS = 200;
+/** 共识条目是约束，不是论述：一条说清一条。 */
+const MAX_CONSENSUS_CHARS = 150;
+const CONSENSUS_HEADING = '## 决策共识 / 规范';
 /** Code-point length: CJK counts as 1, unlike byteLen. */
 function charLen(s) {
 	return [...String(s ?? '')].length;
@@ -869,6 +887,34 @@ async function runHealthCheck(root, opts) {
 		}
 	}
 
+	// R19: the consensus section is the highest layer (道层) — the place where a
+	// binding constraint lives. A constraint that cannot point at its evidence is
+	// an opinion, and one that runs long is an essay. Both are cheap to check.
+	{
+		const at = memText.indexOf(CONSENSUS_HEADING);
+		if (at !== -1) {
+			const rest = memText.slice(at + CONSENSUS_HEADING.length);
+			const stop = rest.indexOf('\n## ');
+			const section = stop === -1 ? rest : rest.slice(0, stop);
+			for (const raw of section.split(/\r?\n/)) {
+				const line = raw.trim();
+				if (!line.startsWith('- ')) continue;
+				const body = line.slice(2).trim();
+				if (!body) continue; // the template placeholder
+				const n = charLen(body);
+				if (n > MAX_CONSENSUS_CHARS) {
+					add('WARN', 'R19', `共识条目 ${n} 字 > ${MAX_CONSENSUS_CHARS}：一条共识只约束一件事，论证留在来源功能文件里（条目：${body.slice(0, 24)}…）`);
+				}
+				const links = [...body.matchAll(/\]\(([^)]+\.md)\)/g)].map((m) => m[1]);
+				if (!links.length) {
+					add('WARN', 'R19', `共识条目没有依据链接：至少指向一个 functions/ 或 insights/ 文件（条目：${body.slice(0, 24)}…）`);
+				} else if (/跨功能|跨项目|所有|全局|一律/.test(body) && new Set(links.map((l) => l.replace(/\/(?:[^/]+)\.md$/, ''))).size < 2) {
+					add('WARN', 'R19', `声称跨域的共识只有 1 个来源域：跨域结论要能指向 ≥2 个无关领域（条目：${body.slice(0, 24)}…）`);
+				}
+			}
+		}
+	}
+
 	// Collected during the pass below so the temperature analysis can reuse these
 	// reads instead of hitting the disk a second time for every file.
 	const fnTexts = new Map();
@@ -1292,6 +1338,7 @@ function memoryUsageTool(opts) {
 								corrections: { type: 'integer', required: true },
 								positives: { type: 'integer', required: true },
 								badRate: { type: 'number', required: true },
+								flips: { type: 'integer', required: true },
 								layer: { type: 'string', required: true },
 								lastUsed: { type: 'string', required: true },
 							},
@@ -1304,7 +1351,7 @@ function memoryUsageTool(opts) {
 				if (!v.items.length) return [{ type: 'text', text: '还没有使用信号。信号来自召回注入、memory_read、以及你用 memory_usage(action=record) 记录的纠正/认可。' }];
 				const lines = [`近 ${v.days} 天使用信号（按使用次数排序）：`];
 				for (const it of v.items) {
-					lines.push(`- [${it.layer}] ${it.href} · 用 ${it.uses}（召回 ${it.recalls}/读 ${it.reads}）· 纠正 ${it.corrections} · 认可 ${it.positives} · 纠正率 ${it.badRate}`);
+					lines.push(`- [${it.layer}] ${it.href} · 用 ${it.uses}（召回 ${it.recalls}/读 ${it.reads}）· 纠正 ${it.corrections} · 认可 ${it.positives} · 纠正率 ${it.badRate}${it.flips ? ` · 翻转 ${it.flips}` : ''}`);
 				}
 				for (const w of v.warnings) lines.push(`⚠ ${w}`);
 				lines.push('层只是建议：通用=可进默认推荐，专项=常规池，实验=仍在小范围验证。');
@@ -1335,6 +1382,7 @@ function memoryUsageTool(opts) {
 				corrections: it.corrections,
 				positives: it.positives,
 				badRate: it.badRate,
+				flips: it.flips,
 				layer: it.layer,
 				lastUsed: new Date(it.last).toISOString(),
 			}));
@@ -1342,6 +1390,11 @@ function memoryUsageTool(opts) {
 			if (hot) warnings.push(`${hot} 条已达到「通用」建议线：可考虑在索引行里标明它是标配工具，或让它进默认推荐`);
 			const bad = items.filter((it) => it.uses >= 3 && it.badRate > 0.4);
 			for (const b of bad) warnings.push(`${b.href} 纠正率 ${Math.round(b.badRate * 100)}%（>40%）：先重构这条记忆，别继续往上叠迭代`);
+			// Flips: confirmed then overturned (or the reverse). Two or more means the
+			// memory keeps changing verdicts — the content is unstable, not unlucky.
+			for (const f of items.filter((it) => it.flips >= 2)) {
+				warnings.push(`${f.href} 结论被反复推翻（翻转 ${f.flips} 次）：先查清到底哪个判断成立，再决定保留哪一版——反复推翻的记忆不能当依据`);
+			}
 			return { action: 'report', days, items, warnings };
 		},
 	});
@@ -1768,6 +1821,25 @@ function memoryInsightTool(opts) {
 				else skipped.push(s);
 			}
 			if (skipped.length) warnings.push(`来源不存在，未回链：${skipped.join('、')}（先用 memory_write 建立功能文件）`);
+			// Verification gate (borrowed from the 道层 four-gate idea, reduced to
+			// what is mechanically checkable): a principle that claims to be
+			// transferable must show up in >=2 unrelated areas, and must not be an
+			// operation manual in disguise. Both are WARN, not FAIL — this is a
+			// judgement the model should make with the warning in front of it.
+			if (linked.length < 2) {
+				warnings.push(
+					`跨域闸门未过：只有 ${linked.length} 个来源功能域（四关之「跨域迁移」要求 ≥2 个无关领域）。本条仍属专项经验：可以留在 insights/，但不要当普适原则用，也不要升级为共识`,
+				);
+			}
+			const stepLike = /(^|\s)(\d+[.、)]|步骤|第[一二三四五]步|命令行|执行命令|运行 `|点击|打开菜单|安装依赖)/;
+			if (stepLike.test(principle)) {
+				warnings.push(
+					`可降级警告：原则里出现操作步骤句式（四关之「不可降级」：能改写成操作手册的就不是原则）。把步骤留在 functions/，这里只留判断`,
+				);
+			}
+			if (charLen(principle) > MAX_PRINCIPLE_CHARS) {
+				warnings.push(`原则 ${charLen(principle)} 字 > ${MAX_PRINCIPLE_CHARS}：原则是判断，不是论述；推导留在来源功能文件里`);
+			}
 			const srcLine = linked.length ? linked.map((s) => `[functions/${s}.md](../functions/${s}.md)`).join('、') : '（来源缺失）';
 
 			// 1) insight file
