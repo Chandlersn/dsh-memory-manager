@@ -42,12 +42,14 @@ const exec = {};
 const statExists = async (p) => { try { await (await import('node:fs/promises')).stat(p); return true; } catch { return false; } };
 // Second apply with an explicit root: this instance's tools and pre-step
 // listener both read the temp index. registered now holds BOTH applies' tool
-// definitions (same names), so take the LAST eight — the second apply's.
+// definitions (same names), so keep only the LAST registration per name —
+// the second apply's. Name-keyed dedupe (not a slice with a hardcoded count)
+// so adding a tool never silently shifts the window.
 // `newFeatureGraceDays: 0` disables the cold-memory grace window so the
 // temperature rule can be asserted deterministically (see 11d for the grace).
 const disposer2 = mod.apply(fakeCtx, { memoryRoot: root, newFeatureGraceDays: 0 });
 const tools2 = Object.fromEntries(
-	registered.filter((r) => r?.name && r.execute).slice(-11).map((t) => [t.name, t]),
+	registered.filter((r) => r?.name && r.execute).map((t) => [t.name, t]),
 );
 const T = tools2;
 const disposer = noop;
@@ -687,6 +689,82 @@ ok(capSearchZone.count >= 1 && capSearchZone.hits.every((h0) => h0.zone === 'cap
 const cCap = await T.memory_check.execute({}, exec);
 ok(!cCap.results.some((r) => r.message.includes('ffmpeg') && r.level === 'FAIL'), 'capability files do not trip the linter');
 
+// 23) memory_skill — the crystallization layer (MemOS-borrowed, file-discipline
+// adapted): nomination is mechanical over the usage ledger, crystallization is
+// the model's judgement, and the lifecycle candidate→active→retired decides what
+// proactive recall is allowed to trust. Signals recorded via memory_usage(record)
+// (awaited) so the ledger is complete before nomination runs.
+// The nominated area gets a real function file first: a skill must cite a
+// source that exists (else R10 dangles), and the same slug as the nominated
+// href is what proves de-nomination is keyed on the EVIDENCE, not the name.
+await T.memory_write.execute({ feature: '分离延迟重启', title: '建立被提名域', summary: '反复重跑的操作，等待结晶', result: 'done' }, exec);
+for (let i = 0; i < 8; i++) await US.execute({ action: 'record', href: 'functions/分离延迟重启.md', kind: i < 2 ? 'positive' : 'recall' }, exec);
+for (let i = 0; i < 4; i++) await US.execute({ action: 'record', href: 'functions/弱信号域.md', kind: 'recall' }, exec);
+await US.execute({ action: 'record', href: 'functions/弱信号域.md', kind: 'correction' }, exec);
+const sk1 = await T.memory_skill.execute({ action: 'candidates' }, exec);
+ok(sk1.candidates.some((c) => c.href === 'functions/分离延迟重启.md' && c.uses >= 6 && c.positives >= 1), `nomination lists a high-usage confirmed area (${sk1.candidates.length})`);
+ok(!sk1.candidates.some((c) => c.href === 'functions/弱信号域.md'), 'nomination skips low-usage / corrected areas');
+const skCry = await T.memory_skill.execute(
+	{
+		action: 'crystallize',
+		name: '分离延迟重启',
+		summary: '会话跑在宿主内时用分离进程延迟杀旧起新',
+		when: '需要让 DSH server 半新代码生效、而当前会话正运行在该宿主里时',
+		procedure: ['写独立脚本：Start-Sleep 数秒 → Stop-Process 旧 PID → 启动 start-web.cmd', '会话内以分离后台任务启动脚本并立即结束当前回合', '刷新页面确认新 PID 启动时间晚于新提交'],
+		pitfalls: '旧代进程可能在重启窗口写入过期数据，重启后复核',
+		verification: 'overview 返回 200 且新 PID 创建时间晚于目标提交',
+		sources: ['functions/分离延迟重启.md'],
+	},
+	exec,
+);
+ok(skCry.created && skCry.status === 'candidate' && skCry.file.replace(/\\/g, '/').includes('skills/分离延迟重启.md'), 'crystallize writes a candidate skill file');
+const skText = await readFile(skCry.file, 'utf8');
+ok(skText.includes('## 调用步骤') && /^\s*1[.、]/m.test(skText), 'skill body has numbered procedure steps');
+ok(skText.includes('../functions/分离延迟重启.md'), 'skill backlinks its evidence source');
+// The frontmatter router (skill-creator lesson): description carries the WHEN.
+ok(/^---\nname: 分离延迟重启\n/m.test(skText) && /^description: "当.*时使用本技能/m.test(skText), 'skill file is frontmatter-shaped with a router description');
+ok(skText.includes('agent_created: true') && skText.includes('status: candidate'), 'frontmatter carries agent_created + status');
+const skIdx = await T.memory_read.execute({ kind: 'index' }, exec);
+ok(skIdx.content.includes('| 分离延迟重启 |') && skIdx.content.includes('skills/分离延迟重启.md'), 'skill row lands in the index table');
+// A crystallized area must drop out of nomination (support is now filed).
+const sk2 = await T.memory_skill.execute({ action: 'candidates' }, exec);
+ok(!sk2.candidates.some((c) => c.href === 'functions/分离延迟重启.md'), 'already-crystallized area is not re-nominated');
+// Recall gate: candidate is NOT recallable, active is, retired is not.
+const qTok = mod.tokensOf('分离延迟重启 宿主');
+const rowsCand = mod.matchIndexRows(skIdx.content, qTok);
+ok(!rowsCand.some((r) => r.zone === 'skill'), 'candidate skill is filtered out of recall');
+const skAct = await T.memory_skill.execute({ action: 'activate', name: '分离延迟重启', note: '真实任务照做成功（本会话）' }, exec);
+ok(skAct.status === 'active', 'activate flips lifecycle to active');
+const idxAfterAct = (await T.memory_read.execute({ kind: 'index' }, exec)).content;
+const rowsActive = mod.matchIndexRows(idxAfterAct, qTok);
+ok(rowsActive.some((r) => r.zone === 'skill' && r.href === 'skills/分离延迟重启.md'), 'active skill is recallable');
+const actMsgText = mod.buildRecallMessage(rowsActive).content[0].text;
+ok(actMsgText.includes('⭐ 已结晶技能') && actMsgText.includes('按步骤走'), 'recall message marks the active skill with a do-not-rederive hint');
+const skRet = await T.memory_skill.execute({ action: 'retire', name: '分离延迟重启', note: '宿主改为热重载，程序失效' }, exec);
+ok(skRet.status === 'retired', 'retire flips lifecycle to retired');
+const idxAfterRet = (await T.memory_read.execute({ kind: 'index' }, exec)).content;
+ok(!mod.matchIndexRows(idxAfterRet, mod.tokensOf('分离延迟重启 宿主')).some((r) => r.zone === 'skill'), 'retired skill leaves recall');
+// Lint + input guards.
+let skThrew = 0;
+for (const a of [
+	{ action: 'crystallize', name: 'x', summary: 's', when: 'w', procedure: ['only one step'], verification: 'v', sources: ['functions/a.md'] },
+	{ action: 'crystallize', name: 'x', summary: 's', when: 'w', procedure: ['a', 'b'], verification: 'v' },
+	{ action: 'activate', name: '不存在技能' },
+]) {
+	try {
+		await T.memory_skill.execute(a, exec);
+	} catch {
+		skThrew++;
+	}
+}
+ok(skThrew === 3, `crystallize/activate validate their inputs (${skThrew}/3)`);
+await mkdir(path.join(root, 'skills'), { recursive: true });
+await writeFile(path.join(root, 'skills', '空壳技能.md'), '# 技能：空壳技能\n\n> 状态：weird · 首次结晶：2026-10-19\n\n## 调用步骤\n\n- \n', 'utf8');
+const cSk = await T.memory_check.execute({}, exec);
+const r20 = cSk.results.filter((r) => r.rule === 'R20' || r.rule === 'R20e');
+ok(r20.some((r) => r.message.includes('状态「weird」非法')), 'R20 flags an illegal status');
+ok(r20.some((r) => r.message.includes('调用步骤')), 'R20 flags an empty procedure');
+ok(r20.some((r) => r.message.includes('何时使用')), 'R20 flags a missing trigger section');
 await rm(root, { recursive: true, force: true });
 console.log(failures === 0 ? 'ALL PASS' : `${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);

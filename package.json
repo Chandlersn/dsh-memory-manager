@@ -1,6 +1,6 @@
 {
   "name": "dsh-memory-manager",
-  "version": "5.11.5",
+  "version": "5.12.0",
   "type": "module",
   "repository": {
     "type": "git",
@@ -12,9 +12,9 @@
   },
   "meta": {
     "title": "记忆管理",
-    "description": "以功能域为骨架的全局长期记忆：十一个记忆工具、主动回忆钩子与只读面板。"
+    "description": "以功能域为骨架的全局长期记忆：十二个记忆工具、主动回忆钩子与只读面板。"
   },
-  "description": "Function-area long-term memory for the DeepSeek Harness (DSH): eleven memory tools (read/search/capability/write/index/insight/fold/rename/check/usage/federation), an injected system-prompt discipline, a pre-step recall hook, and a read-only Web panel. Process stays in the session; memory keeps distilled conclusions.",
+  "description": "Function-area long-term memory for the DeepSeek Harness (DSH): twelve memory tools (read/search/capability/write/index/insight/fold/rename/check/usage/federation/skill), an injected system-prompt discipline, a pre-step recall hook, and a read-only Web panel. Process stays in the session; memory keeps distilled conclusions.",
   "keywords": [
     "dsh",
     "dsh-plugin",

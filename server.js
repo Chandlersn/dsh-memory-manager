@@ -403,8 +403,8 @@ function memoryIndexTemplate() {
 		'# 记忆管理（索引 + 纪律）',
 		'',
 		'> 读取纪律：先查本索引（行内摘要足以判断相关性），再打开对应 functions/ 文件；日期不是骨架，只做迭代标签。',
-		'> 数据流：每日记录（原始层，自由格式）→ memory_write 蒸馏出 functions/ 迭代块 → memory_insight 提取 insights/ 思想 → memory_index 收进本索引（整合展示层）。本文件是派生物，不与单次写入强绑。',
-		'> 性质二分：可复跑的操作进 functions/，可重套的原则进 insights/（回链来源）；共识/规范与环境常量只留在本文件。',
+		'> 数据流：每日记录（原始层，自由格式）→ memory_write 蒸馏出 functions/ 迭代块 → memory_insight 提取 insights/ 思想 → memory_index 收进本索引（整合展示层）→ memory_skill 把反复验证的操作结晶为 skills/ 程序（使用环收口）。本文件是派生物，不与单次写入强绑。',
+		'> 性质三分：可复跑的操作进 functions/，可重套的原则进 insights/（回链来源），反复执行且被验证的操作程序进 skills/（candidate→active→retired）；共识/规范与环境常量只留在本文件。',
 		'',
 		`${FUNC_TABLE_HEADING}（functions/）`,
 		'',
@@ -419,6 +419,11 @@ function memoryIndexTemplate() {
 		`${CAP_TABLE_HEADING}（capabilities/）`,
 		'',
 		CAP_TABLE_HEADER,
+		'|---|---|---|---|',
+		'',
+		`${SKILL_TABLE_HEADING}（skills/）`,
+		'',
+		SKILL_TABLE_HEADER,
 		'|---|---|---|---|',
 		'',
 		'## 决策共识 / 规范（跨功能、约束级）',
@@ -896,7 +901,7 @@ async function runHealthCheck(root, opts) {
 	// A grouped index (### 索引·<domain>, see upsertIndexRow's group branch) shares
 	// ONE header row across every sub-table by design, so headers are not evidence
 	// of a stale duplicate row — skip them before counting slug cells.
-	const tableHeaders = new Set([FUNC_TABLE_HEADER, INSIGHT_TABLE_HEADER, CAP_TABLE_HEADER, FED_TABLE_HEADER]);
+	const tableHeaders = new Set([FUNC_TABLE_HEADER, INSIGHT_TABLE_HEADER, CAP_TABLE_HEADER, SKILL_TABLE_HEADER, FED_TABLE_HEADER]);
 	for (const raw of memText.split('\n')) {
 		const s = raw.trim();
 		if (!s.startsWith('|')) continue;
@@ -975,7 +980,7 @@ async function runHealthCheck(root, opts) {
 	const fnMtimes = new Map();
 	const insightTexts = [];
 
-	for (const zone of ['functions', 'insights', 'capabilities']) {
+	for (const zone of ['functions', 'insights', 'capabilities', 'skills']) {
 		const dir = path.join(root, zone);
 		let files = [];
 		try {
@@ -1036,6 +1041,32 @@ async function runHealthCheck(root, opts) {
 				}
 			} else if (zone === 'insights') {
 				insightTexts.push(text);
+			} else if (zone === 'skills') {
+				// R20 (fields mirror lantern skill-creator's quick_validate: a skill is
+				// a CALLABLE procedure, so its frontmatter router + the executable
+				// sections must be present and its lifecycle legal). status: reads the
+				// frontmatter first, tolerating the pre-5.12 `> 状态：` head.
+				const sSlug = f.replace(/\.md$/, '');
+				const sStatus = (stripped.match(/^status:\s*([a-z]+)/m) ?? stripped.match(/^> 状态：([a-z]+)/m) ?? [])[1];
+				if (!sStatus) add('WARN', 'R20', `skills/${f} 缺少 status（frontmatter 或旧「> 状态：」）：召回无法判断可否信任`);
+				else if (!SKILL_STATUSES.includes(sStatus)) add('WARN', 'R20', `skills/${f} 状态「${sStatus}」非法（应为 ${SKILL_STATUSES.join('/')}）`);
+				// The router: a skill without a description/trigger never fires — same
+				// failure quick_validate flags for a missing description field.
+				const hasDesc = /^description:\s*"?([^"\n]+)"?/m.test(stripped) || /^>\s*摘要：\s*\S/m.test(stripped);
+				if (!hasDesc) add('WARN', 'R20', `skills/${f} 缺 description/摘要：没有路由说明的技能不会被命中`);
+				if (sStatus !== 'retired') {
+					const steps = (/## 调用步骤\s*\n([\s\S]*?)(?=\n## |$)/.exec(stripped) ?? [])[1] ?? '';
+					const numbered = (steps.match(/^\s*1[.、]/gm) ?? []).length;
+					if (!numbered) add('WARN', 'R20', `skills/${f} 「调用步骤」没有编号步骤：技能必须可直接执行，空壳请补全或 retire`);
+					const when = (stripped.match(/## 何时使用\s*\n+-\s*(.+)/) ?? [])[1];
+					if (!when) add('WARN', 'R20', `skills/${f} 「何时使用」为空：没有触发条件的技能永远不会被命中`);
+				}
+				// R20e: the index row's 状态 cell must agree with the file status, or the
+				// recall filter (which reads the index) trusts the wrong lifecycle.
+				const rowM = new RegExp(`^\\|\\s*${sSlug.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\|[^\\n]*\\|\\s*(candidate|active|retired)\\s*\\|`, 'm').exec(memText);
+				if (sStatus && rowM && rowM[1] !== sStatus) {
+					add('WARN', 'R20e', `技能「${sSlug}」索引行状态 ${rowM[1]} 与文件 status ${sStatus} 不一致：召回只放行 active，确认哪边是现状`);
+				}
 			}
 			await checkLinks(text, fp, root, add);
 		}
@@ -1154,8 +1185,8 @@ function memoryReadTool(opts) {
 			kind: {
 				type: 'string',
 				required: true,
-				enum: ['index', 'function', 'insight', 'capability', 'daily'],
-				description: 'index=MEMORY.md; function=functions/<name>.md; insight=insights/<name>.md; capability=capabilities/<name>.md (CLI/MCP ledger); daily=YYYY-MM-DD.md (latest when date omitted).',
+				enum: ['index', 'function', 'insight', 'capability', 'skill', 'daily'],
+				description: 'index=MEMORY.md; function=functions/<name>.md; insight=insights/<name>.md; capability=capabilities/<name>.md (CLI/MCP ledger); skill=skills/<name>.md (crystallized procedure); daily=YYYY-MM-DD.md (latest when date omitted).',
 			},
 			name: {
 				type: 'string',
@@ -1205,8 +1236,8 @@ function memoryReadTool(opts) {
 				const text = await readIfExists(p);
 				return { found: text !== undefined, path: p, content: text ?? '', listing: [] };
 			}
-			if (args.kind === 'function' || args.kind === 'insight' || args.kind === 'capability') {
-				const dir = path.join(root, args.kind === 'function' ? 'functions' : args.kind === 'insight' ? 'insights' : CAP_DIR);
+			if (args.kind === 'function' || args.kind === 'insight' || args.kind === 'capability' || args.kind === 'skill') {
+				const dir = path.join(root, args.kind === 'function' ? 'functions' : args.kind === 'insight' ? 'insights' : args.kind === 'skill' ? SKILL_DIR : CAP_DIR);
 				if (!args.name) {
 					const listing = await listMdDir(dir);
 					return { found: listing.length > 0, path: dir, content: '', listing };
@@ -1254,7 +1285,7 @@ function memorySearchTool(opts) {
 			'Ranked full-text search across the ENTIRE memory root (index, functions/, insights/, daily logs) and return the best matching lines with their zone, file, line number, section heading and a snippet. Use it when you remember something was recorded but cannot tell which function area or which day: memory_read kind=index only scans one-line summaries, while this scans the bodies. Ranking is lexical (query substring, token hits, section heading, file name) with per-file caps, so a broad keyword does not return one file\'s whole history. Read the file afterwards with memory_read before re-deriving anything.',
 		parameters: {
 			q: { type: 'string', required: true, description: '检索词：一个词或短句（≥2 字符）。中文子串与英文单词都支持。' },
-			zone: { type: 'string', enum: ['all', 'functions', 'insights', 'capabilities', 'daily'], description: '限定检索分区，缺省 all（含索引）。能力台账（CLI/MCP/本地工具）在 capabilities。' },
+			zone: { type: 'string', enum: ['all', 'functions', 'insights', 'capabilities', 'skills', 'daily'], description: '限定检索分区，缺省 all（含索引）。能力台账（CLI/MCP/本地工具）在 capabilities，技能程序在 skills。' },
 			limit: { type: 'integer', description: '最多返回多少条命中（默认 20，最大 50）。' },
 		},
 		output: {
@@ -1295,7 +1326,7 @@ function memorySearchTool(opts) {
 			const root = resolveRoot(opts);
 			const q = oneLine(args.q);
 			if (charLen(q) < 2) throw new Error('q must be at least 2 characters');
-			const zone = ['functions', 'insights', 'capabilities', 'daily'].includes(args.zone) ? args.zone : 'all';
+			const zone = ['functions', 'insights', 'capabilities', 'skills', 'daily'].includes(args.zone) ? args.zone : 'all';
 			const limit = Math.min(Math.max(1, Number(args.limit) || 20), 50);
 			const hits = await searchMemory(root, q, { zone, limit });
 			return { count: hits.length, hits };
@@ -1630,6 +1661,101 @@ async function listMdDir(dir) {
 
 const CAP_DIR = 'capabilities';
 
+// ---------------------------------------------------------------------------
+// skills — the crystallization layer (borrowed from MemOS's skill tier, adapted)
+// ---------------------------------------------------------------------------
+//
+// The four-layer data flow records / distills / promotes / displays, but never
+// CLOSED the loop into "use": an operation that keeps being re-run and keeps
+// being confirmed should become a directly callable procedure. MemOS does this
+// with an async LLM pipeline (L1→L2→L3→Skill with V/α/gain math); we keep the
+// file discipline instead — MECHANICAL NOMINATION (pure aggregation of the
+// usage signals we already collect) + A JUDGEMENT CRYSTALLIZES (only the model
+// in context knows whether the evidence is coherent enough to write a real
+// procedure). Statuses mirror MemOS's lifecycle: candidate → active → retired.
+const SKILL_DIR = 'skills';
+const SKILL_STATUSES = ['candidate', 'active', 'retired'];
+const SKILL_TABLE_HEADING = '## 技能台账（可复用操作程序）';
+const SKILL_TABLE_HEADER = '| 技能 | 一句话用途 | 台账 | 状态 |';
+// Nomination thresholds (the mechanical half of MemOS's support/gain floors,
+// fed by .usage.jsonl): an area earns a look when it has been USED repeatedly,
+// CONFIRMED at least once, and is not mostly corrections.
+const SKILL_NOMINATE = { minUses: 6, minPositives: 1, maxBadRate: 0.2 };
+
+/**
+ * Skill file format — the frontmatter idea is borrowed from Anthropic/lantern
+ * skill-creator (skills/<name> + YAML frontmatter, description is the ROUTER
+ * that decides when the skill fires, imperative writing style, machine-checkable
+ * fields), adapted to our one-file-per-skill layout. `status` extends the
+ * frontmatter with our lifecycle; `agent_created` marks files this tool owns.
+ */
+function skillTemplate(name, f) {
+	return [
+		'---',
+		`name: ${name}`,
+		`description: "${f.description}"`,
+		'agent_created: true',
+		`status: ${f.status}`,
+		`created: ${f.date}`,
+		`sources: [${f.srcs.join(', ')}]`,
+		'---',
+		'',
+		`# 技能：${name}`,
+		'',
+		`> 摘要：${f.summary}`,
+		'',
+		'## 何时使用',
+		'',
+		`- ${f.when}`,
+		'',
+		'## 调用步骤',
+		'',
+		f.steps.map((s, i) => `${i + 1}. ${s}`).join('\n'),
+		'',
+		'## 前提与坑',
+		'',
+		`- ${f.pitfalls || '（待补：跑的过程中把踩到的坑记回这里）'}`,
+		'',
+		'## 验证方式',
+		'',
+		`- ${f.verification}`,
+		'',
+		'## 证据来源',
+		'',
+		...f.srcLines,
+		'',
+		'## 使用记录',
+		'',
+		`- ${f.date} 结晶（${f.status}）`,
+		...(f.priorUse ?? []),
+		'',
+	].join('\n');
+}
+
+/**
+ * Pure nomination pass over the SAME usage aggregation memory_usage uses: an
+ * href is a skill candidate when uses/positives/bad-rate clear the floors and
+ * no skill file yet points at it. Returns the rows a `memory_skill(candidates)`
+ * call shows the model. `skillSources` = the 来源 lines of existing skill files
+ * (so nominated-but-already-crystallized areas drop out).
+ */
+function nominateSkillCandidates(usageItems, skillSources) {
+	const out = [];
+	for (const it of usageItems) {
+		if (!/^(functions|insights)\//.test(it.href)) continue;
+		if (it.uses < SKILL_NOMINATE.minUses) continue;
+		if (it.positives < SKILL_NOMINATE.minPositives) continue;
+		if (it.badRate >= SKILL_NOMINATE.maxBadRate) continue;
+		const already = skillSources.some((src) => src === it.href || it.href.startsWith(src.replace(/\.md$/, '')));
+		if (already) continue;
+		out.push({ href: it.href, uses: it.uses, positives: it.positives, badRate: it.badRate, flips: it.flips });
+	}
+	// Most-used first; flips included so an unstable conclusion is visible, not
+	// silently nominated.
+	out.sort((a, b) => b.uses - a.uses);
+	return out;
+}
+
 function capabilityTemplate(name, kind, date) {
 	return [
 		`# 能力：${name}`,
@@ -1789,6 +1915,228 @@ function memoryCapabilityTool(opts) {
 				items: [{ name, kind, summary, invocation, updated: st.mtime.toISOString() }],
 				warnings,
 			};
+		},
+	});
+}
+
+/**
+ * memory_skill — the CRYSTALLIZATION layer (12th tool). Closes the loop the
+ * four-layer flow left open: an operation that keeps being RE-RUN (uses) and
+ * keeps being CONFIRMED (positives, low correction rate) should become a
+ * directly callable procedure under skills/. Nomination is mechanical (usage
+ * signals only, no guessing); crystallization is the model's judgement — this
+ * tool never auto-writes a skill body. Lifecycle: candidate → active (verified)
+ * → retired (environment changed; file kept as history). Borrowed from MemOS's
+ * skill tier, adapted to the file discipline.
+ */
+function memorySkillTool(opts) {
+	return defineTool({
+		name: 'memory_skill',
+		description:
+			'Crystallize a REPEATED, CONFIRMED operation into a callable procedure under skills/ (the missing “use” step of the data flow: record → distill → promote → display → USE). actions: candidates = which areas the usage signals nominate (pure aggregation: >=6 uses, >=1 confirmation, correction rate <20%, not already crystallized) — call it periodically and decide; crystallize = write skills/<name>.md from an area\'s proven steps (YOU write the procedure, the tool files and indexes it, status=candidate); activate/retire = lifecycle transitions (activate only after the procedure was actually followed successfully; retire when the environment changed, the file stays as history); list/read = what skills exist / full text. A skill file answers “do it exactly like THIS” — distinct from capabilities/ (“what tool exists”) and insights/ (“what principle holds”).',
+		parameters: {
+			action: { type: 'string', required: true, enum: ['candidates', 'crystallize', 'activate', 'retire', 'list', 'read'], description: 'candidates=看提名；crystallize=结晶一份技能；activate/retire=生命周期；list/read=查。' },
+			name: { type: 'string', description: 'crystallize/activate/retire/read 必填：技能名（文件名 slug）。' },
+			summary: { type: 'string', description: 'crystallize 必填：一句话用途（索引行与命中提示用）。' },
+			when: { type: 'string', description: 'crystallize 必填：什么任务信号出现时该用这条技能（触发条件，一句话）。' },
+			procedure: { type: 'array', description: 'crystallize 必填：可直接执行的步骤（每步一句，命令写全），items: { type: string }。', items: { type: 'string' } },
+			pitfalls: { type: 'string', description: 'crystallize 可选：前提与踩过的坑（一段话）。' },
+			verification: { type: 'string', description: 'crystallize 必填：怎么算执行成功（判据，一句话）。' },
+			sources: { type: 'array', description: 'crystallize 必填：证据来源（functions/xxx.md 等，提名/召回据此关联），items: { type: string }。', items: { type: 'string' } },
+			note: { type: 'string', description: 'activate/retire 可选：一句话依据（哪次成功验证 / 环境怎么变了）。' },
+		},
+		output: {
+			schema: {
+				type: 'object',
+				additionalProperties: false,
+				properties: {
+					action: { type: 'string', required: true },
+					file: { type: 'string' },
+					created: { type: 'boolean' },
+					status: { type: 'string' },
+					candidates: {
+						type: 'array',
+						items: {
+							type: 'object',
+							additionalProperties: false,
+							properties: {
+								href: { type: 'string', required: true },
+								uses: { type: 'integer', required: true },
+								positives: { type: 'integer', required: true },
+								badRate: { type: 'number', required: true },
+								flips: { type: 'integer', required: true },
+							},
+						},
+					},
+					items: {
+						type: 'array',
+						required: true,
+						items: {
+							type: 'object',
+							additionalProperties: false,
+							properties: {
+								name: { type: 'string', required: true },
+								status: { type: 'string', required: true },
+								summary: { type: 'string', required: true },
+								updated: { type: 'string', required: true },
+							},
+						},
+					},
+					content: { type: 'string' },
+					warnings: { type: 'array', required: true, items: { type: 'string' } },
+				},
+			},
+			render: (_args, v) => {
+				if (v.action === 'read') return [{ type: 'text', text: v.content || '（空）' }];
+				if (v.action === 'candidates') {
+					if (!v.candidates?.length) return [{ type: 'text', text: `暂无提名（门槛：≥${SKILL_NOMINATE.minUses} 次使用 + ≥${SKILL_NOMINATE.minPositives} 次确认 + 纠正率 <${SKILL_NOMINATE.maxBadRate * 100}%）。使用信号继续累积，隔段时间再查。` }];
+					const lines = [`技能提名（机械信号，是否结晶由你判断）：`];
+					for (const c of v.candidates) lines.push(`- ${c.href} · 用 ${c.uses} 次 · 确认 ${c.positives} · 纠正率 ${c.badRate}${c.flips ? ` · 翻转 ${c.flips}` : ''}`);
+					lines.push('ℹ 反复重跑且被确认的操作 → memory_skill(crystallize) 写成可调用程序；不确定就再等等。');
+					return [{ type: 'text', text: lines.join('\n') }];
+				}
+				if (v.action === 'list') {
+					if (!v.items.length) return [{ type: 'text', text: '还没有技能。先 memory_skill(candidates) 看提名，再把反复验证过的操作结晶成程序。' }];
+					const lines = [`技能台账（${v.items.length} 项）：`];
+					for (const it of v.items) lines.push(`- [${it.status}] ${it.name} — ${it.summary}`);
+					for (const w of v.warnings) lines.push(`⚠ ${w}`);
+					return [{ type: 'text', text: lines.join('\n') }];
+				}
+				const verb = v.action === 'crystallize' ? '已结晶技能' : v.action === 'activate' ? '已激活技能' : '已退役技能';
+				const lines = [`${verb}：${v.file}（status=${v.status}）`];
+				for (const w of v.warnings) lines.push(`⚠ ${w}`);
+				if (v.action === 'crystallize') lines.push('ℹ 按真实任务跑通一次后，用 memory_skill(activate) 转正；pre-step 会优先提示命中技能。');
+				return [{ type: 'text', text: lines.join('\n') }];
+			},
+		},
+		presentCall: (args) => ({ card: 'generic', title: `Memory skill: ${args.action ?? ''}${args.name ? ` ${args.name}` : ''}`, kind: 'other', rawInput: args }),
+		async execute(args, exec) {
+			const root = resolveRoot(opts);
+			const dir = path.join(root, SKILL_DIR);
+			const warnings = [];
+			const listAll = async () => {
+				let names = [];
+				try {
+					names = (await readdir(dir)).filter((n) => n.endsWith('.md'));
+				} catch {
+					/* no skills yet */
+				}
+				const items = [];
+				for (const f of names.sort()) {
+					const text = (await readIfExists(path.join(dir, f))) ?? '';
+					// frontmatter `status:` is canonical; tolerate the pre-5.12 head
+					// format ("> 状态：x") so hand-written or older files still parse.
+					const stM = text.match(/^status:\s*([a-z]+)/m) ?? text.match(/^> 状态：([a-z]+)/m);
+					const sumM = text.match(/^>\s*摘要：(.+)$/m) ?? text.match(/^description:\s*"?([^"\n]+)"?/m);
+					const st = await stat(path.join(dir, f));
+					items.push({ name: f.replace(/\.md$/, ''), status: stM ? stM[1] : 'candidate', summary: sumM ? sumM[1].trim() : '（无摘要）', updated: st.mtime.toISOString() });
+				}
+				return items;
+			};
+			const syncIndexRow = async (item) => {
+				const indexPath = path.join(root, 'MEMORY.md');
+				let indexText = (await readIfExists(indexPath)) ?? memoryIndexTemplate();
+				const row = `| ${item.name} | ${item.summary} | [skills/${item.name}.md](skills/${item.name}.md) | ${item.status} |`;
+				indexText = upsertIndexRow(indexText, SKILL_TABLE_HEADING, SKILL_TABLE_HEADER, item.name, row);
+				await writeText(indexPath, indexText);
+			};
+			if (args.action === 'candidates') {
+				const items = summarizeUsage(await readUsage(root));
+				const all = await listAll();
+				const skillSources = [];
+				for (const it of all) {
+					const text = (await readIfExists(path.join(dir, `${it.name}.md`))) ?? '';
+					// evidence links are written as (../functions/x.md); normalize to
+					// the usage-href form (functions/x.md) so nomination can compare.
+					for (const m of text.matchAll(/\((?:\.\.\/)?((?:functions|insights)\/[^)#]+)\)/g)) skillSources.push(m[1]);
+				}
+				const candidates = nominateSkillCandidates(items, skillSources);
+				return { action: 'candidates', candidates, items: [], warnings };
+			}
+			if (args.action === 'list') {
+				return { action: 'list', items: await listAll(), warnings };
+			}
+			const name = safeSlug(args.name);
+			const p = path.join(dir, `${name}.md`);
+			if (args.action === 'read') {
+				const text = await readIfExists(p);
+				if (text === undefined) throw new Error(`技能台账里没有 ${name}（先 memory_skill(crystallize)，或 candidates 看提名）`);
+				return { action: 'read', file: p, items: [], content: text, warnings };
+			}
+			if (args.action === 'crystallize') {
+				const summary = oneLine(args.summary);
+				if (!summary) throw new Error('summary is required');
+				const when = oneLine(args.when);
+				if (!when) throw new Error('when is required: what task signal should trigger this skill');
+				const steps = (Array.isArray(args.procedure) ? args.procedure : []).map((s) => oneLine(s)).filter(Boolean);
+				if (steps.length < 2) throw new Error('procedure needs at least 2 concrete steps — a skill is a callable procedure, not a hint');
+				const verification = oneLine(args.verification);
+				if (!verification) throw new Error('verification is required: how success is judged after following the procedure');
+				const srcs = (Array.isArray(args.sources) ? args.sources : []).map((s) => oneLine(s)).filter(Boolean);
+				if (!srcs.length) throw new Error('sources is required: link the evidence areas (functions/xxx.md) the procedure was distilled from');
+				const date = localDateStr();
+				const existing = await readIfExists(p);
+				const created = existing === undefined;
+				if (existing !== undefined) {
+					warnings.push('技能已存在：本次为整体重结晶（覆盖正文与程序），使用记录已并入新文件头部，旧版演进靠 git/人工留存');
+				}
+				// Router field (the skill-creator lesson): the frontmatter description
+				// decides WHEN the skill fires, so it embeds the trigger, third-person.
+				const description = `当${when}时使用本技能：${summary}`.replace(/"/g, "'");
+				const srcLines = srcs.map((s) => (s.includes('](') ? `- ${s}` : `- [${s.replace(/^(?:functions|insights|capabilities)\//, '').replace(/\.md$/, '')}.md](../${s.replace(/^\.\//, '')})`));
+				// Carry the old 使用记录 across a re-crystallization: the lifecycle
+				// history belongs to the skill, not to one version of its body.
+				let priorUse = [];
+				if (existing !== undefined) {
+					const rec = (existing.match(/## 使用记录\s*\n([\s\S]*?)(?=\n## |$)/) ?? [])[1];
+					priorUse = (rec ?? '').split('\n').map((l) => l.trim()).filter((l) => l.startsWith('- '));
+				}
+				const body = skillTemplate(name, {
+					status: 'candidate',
+					date,
+					srcs,
+					description,
+					summary,
+					when,
+					steps,
+					pitfalls: oneLine(args.pitfalls ?? ''),
+					verification,
+					srcLines,
+					priorUse,
+				});
+				await mkdir(dir, { recursive: true });
+				await writeText(p, body);
+				const st = await stat(p);
+				const item = { name, status: 'candidate', summary, updated: st.mtime.toISOString() };
+				await syncIndexRow(item);
+				return { action: 'crystallize', file: p, created, status: 'candidate', items: [item], warnings };
+			}
+			if (args.action === 'activate' || args.action === 'retire') {
+				const text = await readIfExists(p);
+				if (text === undefined) throw new Error(`技能台账里没有 ${name}`);
+				const to = args.action === 'activate' ? 'active' : 'retired';
+				// frontmatter `status:` is canonical; tolerate the pre-5.12 head form.
+				const cur = (text.match(/^status:\s*([a-z]+)/m) ?? text.match(/^> 状态：([a-z]+)/m) ?? [])[1] ?? 'candidate';
+				const note = oneLine(args.note ?? '');
+				if (cur === to) throw new Error(`${name} 已是 ${to}`);
+				if (to === 'retired' && cur === 'candidate') warnings.push('candidate 直接 retired：未经使用即放弃，确认是否应保留观察');
+				const date = localDateStr();
+				// Update whichever status marker the file actually carries so the two
+				// formats never both survive on one file.
+				let next = text;
+				if (/^status:/m.test(next)) next = next.replace(/^status:\s*[a-z]+/m, `status: ${to}`);
+				else next = next.replace(/^> 状态：[a-z]+/m, `> 状态：${to}`);
+				const entry = `- ${date} ${args.action === 'activate' ? '✅ 激活' : '⛔ 退役'}${note ? `：${note}` : ''}`;
+				const appended = appendUnderHeading(next, '## 使用记录', entry);
+				next = appended.text;
+				await writeText(p, next);
+				const st = await stat(p);
+				const sumM = next.match(/^>\s*摘要：(.+)$/m) ?? next.match(/^description:\s*"?([^"\n]+)"?/m);
+				const item = { name, status: to, summary: sumM ? sumM[1].trim() : name, updated: st.mtime.toISOString() };
+				await syncIndexRow(item);
+				return { action: args.action, file: p, status: to, items: [item], warnings };
+			}
+			throw new Error(`unknown action: ${args.action}`);
 		},
 	});
 }
@@ -2444,8 +2792,12 @@ function matchIndexRows(indexText, userTokens, limit = 3) {
 		const zm = link.match(/\(([^)]+\.md)\)/);
 		if (!zm) continue;
 		const href = zm[1];
-		const zone = href.startsWith('insights/') ? 'insight' : href.startsWith('functions/') ? 'function' : null;
+		const zone = href.startsWith('skills/') ? 'skill' : href.startsWith('insights/') ? 'insight' : href.startsWith('functions/') ? 'function' : null;
 		if (!zone) continue;
+		// A skill row carries its lifecycle in the 4th cell (status). Only ACTIVE
+		// skills are recallable — a candidate is an unverified procedure and must
+		// not shadow the reasoning it was distilled from.
+		if (zone === 'skill' && cells[3] && cells[3] !== 'active') continue;
 		const name = href.split('/').pop().replace(/\.md$/, '');
 		candidates.push({
 			name,
@@ -2496,10 +2848,10 @@ async function searchMemory(root, rawQuery, { zone = 'all', limit = 20 } = {}) {
 	const q = String(rawQuery ?? '').trim().toLowerCase();
 	if (q.length < 2) return [];
 	const tokens = tokensOf(q);
-	const zones = zone === 'all' ? ['index', 'functions', 'insights', 'capabilities', 'daily'] : [zone];
+	const zones = zone === 'all' ? ['index', 'functions', 'insights', 'capabilities', 'skills', 'daily'] : [zone];
 	const files = [];
 	if (zones.includes('index')) files.push({ zone: 'index', name: 'MEMORY.md', file: path.join(root, 'MEMORY.md') });
-	for (const z of ['functions', 'insights', 'capabilities']) {
+	for (const z of ['functions', 'insights', 'capabilities', 'skills']) {
 		if (!zones.includes(z)) continue;
 		let names = [];
 		try {
@@ -2560,14 +2912,16 @@ async function searchMemory(root, rawQuery, { zone = 'all', limit = 20 } = {}) {
 
 /** Build one recall UserMessage (form 'recall', plugin producer kind). */
 function buildRecallMessage(lines) {
+	const hasSkill = lines.some((l) => l.zone === 'skill');
 	const text = [
 		'### 记忆召回（memory-manager）',
 		'',
 		'本轮用户输入与以下已有记忆的索引行相关。**先查后写**：涉及这些主题时先读对应文件再行动，不要凭空重推已有结论；如确属新工作，正常进行即可：',
 		'',
-		...lines.map((l) => `- ${l.summary} → [${l.href}](${l.href})`),
+		...lines.map((l) => `- ${l.zone === 'skill' ? '⭐ 已结晶技能：' : ''}${l.summary} → [${l.href}](${l.href})${l.zone === 'skill' ? '（先读程序按步骤走，不要再现场推导）' : ''}`),
 		'',
-	].join('\n');
+		hasSkill ? 'ℹ 命中 active 技能：这是过去反复验证过的操作程序，优先直接执行其步骤；执行结果与预期不符时，回到来源功能域重新推导。' : '',
+	].filter((s) => s !== '').join('\n');
 	return {
 		role: 'user',
 		content: [{ type: 'text', text }],
@@ -2727,23 +3081,24 @@ function memoryIndexTool(opts) {
 const DISCIPLINE_TEXT = [
 	'## 持久记忆纪律（memory-manager）',
 	'',
-	'本 Harness 维护**全局**跨会话记忆（`~/.dsh/memory/`，即 dshHome 的 memory/ 目录；十一个工具：memory_read / memory_search / memory_capability / memory_write / memory_index / memory_insight / memory_fold / memory_rename / memory_check / memory_usage / memory_federation；结构见 memory/MEMORY.md）。记忆对全部项目、全部会话通用，按功能域组织而非按项目隔离。**数据流单向四层，每层只吃上一层的产出**：',
+	'本 Harness 维护**全局**跨会话记忆（`~/.dsh/memory/`，即 dshHome 的 memory/ 目录；十二个工具：memory_read / memory_search / memory_capability / memory_write / memory_index / memory_insight / memory_fold / memory_rename / memory_check / memory_usage / memory_federation / memory_skill；结构见 memory/MEMORY.md）。记忆对全部项目、全部会话通用，按功能域组织而非按项目隔离。**数据流单向五层，每层只吃上一层的产出**：',
 	'',
 	'- **第 0 层 · 每日记录（原始层）**：`YYYY-MM-DD.md` 是任务与对话过程的第一手数据，**本插件不约束其内容与格式**——用任何工具、任何方式自由记录（决策、对话、试错、片段都行）。它是一切蒸馏的原料；同一事实只在这里是"过程"，其余层只见结论。',
 	'- **第 1 层 · 功能域（memory_write）**：从每日原始记录中**归纳汲取**功能划分——一次实质工作 = 一个 functions/<功能域>.md 迭代块（蒸馏结论：动因/改动/判据/待观察 各一句）。`summary` 是本块的一句话概括；功能域该新建还是并入既有的，判断依据就是每日记录里反复出现的主题。',
 	'- **第 2 层 · 创新思想（memory_insight）**：从功能划分中**再提取**可迁移原则（会重套的、不绑定单一功能机制的），回链来源功能域；取代旧思想传 `supersedes`。',
 	'- **第 3 层 · 索引与总览（memory_index）**：**整合层**——功能域稳定后（有 ≥2 个迭代块，或用户可感知为独立主题时）用 memory_index 把它收进 MEMORY.md 索引；索引行摘要 = 从各迭代块的概括中提炼的"这个功能是什么"。索引是展示与检索的派生物，不与单次写入强绑。',
+	'- **第 4 层 · 技能（memory_skill）**：**使用环收口**——一个被反复重跑且被确认的操作，应结晶为 skills/<技能>.md 的可调用程序（何时使用/步骤/坑/验证），下次命中直接照做，不再现场推导。何时结晶：`memory_skill(candidates)` 给出机械提名（≥6 次使用 + ≥1 次确认 + 纠正率<20%，来自 .usage.jsonl），**提名≠结晶**——是否成文由你判断证据是否连贯；生命周期 candidate→active（真实任务照做成功过才转正）→retired（环境变了留档）。召回只放行 active 技能并标注 ⭐；技能=怎么做（程序），capability=有什么工具，insight=什么原则——三者别混。',
 	'- **层级定义（道/法/术/器，按普适程度分）**：**器**=指向内容的指针与检索面（MEMORY.md 双表+面板）；**术**=一个功能域"怎么做"的完整迭代史（functions/，判据"我会不会再跑一次这个操作"）；**法**=从具体操作提炼的可套原则（insights/，判据"换个项目/领域还成立吗"）；**道**=跨域都必须遵守的约束（MEMORY.md 共识区，判据"违反了会不会出事故"）。**放错层的三个信号**：① 在功能域里翻到普适断言 → 该升到 insights；② 同一句话想写进两个功能域 → 该升到 insights；③ 一条"原则"每次都要附带操作步骤才能用 → 该降回 functions。**反例**：索引行里写推导过程；迭代块里写"以后所有项目都应该……"；原则写成"1. 先运行 X；2. 再执行 Y"；把某次技术选型记成共识。',
 	'- **先查后写**：涉及"项目里怎么做 / 为什么这么做 / 环境常量"时，先 `memory_read kind=index`（行内摘要判断相关性，再打开对应文件）；只记得片段、说不清在哪个域或哪天时用 `memory_search`（全库排序检索，返回命中的分区/文件/行号/小节/片段）。**动手前先查 `memory_capability`**：外部 CLI / MCP / 已装软件都在 `capabilities/` 台账里，能省下一整轮摸索。不要凭空重推已有结论。',
 	'- **用到的外部工具要登记**：只有**项目外部**的工具才进台账——第三方 CLI / MCP / 已装软件，且调用它需要摸索（确切命令、前提、踩过的坑）。不登记：harness 自带工具（shell/文件/网络等，模型本来就会）、本项目自己的脚本与 API（那是 functions/ 迭代块）。台账按工具一文件、就地更新——**不是流水账，是索引**。下次同类任务先 `action=list`，不要重新摸索同一个工具。',
 	'- **蒸馏不搬过程**：迭代块只写结论；逐条实现清单、调试经过属于每日原始层与会话/代码。块 >900 字或概括 >110 字写入告警，体检 R14 复查。',
-	'- **经验二分**：会**重跑**的操作进 functions/；会**重套**的原则用 memory_insight 进 insights/；跨功能共识与环境常量只在 MEMORY.md。',
+	'- **经验三分**：会**重跑**的操作进 functions/；会**重套**的原则用 memory_insight 进 insights/；**反复重跑且被验证**的操作程序用 memory_skill 结晶进 skills/；跨功能共识与环境常量只在 MEMORY.md。',
 	'- **使用信号让记忆自己排序**：召回命中与 memory_read 会自动记信号；用户纠正/明确认可时用 `memory_usage(action=record, kind=correction|positive)` 记一笔（这是分层判断里唯一不能自动获得的信号）。`memory_usage(action=report)` 给出 实验/专项/通用 建议；某域近 7 天纠正率 >40% 时体检 R18 报熔断——先重构再追加。',
 	'- **守护型**：低频但高价值的记忆（安全审计、关键踩坑、兜底规则）用 `memory_write(guard=true)` 标记，体检的冷记忆规则会跳过它——不要因为"很久没写"就删掉兜底经验。',
 	'- **项目归属**：涉及特定项目的记忆，在功能域 slug 或正文里注明项目名（如 `toolbox-login`）。功能域多到单根过大时，可启用**联邦模式**（`federation: { root, projects }`）：项目真相源留在各项目记忆根，`memory_federation` 负责刷副本与跨项目索引，项目细节不上升。',
 	'- **收缩机制**：功能文件超 30KB 用 `memory_fold` 折叠最旧块；MEMORY.md 超线按 ### 子分区拆分；重命名/合并用 `memory_rename`（自动改写引用并验证死链清零）。',
 	'- 批量改动记忆后跑 `memory_check` 体检。',
-	'- 归属口诀：会**重跑**的操作（术·functions/）、会**重套**的原则（法·insights/）、违反即出事故的约束（道·共识区）、指向内容的指针（器·索引与面板）；原始过程永远只留在每日记录。',
+	'- 归属口诀：会**重跑**的操作（术·functions/）、会**重套**的原则（法·insights/）、**反复跑通且验证**的程序（技能·skills/）、违反即出事故的约束（道·共识区）、指向内容的指针（器·索引与面板）；原始过程永远只留在每日记录。',
 ].join('\n');
 
 // ---------------------------------------------------------------------------
@@ -2780,6 +3135,7 @@ async function zoneCounts(root) {
 		functions: await count(path.join(root, 'functions'), (n) => n.endsWith('.md')),
 		insights: await count(path.join(root, 'insights'), (n) => n.endsWith('.md')),
 		capabilities: await count(path.join(root, 'capabilities'), (n) => n.endsWith('.md')),
+		skills: await count(path.join(root, 'skills'), (n) => n.endsWith('.md')),
 		daily: await count(root, (n) => /^\d{4}-\d{2}-\d{2}\.md$/.test(n)),
 	};
 }
@@ -2819,7 +3175,7 @@ function memoryPanelApi(opts) {
 					return json(res, 400, { error: 'invalid file name' });
 				}
 				const zone = url.searchParams.get('zone') ?? '';
-				if (!['', 'functions', 'insights', 'capabilities', 'daily'].includes(zone)) {
+				if (!['', 'functions', 'insights', 'capabilities', 'skills', 'daily'].includes(zone)) {
 					return json(res, 400, { error: 'invalid zone' });
 				}
 				if (zone === 'daily' && !/^\d{4}-\d{2}-\d{2}\.md$/.test(name)) {
@@ -2834,7 +3190,7 @@ function memoryPanelApi(opts) {
 			}
 			if (seg === 'list') {
 				const zone = url.searchParams.get('zone');
-				if (!['functions', 'insights', 'capabilities', 'daily'].includes(zone)) return json(res, 400, { error: 'invalid zone' });
+				if (!['functions', 'insights', 'capabilities', 'skills', 'daily'].includes(zone)) return json(res, 400, { error: 'invalid zone' });
 				const dir = zone === 'daily' ? root : path.join(root, zone);
 				let names = [];
 				try {
@@ -2868,7 +3224,7 @@ function memoryPanelApi(opts) {
 				// file order, so a hit in the first file always outranked a better
 				// one further down.
 				const zoneParam = url.searchParams.get('zone');
-				const zone = ['functions', 'insights', 'capabilities', 'daily'].includes(zoneParam) ? zoneParam : 'all';
+				const zone = ['functions', 'insights', 'capabilities', 'skills', 'daily'].includes(zoneParam) ? zoneParam : 'all';
 				const hits = await searchMemory(root, q, { zone, limit: 60 });
 				return json(res, 200, { hits });
 			}
@@ -2918,6 +3274,7 @@ export function apply(ctx, config) {
 		ctx.tools.register(memoryCheckTool(opts)),
 		ctx.tools.register(memoryUsageTool(opts)),
 		ctx.tools.register(memoryFederationTool(opts)),
+		ctx.tools.register(memorySkillTool(opts)),
 	];
 
 	// Proactive recall: on every proposed step, match the batch's user text
@@ -3004,4 +3361,4 @@ export function apply(ctx, config) {
 	};
 }
 
-export { name, inject, dshHome, joinDshHome, resolveRoot, resolveDshRoot, runHealthCheck, panelizeHealth, zoneCounts, tokensOf, matchIndexRows, DISCIPLINE_TEXT };
+export { name, inject, dshHome, joinDshHome, resolveRoot, resolveDshRoot, runHealthCheck, panelizeHealth, zoneCounts, tokensOf, matchIndexRows, buildRecallMessage, DISCIPLINE_TEXT };
