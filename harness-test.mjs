@@ -7,7 +7,7 @@
  * The Host installation must be discoverable (see resolveDshRoot): set
  * DSH_INSTALL_DIR when the harness install is not the process's own ancestor.
  */
-import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -276,6 +276,64 @@ const w10 = await T.memory_write.execute(
 	exec,
 );
 ok(!w10.warnings.some((x) => x.includes('本块正文')), 'a distilled block raises no verbosity warning');
+
+// 15) daily-thread dedupe: the SECOND write with the same title + feature on
+// the same day is recognized as an identical audit line — it warns and the
+// daily file keeps exactly one copy (the function file is append-only and
+// still receives the block; the audit thread is the deduped surface).
+const w12 = await T.memory_write.execute(
+	{ feature: '测试功能', title: '重复写入审计行', summary: '验证每日线索去重', result: 'done' },
+	exec,
+);
+ok(!w12.warnings.some((x) => x.includes('重复写入被跳过')), 'first write of the title is not deduped');
+const w12b = await T.memory_write.execute(
+	{ feature: '测试功能', title: '重复写入审计行', summary: '验证每日线索去重', result: 'done' },
+	exec,
+);
+ok(w12b.warnings.some((x) => x.includes('重复写入被跳过')), `repeat write warns: ${w12b.warnings.join(' | ').slice(0, 60)}`);
+const dAfter = await T.memory_read.execute({ kind: 'daily' }, exec);
+const dupsAfter = dAfter.content.split('\n').filter((l) => l.includes('- 重复写入审计行 →'));
+ok(dupsAfter.length === 1, `daily line appears exactly once (${dupsAfter.length})`);
+// a different title on the same day still appends normally
+const w13 = await T.memory_write.execute(
+	{ feature: '测试功能', title: '同日不同标题照常入账', summary: '不同结论不受去重影响', result: 'done' },
+	exec,
+);
+ok(!w13.warnings.some((x) => x.includes('重复写入被跳过')), 'distinct title not deduped');
+const dAfter2 = await T.memory_read.execute({ kind: 'daily' }, exec);
+ok(dAfter2.content.includes('- 同日不同标题照常入账'), 'distinct daily line appended');
+
+// 15b) R15: duplicated index rows and duplicated table sections are flagged.
+// Simulate the fallback-table twin by hand-editing the index. The twin row
+// carries the twin's own summary, so the upsert's column-2 refresh cannot
+// absorb the duplicate — only the section self-heal (or a manual fix) removes it.
+const idxPath = w1.indexFile;
+const idxNow = await readFile(idxPath, 'utf8');
+const twinSection = [
+	'## 功能域（细节在子目录，本表只留指针）',
+	'',
+	'| 功能域摘要 | 一句话状态 / 待验证 | 过程链接 | 摘要 |',
+	'|---|---|---|---|',
+	'| 测试功能 | 旧代兜底表里的一行 | [functions/测试功能.md](functions/测试功能.md) |',
+	'',
+].join('\n');
+await writeFile(idxPath, idxNow + '\n' + twinSection, 'utf8');
+const c5 = await T.memory_check.execute({}, exec);
+const r15 = c5.results.filter((r) => r.rule === 'R15');
+ok(r15.some((r) => r.message.includes('测试功能')), `R15 flags the duplicated row (${r15.length} R15)`);
+ok(r15.some((r) => r.message.includes('出现 2 次')), 'R15 flags the duplicated section');
+// the self-healing upsert removes the twin table on the next write
+const w14 = await T.memory_write.execute(
+	{ feature: '测试功能', title: '触发自愈的写入', summary: 'upsert 后重复表消失', result: 'done' },
+	exec,
+);
+ok(!w14.warnings.some((x) => x.includes('表')), 'self-heal write raises no duplicate-table warning');
+const idxHealed = await readFile(idxPath, 'utf8');
+ok(!idxHealed.includes('## 功能域（细节在子目录'), 'twin table removed by upsert self-heal');
+const rows = (idxHealed.match(/^\| 测试功能 \|/gm) ?? []).length;
+ok(rows === 1, `index has exactly one 测试功能 row (rows=${rows})`);
+const c6 = await T.memory_check.execute({}, exec);
+ok(c6.results.every((r) => r.rule !== 'R15'), `R15 clean after self-heal (${c6.results.filter((r) => r.rule === 'R15').length})`);
 
 await rm(root, { recursive: true, force: true });
 console.log(failures === 0 ? 'ALL PASS' : `${failures} FAILURES`);

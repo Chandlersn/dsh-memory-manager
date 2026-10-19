@@ -409,6 +409,21 @@ function upsertIndexRow(indexText, headingPrefix, headerRow, firstCell, newRow) 
 		const t = indexText.replace(/\n*$/, '\n');
 		return `${t}\n${headingPrefix}（细节在子目录）\n\n${headerRow}\n${sepOf(headerRow)}\n${newRow}\n`;
 	}
+	// Self-heal: a heading that only STARTS WITH the anchor prefix (an older
+	// template generation, e.g. `## 功能域（细节在子目录，本表只留指针）` under a
+	// `## 功能域` anchor) is the same table duplicated by the fallback path.
+	// Keep the first occurrence; drop every later one including its data rows,
+	// so the next upsert edits the real table instead of appending a twin.
+	// Generation-rename twins (heading no longer shares the prefix but carries
+	// the same table header row, e.g. `## 功能域（…）` vs `## 功能模块索引…`)
+	// are recognized by that header row instead of the heading text.
+	for (let i = lines.length - 1; i > secStart; i--) {
+		if (!lines[i].startsWith('## ')) continue;
+		if (!lines[i].startsWith(headingPrefix) && lines[i + 2] !== headerRow) continue;
+		let end = i + 1;
+		while (end < lines.length && !lines[end].startsWith('## ')) end++;
+		lines.splice(i, end - i);
+	}
 	let headIdx = -1;
 	for (let i = secStart + 1; i < lines.length; i++) {
 		if (lines[i].startsWith('## ')) break;
@@ -434,7 +449,12 @@ function upsertIndexRow(indexText, headingPrefix, headerRow, firstCell, newRow) 
 	return lines.join('\n');
 }
 
-/** Append one bullet under `sectionHeading` (section created at end when missing). */
+/**
+ * Append one bullet under `sectionHeading` (section created at end when
+ * missing). An exact duplicate of an existing bullet in the same section is
+ * detected and reported instead of appended — the daily thread is an audit
+ * trail, so a repeated line is a data bug, not content.
+ */
 function appendUnderHeading(text, sectionHeading, line) {
 	const lines = text.split('\n');
 	let secStart = -1;
@@ -446,14 +466,18 @@ function appendUnderHeading(text, sectionHeading, line) {
 	}
 	if (secStart === -1) {
 		const t = text.replace(/\n*$/, '\n');
-		return `${t}\n${sectionHeading}\n\n${line}\n`;
+		return { text: `${t}\n${sectionHeading}\n\n${line}\n`, duplicate: false };
 	}
 	let end = secStart + 1;
 	while (end < lines.length && !lines[end].startsWith('## ')) end++;
+	const body = lines.slice(secStart + 1, end);
+	if (body.some((l) => l.trim() === line.trim())) {
+		return { text: lines.join('\n'), duplicate: true };
+	}
 	let at = end;
 	while (at > secStart + 1 && lines[at - 1].trim() === '') at--;
 	lines.splice(at, 0, line);
-	return lines.join('\n');
+	return { text: lines.join('\n'), duplicate: false };
 }
 
 /**
@@ -611,6 +635,35 @@ async function runHealthCheck(root, opts) {
 	if (emptySummary) add('WARN', 'R5', `${emptySummary} 个索引行缺少一行摘要（摘要列是索引判断相关性的唯一依据）`);
 	if (longRows.length) {
 		add('WARN', 'R14', `索引行摘要过长（摘要是一句话，细节应留在功能文件）：${longRows.join('、')}`);
+	}
+
+	// R15: duplicated rows / duplicated table sections. The index is a lookup
+	// surface; a repeated row (same slug cell) or a repeated table heading makes
+	// recall inject the same fact twice and hides which row is authoritative.
+	const rowSlugCount = new Map();
+	let dupeRows = 0;
+	for (const raw of memText.split('\n')) {
+		const s = raw.trim();
+		if (!s.startsWith('|')) continue;
+		const cells = s.replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
+		if (cells.length < 3 || cells.every((c) => /^[-: ]*$/.test(c))) continue;
+		const slug = cells[0];
+		rowSlugCount.set(slug, (rowSlugCount.get(slug) ?? 0) + 1);
+	}
+	for (const [slug, n] of rowSlugCount) {
+		if (n > 1) {
+			dupeRows++;
+			add('WARN', 'R15', `索引行「${slug}」出现 ${n} 次（同一事实只在一处为真）：确认哪一行是现状，删掉其余行`);
+		}
+	}
+	const headingCount = new Map();
+	for (const raw of memText.split('\n')) {
+		const s = raw.trim();
+		if (!s.startsWith('## ')) continue;
+		headingCount.set(s, (headingCount.get(s) ?? 0) + 1);
+	}
+	for (const [h, n] of headingCount) {
+		if (n > 1) add('WARN', 'R15', `索引小节「${h}」出现 ${n} 次（多为模板换代后锚点失配的兜底产物）：保留第一处，删除其余小节`);
 	}
 
 	await checkLinks(memText, memPath, root, add);
@@ -1046,7 +1099,11 @@ function memoryWriteTool(opts) {
 			// 3) daily thread
 			const dailyPath = path.join(root, `${date}.md`);
 			let dailyText = (await readIfExists(dailyPath)) ?? dailyTemplate(date);
-			dailyText = appendUnderHeading(dailyText, DAILY_SECTION, `- ${title} → [functions/${feature}.md](functions/${feature}.md)`);
+			const dailyApp = appendUnderHeading(dailyText, DAILY_SECTION, `- ${title} → [functions/${feature}.md](functions/${feature}.md)`);
+			dailyText = dailyApp.text;
+			if (dailyApp.duplicate) {
+				warnings.push(`每日线索已有完全相同的一行（重复写入被跳过）：「${title}」——同一结论同一天只记一次；若确为第二次实质改动，请换一个更具体的标题`);
+			}
 			await writeText(dailyPath, dailyText);
 
 			// 4) resolve open items (R2 勾掉): mark still-open daily entries for
@@ -1146,14 +1203,14 @@ function memoryInsightTool(opts) {
 			} else {
 				text = replaceSection(existing, '## 核心原则', `- ${principle}`);
 				const evo = `- ${date} 调整为：${principle}${args.evolution ? `（${oneLine(args.evolution)}）` : ''}`;
-				text = appendUnderHeading(text, '## 思想演进', evo);
+				text = appendUnderHeading(text, '## 思想演进', evo).text;
 				text = text.replace(/^> 来源：.*$/m, `> 来源：${srcLine}`);
 				// applicability is refreshed too: an evolved principle usually widens,
 				// narrows, or replaces the scope it applies to.
 				if (args.applicability !== undefined && oneLine(args.applicability)) {
 					text = replaceSection(text, '## 适用面', `- ${oneLine(args.applicability)}`);
 				}
-				if (args.open !== undefined && oneLine(args.open)) text = appendUnderHeading(text, '## 待观察', `- ${oneLine(args.open)}`);
+				if (args.open !== undefined && oneLine(args.open)) text = appendUnderHeading(text, '## 待观察', `- ${oneLine(args.open)}`).text;
 			}
 			await writeText(p, text);
 
@@ -1174,8 +1231,7 @@ function memoryInsightTool(opts) {
 					const stamp =
 						`> ⚠️ 已被取代 → [${theme}.md](${theme}.md)（${date}）。以下内容保留作为决策历史。`;
 					const stamped = oldText.replace(/^/, `${stamp}\n\n`);
-					const evolved = appendUnderHeading(stamped, '## 思想演进', `- ${date} 被 [${theme}.md](${theme}.md) 取代`);
-					await writeText(oldPath, evolved);
+					await writeText(oldPath, appendUnderHeading(stamped, '## 思想演进', `- ${date} 被 [${theme}.md](${theme}.md) 取代`).text);
 					supersededFile = oldPath;
 				}
 			}
@@ -1191,7 +1247,11 @@ function memoryInsightTool(opts) {
 			// 3) daily thread
 			const dailyPath = path.join(root, `${date}.md`);
 			let dailyText = (await readIfExists(dailyPath)) ?? dailyTemplate(date);
-			dailyText = appendUnderHeading(dailyText, DAILY_SECTION, `- 思想：${theme} → [insights/${theme}.md](insights/${theme}.md)`);
+			const dailyApp = appendUnderHeading(dailyText, DAILY_SECTION, `- 思想：${theme} → [insights/${theme}.md](insights/${theme}.md)`);
+			dailyText = dailyApp.text;
+			if (dailyApp.duplicate) {
+				warnings.push(`每日线索已有完全相同的一行（重复写入被跳过）：「思想：${theme}」——同一思想同一天只记一次`);
+			}
 			await writeText(dailyPath, dailyText);
 
 			// Omit `supersededFile` entirely when nothing was superseded: an
@@ -1406,8 +1466,26 @@ function memoryRenameTool(opts) {
 					.split(`| ${from} |`).join(`| ${to} |`);
 				if (merging) {
 					// A merged source's index row must go; the target row remains.
+					// Order matters: the replace above already renamed the source row's
+					// first cell to `to` (the replacement `| ${from} |` runs before this
+					// filter), so match by the pre-rename spelling is impossible here.
+					// Identify the stale row instead by its href: it still points at the
+					// now-deleted `functions/${from}.md`… which the replace ALSO renamed.
+					// The only stable trait left is the row's position: it sits in the
+					// SAME table as the target's row and carries a different summary.
+					// Simplest correct move: drop rows whose first cell is `to` beyond
+					// the first occurrence — the kept one is whichever appears first.
 					const lines = after.split('\n');
-					const cleaned = lines.filter((l) => !(l.startsWith('|') && l.split('|')[1]?.trim() === from));
+					let seenTarget = false;
+					const cleaned = lines.filter((l) => {
+						if (!l.startsWith('|')) return true;
+						const cell0 = l.split('|')[1]?.trim();
+						if (cell0 === to) {
+							if (seenTarget) return false; // extra row created by the rename
+							seenTarget = true;
+						}
+						return true;
+					});
 					after = cleaned.join('\n');
 				}
 				if (after !== before) {
@@ -1526,7 +1604,7 @@ function buildRecallMessage(lines) {
 function memoryCheckTool(opts) {	return defineTool({
 		name: 'memory_check',
 		description:
-			'Lint the memory root (read-only): MEMORY.md size caps + rows missing one-line summaries (R5), dangling / root-escaping links (R10), function files reverse-linking to MEMORY.md detail (R8), function-file size (R9), over-detailed iteration blocks and index rows that were not distilled (R14), iteration date tags not append-ordered (R3), legacy/ files missing the 历史原貌 header (R13). Run it after batch memory edits or when memory_check has never run on this root.',
+			'Lint the memory root (read-only): MEMORY.md size caps + rows missing one-line summaries (R5), dangling / root-escaping links (R10), function files reverse-linking to MEMORY.md detail (R8), function-file size (R9), over-detailed iteration blocks and index rows that were not distilled (R14), duplicated index rows or table sections (R15), iteration date tags not append-ordered (R3), legacy/ files missing the 历史原貌 header (R13). Run it after batch memory edits or when memory_check has never run on this root.',
 		parameters: {},
 		output: {
 			schema: {
