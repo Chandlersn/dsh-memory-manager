@@ -79,6 +79,55 @@ Layer 3 · MEMORY.md index + panel overview: one-line summaries + counts — a d
   `memory_check` reports **R14** at the same time. The system shrinks, it does not only grow.
 - **Compaction**: past 30KB, `memory_fold` folds the oldest iteration blocks into an "early evolution"
   paragraph (one line each: date tag + title + any result other than `done`); folded tags still take part in
+
+## Layer definitions: 道 / 法 / 术 / 器 (philosophy / rules / method / tool)
+
+The memory is layered by **how universal a piece of content is**. Each layer answers ONE question first —
+fail to answer it and the content belongs one layer down. That is the whole test:
+
+| Layer | One-line definition | The question | Where it lives |
+|---|---|---|---|
+| **器 (tool)** | pointers to content and the retrieval surface | is this content, or a pointer to content? | MEMORY.md dual tables + panel |
+| **术 (method)** | the full iteration history of how one area does its work | would I re-run this operation? | `functions/<area>.md` |
+| **法 (rule)** | a principle lifted out of concrete work | does it still hold in another project/domain? | `insights/<theme>.md` |
+| **道 (philosophy)** | a constraint every area must respect | would violating it cause an incident? | MEMORY.md consensus section |
+
+### Boundaries: what must NOT be in each layer (counter-examples)
+
+| Layer | Misplaced content looks like | Why it is wrong |
+|---|---|---|
+| **器** | derivation text written into an index row | the index is a lookup surface; stuffing it doubles maintenance |
+| **术** | "every project from now on should…" inside an iteration block | a function area answers how THIS area works; a universal claim cannot be verified here |
+| **法** | a principle written as "1. run X; 2. run Y" | if it rewrites into a manual it is not a principle — steps belong to 术 |
+| **道** | a specific technology choice recorded as consensus | consensus is a constraint, not a log; the rationale stays in the area's blocks |
+
+### Promotion: when content should move
+
+```
+daily log (raw layer, record it however you like)
+   │ distill: the conclusion of one substantive piece of work
+   ▼
+术 · functions/<area>.md          ← memory_write's landing point
+   │ lift: the same judgement held in ≥2 unrelated areas
+   ▼
+法 · insights/<theme>.md          ← memory_insight's landing point (three gates: cross-domain / not a procedure / ≤200 chars)
+   │ converge: violating it causes an incident, with no domain exception
+   ▼
+道 · MEMORY.md consensus section  ← R19 guards it: evidence required, ≤150 chars, cross-domain claims need ≥2 sources
+   │ integrate: indexed once stable (a derivative)
+   ▼
+器 · MEMORY.md tables + panel     ← memory_index's landing point
+```
+
+**Promotion is one-way; demotion happens only when content is overturned** (`supersedes`, or an R18/R19
+finding). An overturned principle is never deleted — it keeps a "superseded" stamp where it lies, because it
+records *why* we believed it then.
+
+### Three signals that content is one layer off
+
+1. **The context feels wrong when reading it**: a universal claim found inside a function area → promote to 法
+2. **You are about to copy it**: wanting the same sentence in two areas → promote to 法
+3. **It cannot be applied as-is**: a "principle" that only works with its steps attached → demote to 术
   the same-day numbering (so `补N` never collides), and early conclusions stay traceable in that paragraph.
 
 ## Tools

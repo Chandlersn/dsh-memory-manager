@@ -321,7 +321,7 @@ function safeSlug(raw) {
 const MAX_BLOCK_CHARS = 900;
 /** 索引行摘要必须是一句话；超过即视为把迭代细节塞进了索引（R14）。 */
 const MAX_ROW_SUMMARY_CHARS = 110;
-/** 思想原则是一句判断；超过就要压（四关之「不可降级」的机械化近似）。 */
+/** 思想原则是一句判断；超过就要压（法层「不可降级」闸门的机械化近似）。 */
 const MAX_PRINCIPLE_CHARS = 200;
 /** 共识条目是约束，不是论述：一条说清一条。 */
 const MAX_CONSENSUS_CHARS = 150;
@@ -887,9 +887,8 @@ async function runHealthCheck(root, opts) {
 		}
 	}
 
-	// R19: the consensus section is the highest layer (道层) — the place where a
-	// binding constraint lives. A constraint that cannot point at its evidence is
-	// an opinion, and one that runs long is an essay. Both are cheap to check.
+	// R19: the consensus section is the highest layer (道层) — a binding constraint
+	// lives here, so it must point back at its evidence.
 	{
 		const at = memText.indexOf(CONSENSUS_HEADING);
 		if (at !== -1) {
@@ -1821,20 +1820,20 @@ function memoryInsightTool(opts) {
 				else skipped.push(s);
 			}
 			if (skipped.length) warnings.push(`来源不存在，未回链：${skipped.join('、')}（先用 memory_write 建立功能文件）`);
-			// Verification gate (borrowed from the 道层 four-gate idea, reduced to
-			// what is mechanically checkable): a principle that claims to be
+			// Verification gate (the 法层's promotion test, reduced to what is
+			// mechanically checkable): a principle that claims to be
 			// transferable must show up in >=2 unrelated areas, and must not be an
 			// operation manual in disguise. Both are WARN, not FAIL — this is a
 			// judgement the model should make with the warning in front of it.
 			if (linked.length < 2) {
 				warnings.push(
-					`跨域闸门未过：只有 ${linked.length} 个来源功能域（四关之「跨域迁移」要求 ≥2 个无关领域）。本条仍属专项经验：可以留在 insights/，但不要当普适原则用，也不要升级为共识`,
+					`跨域闸门未过：只有 ${linked.length} 个来源功能域（法层「跨域迁移」要求 ≥2 个无关领域）。本条仍属专项经验：可以留在 insights/，但不要当普适原则用，也不要升级为共识`,
 				);
 			}
 			const stepLike = /(^|\s)(\d+[.、)]|步骤|第[一二三四五]步|命令行|执行命令|运行 `|点击|打开菜单|安装依赖)/;
 			if (stepLike.test(principle)) {
 				warnings.push(
-					`可降级警告：原则里出现操作步骤句式（四关之「不可降级」：能改写成操作手册的就不是原则）。把步骤留在 functions/，这里只留判断`,
+					`可降级警告：原则里出现操作步骤句式（法层「不可降级」闸门：能改写成操作手册的就不是原则）。把步骤留在 functions/，这里只留判断`,
 				);
 			}
 			if (charLen(principle) > MAX_PRINCIPLE_CHARS) {
@@ -2499,6 +2498,7 @@ const DISCIPLINE_TEXT = [
 	'- **第 1 层 · 功能域（memory_write）**：从每日原始记录中**归纳汲取**功能划分——一次实质工作 = 一个 functions/<功能域>.md 迭代块（蒸馏结论：动因/改动/判据/待观察 各一句）。`summary` 是本块的一句话概括；功能域该新建还是并入既有的，判断依据就是每日记录里反复出现的主题。',
 	'- **第 2 层 · 创新思想（memory_insight）**：从功能划分中**再提取**可迁移原则（会重套的、不绑定单一功能机制的），回链来源功能域；取代旧思想传 `supersedes`。',
 	'- **第 3 层 · 索引与总览（memory_index）**：**整合层**——功能域稳定后（有 ≥2 个迭代块，或用户可感知为独立主题时）用 memory_index 把它收进 MEMORY.md 索引；索引行摘要 = 从各迭代块的概括中提炼的"这个功能是什么"。索引是展示与检索的派生物，不与单次写入强绑。',
+	'- **层级定义（道/法/术/器，按普适程度分）**：**器**=指向内容的指针与检索面（MEMORY.md 双表+面板）；**术**=一个功能域"怎么做"的完整迭代史（functions/，判据"我会不会再跑一次这个操作"）；**法**=从具体操作提炼的可套原则（insights/，判据"换个项目/领域还成立吗"）；**道**=跨域都必须遵守的约束（MEMORY.md 共识区，判据"违反了会不会出事故"）。**放错层的三个信号**：① 在功能域里翻到普适断言 → 该升到 insights；② 同一句话想写进两个功能域 → 该升到 insights；③ 一条"原则"每次都要附带操作步骤才能用 → 该降回 functions。**反例**：索引行里写推导过程；迭代块里写"以后所有项目都应该……"；原则写成"1. 先运行 X；2. 再执行 Y"；把某次技术选型记成共识。',
 	'- **先查后写**：涉及"项目里怎么做 / 为什么这么做 / 环境常量"时，先 `memory_read kind=index`（行内摘要判断相关性，再打开对应文件）；只记得片段、说不清在哪个域或哪天时用 `memory_search`（全库排序检索，返回命中的分区/文件/行号/小节/片段）。不要凭空重推已有结论。',
 	'- **蒸馏不搬过程**：迭代块只写结论；逐条实现清单、调试经过属于每日原始层与会话/代码。块 >900 字或概括 >110 字写入告警，体检 R14 复查。',
 	'- **经验二分**：会**重跑**的操作进 functions/；会**重套**的原则用 memory_insight 进 insights/；跨功能共识与环境常量只在 MEMORY.md。',
@@ -2507,7 +2507,7 @@ const DISCIPLINE_TEXT = [
 	'- **项目归属**：涉及特定项目的记忆，在功能域 slug 或正文里注明项目名（如 `toolbox-login`）。功能域多到单根过大时，可启用**联邦模式**（`federation: { root, projects }`）：项目真相源留在各项目记忆根，`memory_federation` 负责刷副本与跨项目索引，项目细节不上升。',
 	'- **收缩机制**：功能文件超 30KB 用 `memory_fold` 折叠最旧块；MEMORY.md 超线按 ### 子分区拆分；重命名/合并用 `memory_rename`（自动改写引用并验证死链清零）。',
 	'- 批量改动记忆后跑 `memory_check` 体检。',
-	'- 归属口诀：会**重跑**的操作（functions/）、会**重套**的原则（insights/）；原始过程永远只留在每日记录。',
+	'- 归属口诀：会**重跑**的操作（术·functions/）、会**重套**的原则（法·insights/）、违反即出事故的约束（道·共识区）、指向内容的指针（器·索引与面板）；原始过程永远只留在每日记录。',
 ].join('\n');
 
 // ---------------------------------------------------------------------------
