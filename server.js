@@ -304,7 +304,7 @@ function memoryIndexTemplate() {
 		'> 写入纪律：一次实质工作 = 一个 functions/<功能域>.md 迭代块（蒸馏结论，不是过程流水）+ 本索引一行摘要 + 当日线索一行；迭代细节永不写进本文件。',
 		'> 性质二分：可复跑的操作进 functions/，可重套的原则进 insights/（回链来源）；共识/规范与环境常量只留在本文件。',
 		'',
-		`${FUNC_TABLE_HEADING}（细节在 functions/，本表只留指针）`,
+		`${FUNC_TABLE_HEADING}（functions/）`,
 		'',
 		FUNC_TABLE_HEADER,
 		'|---|---|---|---|',
@@ -407,7 +407,7 @@ function upsertIndexRow(indexText, headingPrefix, headerRow, firstCell, newRow) 
 	}
 	if (secStart === -1) {
 		const t = indexText.replace(/\n*$/, '\n');
-		return `${t}\n${headingPrefix}（细节在子目录，本表只留指针）\n\n${headerRow}\n${sepOf(headerRow)}\n${newRow}\n`;
+		return `${t}\n${headingPrefix}（细节在子目录）\n\n${headerRow}\n${sepOf(headerRow)}\n${newRow}\n`;
 	}
 	let headIdx = -1;
 	for (let i = secStart + 1; i < lines.length; i++) {
