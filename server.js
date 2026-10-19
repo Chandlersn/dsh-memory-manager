@@ -2019,7 +2019,6 @@ function memoryInsightTool(opts) {
 					linkedSources: { type: 'array', required: true, items: { type: 'string' } },
 					skippedSources: { type: 'array', required: true, items: { type: 'string' } },
 					supersededFile: { type: 'string' },
-					indexBytes: { type: 'integer', required: true },
 					warnings: { type: 'array', required: true, items: { type: 'string' } },
 				},
 			},

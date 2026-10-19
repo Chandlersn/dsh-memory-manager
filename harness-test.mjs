@@ -147,6 +147,11 @@ const i1 = await T.memory_insight.execute(
 );
 ok(i1.linkedSources.length === 1 && i1.skippedSources.length === 0, `insight backlink: ${i1.linkedSources.join(',')}`);
 ok(i1.indexBytes === undefined && i1.dailyFile === undefined, 'insight touches neither index nor daily log');
+// Contract: the output schema must not require what execute no longer returns —
+// the 5.10 data-flow flip dropped indexBytes from the return but the schema kept
+// it required, so the HOST rejected every memory_insight result even though the
+// insight file was written ("missing required property value.indexBytes").
+ok(!('indexBytes' in (T.memory_insight.output?.schema?.properties ?? {})), 'memory_insight schema does not require indexBytes');
 
 // 5b) related: existing = bare sibling link; missing = plain text
 const w3 = await T.memory_write.execute(
