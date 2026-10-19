@@ -137,8 +137,11 @@ const FUNC_TABLE_HEADING = '## 功能模块索引';
 const INSIGHT_TABLE_HEADING = '## 创新优化思想索引';
 const FUNC_TABLE_HEADER = '| 功能域摘要 | 一句话状态 / 待验证 | 过程链接 | 摘要 |';
 const INSIGHT_TABLE_HEADER = '| 思想主题 | 一句话内涵 / 解决的权衡 | 思想内容 | 相关（来源功能） |';
-const DAILY_SECTION = '## 今日功能线索';
-const DAILY_OPEN_SECTION = '## 今日待观察';
+// Daily-log structure is no longer imposed: the raw layer is free-form, so the
+// plugin cannot assume a fixed '今日功能线索' heading. resolveOpenItems scans the
+// whole file for still-open (non-✅) lines referencing the feature instead.
+const DAILY_SECTION = '## 今日功能线索'; // legacy template heading, kept for old logs
+const DAILY_OPEN_SECTION = '## 今日待观察'; // legacy template heading
 const RESULT_LABEL = { done: '完成', reverted: '已回滚', pending: '进行中' };
 
 // ---------------------------------------------------------------------------
@@ -301,7 +304,7 @@ function memoryIndexTemplate() {
 		'# 记忆管理（索引 + 纪律）',
 		'',
 		'> 读取纪律：先查本索引（行内摘要足以判断相关性），再打开对应 functions/ 文件；日期不是骨架，只做迭代标签。',
-		'> 写入纪律：一次实质工作 = 一个 functions/<功能域>.md 迭代块（蒸馏结论，不是过程流水）+ 本索引一行摘要 + 当日线索一行；迭代细节永不写进本文件。',
+		'> 数据流：每日记录（原始层，自由格式）→ memory_write 蒸馏出 functions/ 迭代块 → memory_insight 提取 insights/ 思想 → memory_index 收进本索引（整合展示层）。本文件是派生物，不与单次写入强绑。',
 		'> 性质二分：可复跑的操作进 functions/，可重套的原则进 insights/（回链来源）；共识/规范与环境常量只留在本文件。',
 		'',
 		`${FUNC_TABLE_HEADING}（functions/）`,
@@ -348,14 +351,9 @@ function functionFileTemplate(feature, date) {
 
 function dailyTemplate(date) {
 	return [
-		`# ${date} 决策线索`,
+		`# ${date} 记录`,
 		'',
-		'> 写入纪律：当日决策一行 + 链接（审计脉络，不写过程）；结论沉淀进 functions/ 迭代块，索引进 MEMORY.md。',
-		'',
-		DAILY_SECTION,
-		'',
-		'## 今日待观察',
-		'- ',
+		'> 本文件是原始层：任务与对话过程的第一手数据，内容与格式由你（模型/harness）自主决策，插件不做任何约束。蒸馏时插件从这里归纳功能划分——记录得越真实，功能域的依据越扎实。',
 		'',
 	].join('\n');
 }
@@ -481,11 +479,12 @@ function appendUnderHeading(text, sectionHeading, line) {
 }
 
 /**
- * Move every still-open daily-log entry that references `feature` into the
- * 今日待观察 section with a ✅ resolved marker (the R2 "勾掉" move): the
- * thread stays in the day it was raised, gains a ✅ and a link to the
- * resolving function file, and is never re-copied forward.
- * Applies to every daily log from `sinceDate` to today. Returns files touched.
+ * Mark still-open daily-log entries that reference `feature` with a ✅ resolved
+ * stamp (the R2 "勾掉" move): the thread stays in the day it was raised, gains
+ * a bare ✅ (no second pointer), and is never re-copied forward. The raw layer
+ * is free-form, so this scans every bullet that links the feature file — no
+ * fixed section heading is required. Applies to every daily log from
+ * `sinceDate` to today. Returns files touched.
  */
 async function resolveOpenItems(root, feature, sinceDate, today) {
 	const touched = [];
@@ -954,7 +953,7 @@ function memoryWriteTool(opts) {
 	return defineTool({
 		name: 'memory_write',
 		description:
-			'Append ONE iteration block to functions/<feature>.md (function-area project memory; dates are tags, blocks are append-only) and auto-sync the MEMORY.md index row (via `summary`) and the daily decision thread. Provide `currentState` together with the block so the file-head summary never drifts — appending without refreshing the head is the failure mode this tool exists to prevent. Details live HERE, never in MEMORY.md. A block is a DISTILLED conclusion (动因 / 改动 / 判据 / 待观察, one line each): per-step changelists, code-level enumerations and debugging process stay in the session and the code — writing them into memory is the failure R14 flags.',
+			'Append ONE iteration block to functions/<feature>.md (distilled conclusion, not a process log; dates are tags, blocks are append-only) and refresh the file-head stable-state summary via `currentState`. The daily log (YYYY-MM-DD.md) is the RAW layer — the model/harness records whatever it wants there with any means; this tool never touches it. The MEMORY.md index row is written separately (memory_index) once a feature area stabilizes, so distillation flows daily → functions → index, one direction per step. A block is a DISTILLED conclusion (动因 / 改动 / 判据 / 待观察, one line each): per-step changelists, code-level enumerations and debugging process stay in the session, the daily log and the code — writing them into the block is the failure R14 flags.',
 		parameters: {
 			feature: { type: 'string', required: true, description: '功能域 slug（文件名，不含 .md）：这个迭代属于哪个功能/模块；不确定就先 memory_read kind=index。' },
 			title: { type: 'string', required: true, description: '一句话结论式标题，如“修复 config 加载顺序导致的空指针”；不要“优化了一些问题”这类空话。' },
@@ -964,7 +963,7 @@ function memoryWriteTool(opts) {
 			result: { type: 'string', enum: ['done', 'reverted', 'pending'], description: '结果：done=完成 / reverted=已回滚 / pending=进行中。' },
 			open: { type: 'string', description: '待观察（一句话）：遗留风险或下一步要确认什么。' },
 			related: { type: 'array', description: '相关功能域 slug 列表，渲染为迭代块内的“相关”链接。', items: { type: 'string' } },
-			summary: { type: 'string', required: true, description: '索引行摘要：一句话（≤60 字），说清该功能做什么或这次的坑，能判断相关性即可；不得写迭代细节。' },
+			summary: { type: 'string', required: true, description: '本块的一句话概括（≤60 字）：从每日原始记录蒸馏本迭代时，它回答“这次迭代做了什么/解决了什么”。功能域稳定后由 memory_index 把它收进索引行。' },
 			currentState: { type: 'string', description: '刷新文件头部“当前状态摘要”：只写当前稳定行为/关键约束/隐患（3-5 条），不写历史与过程。' },
 			date: { type: 'string', description: '迭代日期 YYYY-MM-DD；缺省今天。同日第二个迭代自动加“补”后缀。' },
 			replace: {
@@ -982,12 +981,9 @@ function memoryWriteTool(opts) {
 				additionalProperties: false,
 				properties: {
 					featureFile: { type: 'string', required: true },
-					indexFile: { type: 'string', required: true },
-					dailyFile: { type: 'string', required: true },
 					appendedHeading: { type: 'string', required: true },
 					createdFunctionFile: { type: 'boolean', required: true },
 					functionBytes: { type: 'integer', required: true },
-					indexBytes: { type: 'integer', required: true },
 					resolvedDailyLogs: { type: 'array', required: true, items: { type: 'string' } },
 					warnings: { type: 'array', required: true, items: { type: 'string' } },
 				},
@@ -996,10 +992,9 @@ function memoryWriteTool(opts) {
 				const lines = [
 					`已写入：${v.appendedHeading}`,
 					`功能文件：${v.featureFile}（${v.functionBytes}B${v.createdFunctionFile ? '，新建' : ''}）`,
-					`索引已同步：${v.indexFile}（${v.indexBytes}B）`,
-					`每日线索：${v.dailyFile}`,
 				];
 				if (v.resolvedDailyLogs.length) lines.push(`✅ 已勾掉待观察项：${v.resolvedDailyLogs.join('、')}`);
+				lines.push('ℹ 索引行未自动写入——功能域稳定后用 memory_index 收进索引；每日记录是原始层，由模型自主维护。');
 				for (const w of v.warnings) lines.push(`⚠ ${w}`);
 				return [{ type: 'text', text: lines.join('\n') }];
 			},
@@ -1057,7 +1052,7 @@ function memoryWriteTool(opts) {
 			const suffixCount = countHeadingDate(fnText, date);
 			const suffix = suffixCount === 0 ? '' : suffixCount === 1 ? '补' : `补${suffixCount}`;
 			const heading = `## [${date}${suffix}] ${title}`;
-			const bullets = [];
+			const bullets = [`- **概括**：${summary}`];
 			if (args.change !== undefined && oneLine(args.change)) bullets.push(`- **改动**：${oneLine(args.change)}`);
 			if (args.reason !== undefined && oneLine(args.reason)) bullets.push(`- **原因**：${oneLine(args.reason)}`);
 			if (args.verification !== undefined && oneLine(args.verification)) bullets.push(`- **验证**：${oneLine(args.verification)}`);
@@ -1118,31 +1113,12 @@ function memoryWriteTool(opts) {
 				warnings.push(`functions/${feature}.md ${fnBytes}B > ${opts.maxFunctionBytes}B：调用 memory_fold(feature="${feature}") 折叠最旧块为早期演化段`);
 			}
 
-			// 2) index row
-			let indexText = indexNow ?? memoryIndexTemplate();
-			const row = `| ${feature} | ${summary} | [functions/${feature}.md](functions/${feature}.md) |`;
-			indexText = upsertIndexRow(indexText, FUNC_TABLE_HEADING, FUNC_TABLE_HEADER, feature, row);
-			await writeText(indexPath, indexText);
-			const indexBytes = byteLen(indexText);
-			if (indexBytes > opts.maxIndexBytes) {
-				const rowCount = indexText.split('\n').filter((l) => l.startsWith('| ') && !l.includes('---')).length;
-				warnings.push(
-					`MEMORY.md ${indexBytes}B > ${opts.maxIndexBytes}B 舒适线（${opts.maxIndexHardBytes}B 硬上限将拒绝写入）：` +
-						(rowCount > 40
-							? '功能表已超 40 行，把它拆成 ### 分组子分区（如 ### 基础设施 / ### 业务功能），共识与环境常量保持在无标题区'
-							: '压缩各行摘要，或把功能表拆成 ### 分组子分区'),
-				);
-			}
+			// 2) index row is NOT auto-written anymore: the MEMORY.md index is the
+			// integration layer (memory_index), written once a feature area
+			// stabilizes — distillation flows daily → functions → index.
 
-			// 3) daily thread
-			const dailyPath = path.join(root, `${date}.md`);
-			let dailyText = (await readIfExists(dailyPath)) ?? dailyTemplate(date);
-			const dailyApp = appendUnderHeading(dailyText, DAILY_SECTION, `- ${title} → [functions/${feature}.md](functions/${feature}.md)`);
-			dailyText = dailyApp.text;
-			if (dailyApp.duplicate) {
-				warnings.push(`每日线索已有完全相同的一行（重复写入被跳过）：「${title}」——同一结论同一天只记一次；若确为第二次实质改动，请换一个更具体的标题`);
-			}
-			await writeText(dailyPath, dailyText);
+			// 3) the daily log is the RAW layer: the model/harness records there
+			// freely with any means; this tool never touches it.
 
 			// 4) resolve open items (R2 勾掉): mark still-open daily entries for
 			// the resolved feature across logs from the day it was first raised.
@@ -1155,12 +1131,9 @@ function memoryWriteTool(opts) {
 
 			return {
 				featureFile: fnPath,
-				indexFile: indexPath,
-				dailyFile: dailyPath,
 				appendedHeading: heading,
 				createdFunctionFile: created,
 				functionBytes: fnBytes,
-				indexBytes,
 				resolvedDailyLogs: resolvedIn,
 				warnings,
 			};
@@ -1274,23 +1247,11 @@ function memoryInsightTool(opts) {
 				}
 			}
 
-			// 2) index row
-			const indexPath = path.join(root, 'MEMORY.md');
-			let indexText = (await readIfExists(indexPath)) ?? memoryIndexTemplate();
-			const relatedCell = linked.map((s) => `[${s}.md](functions/${s}.md)`).join('、') || '（来源缺失）';
-			const row = `| ${theme} | ${summary} | [insights/${theme}.md](insights/${theme}.md) | ${relatedCell} |`;
-			indexText = upsertIndexRow(indexText, INSIGHT_TABLE_HEADING, INSIGHT_TABLE_HEADER, theme, row);
-			await writeText(indexPath, indexText);
+			// 2) index row is NOT auto-written: insights land in the index via
+			// memory_index when the theme stabilizes (same integration layer as
+			// function areas).
 
-			// 3) daily thread
-			const dailyPath = path.join(root, `${date}.md`);
-			let dailyText = (await readIfExists(dailyPath)) ?? dailyTemplate(date);
-			const dailyApp = appendUnderHeading(dailyText, DAILY_SECTION, `- 思想：${theme} → [insights/${theme}.md](insights/${theme}.md)`);
-			dailyText = dailyApp.text;
-			if (dailyApp.duplicate) {
-				warnings.push(`每日线索已有完全相同的一行（重复写入被跳过）：「思想：${theme}」——同一思想同一天只记一次`);
-			}
-			await writeText(dailyPath, dailyText);
+			// 3) the daily log is the raw layer; this tool never touches it.
 
 			// Omit `supersededFile` entirely when nothing was superseded: an
 			// `undefined` property makes the tool result non-lossless JSON, which
@@ -1299,7 +1260,6 @@ function memoryInsightTool(opts) {
 				insightFile: p,
 				linkedSources: linked.map((s) => `functions/${s}.md`),
 				skippedSources: skipped.map((s) => `functions/${s}.md`),
-				indexBytes: byteLen(indexText),
 				warnings,
 			};
 			if (supersededFile) out.supersededFile = supersededFile;
@@ -1681,6 +1641,100 @@ function memoryCheckTool(opts) {	return defineTool({
 	});
 }
 
+/**
+ * memory_index — the INTEGRATION layer (data-flow layer 3). Function areas and
+ * insights are written by memory_write / memory_insight; this tool is the ONLY
+ * writer of the MEMORY.md dual tables, invoked once a feature/theme has
+ * stabilized. Keeps the index a derived, curated surface instead of a
+ * write-time side effect.
+ */
+function memoryIndexTool(opts) {
+	return defineTool({
+		name: 'memory_index',
+		description:
+			'Upsert ONE row into the MEMORY.md index (the integration layer). Call it when a feature area or insight theme has STABILIZED (>=2 iteration blocks, or clearly a standalone topic) — not per write. The row summary is distilled from the area\'s iteration-block summaries: one sentence saying what this feature IS. Zones: zone=functions or zone=insights. Unindexed-but-existing files are surfaced by memory_check (R5 orphan) so nothing silently falls out of the index.',
+		parameters: {
+			zone: { type: 'string', required: true, enum: ['functions', 'insights'], description: '收进哪张索引表。' },
+			name: { type: 'string', required: true, description: '功能域或思想主题 slug（functions/ 或 insights/ 下的既有文件名，不含 .md）。' },
+			summary: { type: 'string', required: true, description: '索引行摘要：一句话（≤60 字）说清"这是什么/解决什么"，供检索时判断相关性；从各迭代块的概括中提炼，不复制细节。' },
+			sources: { type: 'array', description: 'zone=insights 必填：来源功能域 slug 列表（渲染进"相关（来源功能）"列）。', items: { type: 'string' } },
+		},
+		output: {
+			schema: {
+				type: 'object',
+				additionalProperties: false,
+				properties: {
+					indexFile: { type: 'string', required: true },
+					zone: { type: 'string', required: true },
+					name: { type: 'string', required: true },
+					created: { type: 'boolean', required: true },
+					indexBytes: { type: 'integer', required: true },
+					warnings: { type: 'array', required: true, items: { type: 'string' } },
+				},
+			},
+			render: (_args, v) => {
+				const lines = [
+					`索引已更新：${v.zone}/${v.name}${v.created ? '（新行）' : '（更新）'}`,
+					`索引文件：${v.indexFile}（${v.indexBytes}B）`,
+				];
+				for (const w of v.warnings) lines.push(`⚠ ${w}`);
+				return [{ type: 'text', text: lines.join('\n') }];
+			},
+		},
+		presentCall: (args) => ({ card: 'generic', title: `Memory index: ${args.zone ?? ''}/${args.name ?? ''}`, kind: 'other', rawInput: args }),
+		async execute(args, exec) {
+			const root = resolveRoot(opts);
+			const zone = args.zone === 'insights' ? 'insights' : 'functions';
+			const name = safeSlug(args.name);
+			const summary = oneLine(args.summary);
+			if (!summary) throw new Error('summary is required: the index row must carry a one-line summary');
+			const warnings = [];
+			if (charLen(summary) > MAX_ROW_SUMMARY_CHARS) {
+				warnings.push(`索引行摘要 ${charLen(summary)} 字 > ${MAX_ROW_SUMMARY_CHARS}：摘要是一句话，细节留在功能文件`);
+			}
+			const indexPath = path.join(root, 'MEMORY.md');
+			let indexText = (await readIfExists(indexPath)) ?? memoryIndexTemplate();
+			const created = !indexText.includes(`| ${name} |`);
+
+			let row;
+			if (zone === 'insights') {
+				const srcs = (Array.isArray(args.sources) ? args.sources : []).map((s) => safeSlug(s)).filter((s) => s !== name);
+				if (!srcs.length) throw new Error('zone=insights requires sources: the insights table carries a source-feature column');
+				const relatedCell = srcs.map((s) => `[${s}.md](functions/${s}.md)`).join('、');
+				row = `| ${name} | ${summary} | [insights/${name}.md](insights/${name}.md) | ${relatedCell} |`;
+				if (!(await statExists(path.join(root, 'insights', `${name}.md`)))) {
+					warnings.push(`insights/${name}.md 尚不存在——索引行先建了，记得用 memory_insight 沉淀文件本体`);
+				}
+			} else {
+				row = `| ${name} | ${summary} | [functions/${name}.md](functions/${name}.md) |`;
+				if (!(await statExists(path.join(root, 'functions', `${name}.md`)))) {
+					warnings.push(`functions/${name}.md 尚不存在——索引行先建了，记得用 memory_write 落第一个迭代块`);
+				}
+			}
+			indexText = upsertIndexRow(
+				indexText,
+				zone === 'insights' ? INSIGHT_TABLE_HEADING : FUNC_TABLE_HEADING,
+				zone === 'insights' ? INSIGHT_TABLE_HEADER : FUNC_TABLE_HEADER,
+				name,
+				row,
+			);
+			await writeText(indexPath, indexText);
+			const indexBytes = byteLen(indexText);
+			if (indexBytes > opts.maxIndexBytes) {
+				warnings.push(`MEMORY.md ${indexBytes}B > ${opts.maxIndexBytes}B 舒适线：压缩各行摘要，或把功能表拆成 ### 子分区`);
+			}
+			return {
+				indexFile: indexPath,
+				zone,
+				name,
+				created,
+				indexBytes,
+				warnings,
+			};
+		},
+	});
+}
+
 // ---------------------------------------------------------------------------
 // system-prompt discipline section
 // ---------------------------------------------------------------------------
@@ -1688,18 +1742,19 @@ function memoryCheckTool(opts) {	return defineTool({
 const DISCIPLINE_TEXT = [
 	'## 持久记忆纪律（memory-manager）',
 	'',
-	'本 Harness 维护**全局**跨会话记忆（`~/.dsh/memory/`，即 dshHome 的 memory/ 目录；六个工具：memory_read / memory_write / memory_insight / memory_fold / memory_rename / memory_check；结构见 memory/MEMORY.md）。记忆对全部项目、全部会话通用，按功能域组织而非按项目隔离：',
+	'本 Harness 维护**全局**跨会话记忆（`~/.dsh/memory/`，即 dshHome 的 memory/ 目录；七个工具：memory_read / memory_write / memory_index / memory_insight / memory_fold / memory_rename / memory_check；结构见 memory/MEMORY.md）。记忆对全部项目、全部会话通用，按功能域组织而非按项目隔离。**数据流单向四层，每层只吃上一层的产出**：',
 	'',
-	'- **先查后写**：涉及“项目里怎么做 / 为什么这么做 / 环境常量”时，先 `memory_read`（kind=index 读 MEMORY.md 索引，用行内摘要判断相关性，再打开对应文件）；不要凭空重推已有结论。',
-	'- **实质工作即 memory_write**：一次 built/fixed/refactored/debug 结论 = 一个 functions/<功能域>.md 迭代块（日期只是标签）+ 索引一行 + 当日线索一行；`summary` 与 `currentState` 必须与迭代块成对提供，否则文件头部会漂移。解决了某功能遗留的待观察项时传 `resolve: <slug>` 自动勾掉旧条目。',
-	'- **迭代块要蒸馏，不要过程流水**：块里写结论（动因 / 根因 / 改动结论 / 判据 / 待观察，各一句），不是"我做了什么"的逐条实现清单——代码级枚举、调试经过、复述全部断言都不属于记忆，留在会话与代码/提交里。索引行摘要是一句话（判断相关性用），迭代细节留在功能文件。写入超长会在返回里告警，体检 R14 也会复查。',
-	'- **数据流方向**：会话过程 → 蒸馏出 functions/ 迭代块（结论）+ 每日线索（一行）+ MEMORY.md 索引（一行摘要）；可迁移原则再向上蒸馏成 insights/。任何一层都不复制下一层的原文。',
-	'- **经验二分**：“会重跑的操作”留在 functions/；“会重套的原则”用 memory_insight 沉淀到 insights/ 并回链来源；新思想取代旧思想时传 `supersedes: <旧主题>`（不删除，保留决策历史）。跨功能的共识/规范/环境常量只写在 MEMORY.md。细节与推导永不进 MEMORY.md。',
-	'- **项目归属**：涉及特定项目的记忆，在功能域 slug 或正文里注明项目名（如 `toolbox-login`）；跨项目可迁移的思想进 insights/。',
-	'- 每日 `YYYY-MM-DD.md` 只是决策线索（一行 + 链接）；同一事实只在一处为真。',
-	'- **收缩机制**：功能文件超 30KB 用 `memory_fold` 折叠最旧块（保留早期演化段）；MEMORY.md 超 10KB 舒适线时把功能表按 `### 分组` 拆子分区（共识/环境常量保持在无标题区，警告里会给指引）；重命名/合并功能域用 `memory_rename`（自动改写全部引用并验证死链清零）。',
-	'- 批量改动记忆后跑 `memory_check` 体检：死链与“详见 MEMORY.md（细节）”会被点名。',
-	'- 归属判断口诀：这是我会**重跑**的操作（functions/），还是会**重套**的原则（insights/）？',
+	'- **第 0 层 · 每日记录（原始层）**：`YYYY-MM-DD.md` 是任务与对话过程的第一手数据，**本插件不约束其内容与格式**——用任何工具、任何方式自由记录（决策、对话、试错、片段都行）。它是一切蒸馏的原料；同一事实只在这里是"过程"，其余层只见结论。',
+	'- **第 1 层 · 功能域（memory_write）**：从每日原始记录中**归纳汲取**功能划分——一次实质工作 = 一个 functions/<功能域>.md 迭代块（蒸馏结论：动因/改动/判据/待观察 各一句）。`summary` 是本块的一句话概括；功能域该新建还是并入既有的，判断依据就是每日记录里反复出现的主题。',
+	'- **第 2 层 · 创新思想（memory_insight）**：从功能划分中**再提取**可迁移原则（会重套的、不绑定单一功能机制的），回链来源功能域；取代旧思想传 `supersedes`。',
+	'- **第 3 层 · 索引与总览（memory_index）**：**整合层**——功能域稳定后（有 ≥2 个迭代块，或用户可感知为独立主题时）用 memory_index 把它收进 MEMORY.md 索引；索引行摘要 = 从各迭代块的概括中提炼的"这个功能是什么"。索引是展示与检索的派生物，不与单次写入强绑。',
+	'- **先查后写**：涉及"项目里怎么做 / 为什么这么做 / 环境常量"时，先 `memory_read kind=index`（行内摘要判断相关性，再打开对应文件）；不要凭空重推已有结论。',
+	'- **蒸馏不搬过程**：迭代块只写结论；逐条实现清单、调试经过属于每日原始层与会话/代码。块 >900 字或概括 >110 字写入告警，体检 R14 复查。',
+	'- **经验二分**：会**重跑**的操作进 functions/；会**重套**的原则用 memory_insight 进 insights/；跨功能共识与环境常量只在 MEMORY.md。',
+	'- **项目归属**：涉及特定项目的记忆，在功能域 slug 或正文里注明项目名（如 `toolbox-login`）。',
+	'- **收缩机制**：功能文件超 30KB 用 `memory_fold` 折叠最旧块；MEMORY.md 超线按 ### 子分区拆分；重命名/合并用 `memory_rename`（自动改写引用并验证死链清零）。',
+	'- 批量改动记忆后跑 `memory_check` 体检。',
+	'- 归属口诀：会**重跑**的操作（functions/）、会**重套**的原则（insights/）；原始过程永远只留在每日记录。',
 ].join('\n');
 
 // ---------------------------------------------------------------------------
@@ -1900,6 +1955,7 @@ export function apply(ctx, config) {
 	const disposers = [
 		ctx.tools.register(memoryReadTool(opts)),
 		ctx.tools.register(memoryWriteTool(opts)),
+		ctx.tools.register(memoryIndexTool(opts)),
 		ctx.tools.register(memoryInsightTool(opts)),
 		ctx.tools.register(memoryFoldTool(opts)),
 		ctx.tools.register(memoryRenameTool(opts)),

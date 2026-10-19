@@ -11,7 +11,7 @@ The one-line difference: it is not "notes per project" but an **iteration histor
 will **re-apply** is distilled into `insights/`, the index keeps a single line per row, and every session
 starts with that discipline injected into its system prompt.
 
-- Six memory tools + an injected system-prompt discipline + an `agent/pre-step` recall hook + a read-only Web panel
+- Seven memory tools + an injected system-prompt discipline + an `agent/pre-step` recall hook + a read-only Web panel
 - Writing is filing: `summary` and `currentState` are required parameters, so the index row never drifts
 - Eleven mechanical lint rules, so rot gets detected instead of remembered
 - **Granularity gate**: iteration blocks hold distilled conclusions only; a block over 900 chars or an index
@@ -28,7 +28,7 @@ memory/
 ├── MEMORY.md              # index: function-module index + innovation-insight index (one-line summary per row) + consensus + environment constants
 ├── functions/<area>.md    # one file per area, append-only iteration blocks (the date is just a tag)
 ├── insights/<theme>.md    # transferable principles, distilled upward from concrete areas, backlinked to their source
-├── YYYY-MM-DD.md          # daily decision thread (one line + link; a permanent, lightweight audit log)
+├── YYYY-MM-DD.md          # daily log: the raw layer — content & format unconstrained (first-hand task data)
 └── legacy/                # prototype-era logs (must carry a "historical form" header)
 ```
 
@@ -36,30 +36,34 @@ Rule of thumb: an operation I will **re-run** → `functions/`; a principle I wi
 Detail always stays in the function file; `MEMORY.md` carries only consensus, environment constants and
 one-line summaries.
 
-## Data flow: each layer keeps only the conclusion of the layer below
+## Data flow: one direction, four layers — each layer consumes only the layer above
 
-The original skill is not about "one file per function" — it is about **granularity layers**: the process
-stays in the session and in the code, memory only collects conclusions.
+The core is not "one file per function" but **raw material first, refinement after** — data flows one
+way, and every layer is grounded in the one above it:
 
 ```
-Working process in a session (step-by-step implementation / debugging / trial and error)   never enters memory
-        │ distilled
-        ├─→ functions/<area>.md iteration block: motivation / root cause / what changed / evidence / open questions (one line each)
-        │         │ one-line summary
-        │         ├─→ MEMORY.md index row ("should I open this file?")
-        │         └─→ insights/<theme>.md (re-appliable principles, distilled upward with backlinks)
-        └─→ YYYY-MM-DD.md: that day's decision thread (one line + link) + open observations (audit log)
+Layer 0 · daily log YYYY-MM-DD.md (raw layer; the plugin imposes no format)
+        first-hand task/conversation data: decisions, dialogue, dead ends, fragments — recorded freely by the model/harness
+        │归纳 distilled (memory_write)
+Layer 1 · functions/<area>.md iteration blocks: motivation / what changed / evidence / open questions (one line each)
+        │ further distilled (memory_insight)
+Layer 2 · insights/<theme>.md: re-appliable principles (backlinked to their source areas)
+        │ integrated for display (memory_index, once an area stabilizes)
+Layer 3 · MEMORY.md index + panel overview: one-line summaries + counts — a derived retrieval surface
 ```
 
-- **The process never enters memory**: step-by-step changelists, code-level enumerations, debugging
-  narratives, "ran the assertions again" — none of it belongs. Written down, it degrades into exactly the
-  dated runlog the skill rejects, just parked in a different file.
-- **Two gates**: `memory_write` documents its parameters as "conclusion level, 1–3 sentences"; a block body
-  over 900 chars or an index row over 110 chars returns a warning, and `memory_check` reports **R14** at the
-  same time. The system shrinks, it does not only grow.
-- **The daily log is the audit layer** (Rule 2 of the original skill): one line of thread plus open
-  observations, no how/why. Detail ends up as a **conclusion** in the function file, not as another runlog.
-  One fact is true in exactly one place.
+- **The daily log is the free raw layer**: the plugin dictates neither content nor form — it is the
+  first-hand data of task and conversation, recorded however the model and harness decide. The plugin
+  only reads it back when distilling (`memory_read kind=daily`), inducing the function division from it;
+  every function area's reason-to-exist traces back to concrete daily entries.
+- **Each layer is leaner and more universal than the last**: the daily layer holds process, the function
+  layer conclusions, the insight layer universal principles, the index layer the retrieval surface. No
+  layer copies the text of another — one fact is true in exactly one place.
+- **The index is derived, not synchronized**: `memory_write` no longer auto-writes index rows or daily
+  threads; an area is indexed with `memory_index` only once **stabilized** (≥2 iteration blocks, or
+  clearly a standalone topic), its row summary distilled from the block summaries.
+- **Two gates**: a block body over 900 chars or a summary over 110 chars warns at write time, and
+  `memory_check` reports **R14** at the same time. The system shrinks, it does not only grow.
 - **Compaction**: past 30KB, `memory_fold` folds the oldest iteration blocks into an "early evolution"
   paragraph (one line each: date tag + title + any result other than `done`); folded tags still take part in
   the same-day numbering (so `补N` never collides), and early conclusions stay traceable in that paragraph.
@@ -68,12 +72,13 @@ Working process in a session (step-by-step implementation / debugging / trial an
 
 | Tool | What it does |
 |---|---|
-| `memory_read` | read the index / a function file / an insight file / a daily thread (`kind=index` first, to judge relevance) |
-| `memory_write` | **append one iteration block** (a distilled conclusion, not a process log) and sync the index row and today's thread; `summary` + `currentState` required, over-long input warns |
-| `memory_insight` | distil a transferable principle into `insights/`, backlink its source areas, `supersedes` to replace an older idea |
+| `memory_read` | read the index / a function file / an insight file / a daily log (`kind=index` first, to judge relevance) |
+| `memory_write` | **append one iteration block** (a conclusion distilled from the raw daily record) and refresh the head stable-state summary; `summary` is the block's one-line takeaway. **Writes no index row, never touches the daily log** |
+| `memory_index` | **the integration layer**: once an area/theme stabilizes, upsert its row into the MEMORY.md index (row summary distilled from the block summaries) |
+| `memory_insight` | distil a transferable principle from the function division into `insights/`, backlink its source areas, `supersedes` to replace an older idea |
 | `memory_fold` | past 30KB, fold the oldest iteration blocks into an "early evolution" paragraph (conclusions and every date tag preserved) |
 | `memory_rename` | rename / merge a function area, rewrite every reference and verify zero dangling links |
-| `memory_check` | lint: index size, missing summaries, backlinks, date ordering, dangling links, cold memory, legacy headers, over-long blocks/rows (R14) |
+| `memory_check` | lint: index size, missing summaries, orphan files, backlinks, date ordering, dangling links, cold memory, head-summary guardrail, env-path liveness, over-long blocks/rows (R14), duplicated rows/sections (R15) |
 
 A discipline section is injected into the system prompt; the `agent/pre-step` hook scores the user's input
 against index rows and injects the matching rows as a single `recall` message (once per batch per session,

@@ -1,8 +1,13 @@
 /**
  * Functional harness for dsh-memory-manager (server.js).
  * Loads the real plugin entry, captures the registered tool definitions with a
- * fake ctx, and exercises write/read/insight/fold/rename/check/resolve/
- * supersede against a temp memory root.
+ * fake ctx, and exercises write/index/insight/fold/rename/check/resolve/
+ * supersede/recall against a temp memory root.
+ *
+ * Data-flow contract (layered): the daily log is the RAW layer (free-form, the
+ * model maintains it), memory_write distills functions/ blocks only,
+ * memory_index is the sole index writer, insights sit between, and the check
+ * lints everything.
  *
  * The Host installation must be discoverable (see resolveDshRoot): set
  * DSH_INSTALL_DIR when the harness install is not the process's own ancestor.
@@ -36,12 +41,12 @@ const root = await mkdtemp(path.join(tmpdir(), 'dsh-memfo-'));
 const exec = {};
 // Second apply with an explicit root: this instance's tools and pre-step
 // listener both read the temp index. registered now holds BOTH applies' tool
-// definitions (same names), so take the LAST six — the second apply's.
+// definitions (same names), so take the LAST seven — the second apply's.
 // `newFeatureGraceDays: 0` disables the cold-memory grace window so the
 // temperature rule can be asserted deterministically (see 11d for the grace).
 const disposer2 = mod.apply(fakeCtx, { memoryRoot: root, newFeatureGraceDays: 0 });
 const tools2 = Object.fromEntries(
-	registered.filter((r) => r?.name && r.execute).slice(-6).map((t) => [t.name, t]),
+	registered.filter((r) => r?.name && r.execute).slice(-7).map((t) => [t.name, t]),
 );
 const T = tools2;
 const disposer = noop;
@@ -55,17 +60,34 @@ const ok = (cond, label) => {
 const c0 = await T.memory_check.execute({}, exec);
 ok(c0.failCount === 1 && c0.results[0].rule === 'R0', `check on empty root: ${c0.results[0]?.rule}`);
 
-// 2) first write -> creates function file + index + daily
+// 2) first write -> creates the function file only (index + daily are separate
+// layers now; the raw daily log is the model's to maintain)
 const w1 = await T.memory_write.execute(
 	{ feature: '测试功能', title: '第一次迭代', summary: '验证插件写入闭环', currentState: '初始状态', change: '写入测试', verification: '本测试', result: 'done', open: '待验证遗留项' },
 	exec,
 );
 ok(w1.createdFunctionFile === true, 'write creates function file');
 ok(w1.warnings.length === 0, `no warnings (${w1.warnings.join('; ')})`);
+ok(w1.indexFile === undefined && w1.dailyFile === undefined, 'write touches neither index nor daily log');
+const today = w1.appendedHeading.match(/\[(\d{4}-\d{2}-\d{2})/)[1];
+const fn1 = await readFile(w1.featureFile, 'utf8');
+ok(fn1.includes('- **概括**：验证插件写入闭环'), 'block carries the summary as 概括');
 
-// 3) index contains the row
-const idx = await T.memory_read.execute({ kind: 'index' }, exec);
-ok(idx.found && idx.content.includes('测试功能'), 'index row present');
+// 3) index does NOT auto-sync; the file doesn't even exist until memory_index
+let idx = await T.memory_read.execute({ kind: 'index' }, exec);
+ok(!idx.found && !idx.content.includes('| 测试功能 |'), 'index row absent until memory_index');
+const ix1 = await T.memory_index.execute(
+	{ zone: 'functions', name: '测试功能', summary: '验证插件写入闭环的测试功能' },
+	exec,
+);
+ok(ix1.created === true, 'memory_index creates the row');
+idx = await T.memory_read.execute({ kind: 'index' }, exec);
+ok(idx.found && idx.content.includes('| 测试功能 |'), 'index row present after memory_index');
+const ix2 = await T.memory_index.execute(
+	{ zone: 'functions', name: '测试功能', summary: '更新后的功能一句话' },
+	exec,
+);
+ok(ix2.created === false, 'memory_index upserts (created=false on update)');
 
 // 4) second write same day -> 补 suffix
 const w2 = await T.memory_write.execute(
@@ -80,6 +102,7 @@ const i1 = await T.memory_insight.execute(
 	exec,
 );
 ok(i1.linkedSources.length === 1 && i1.skippedSources.length === 0, `insight backlink: ${i1.linkedSources.join(',')}`);
+ok(i1.indexBytes === undefined && i1.dailyFile === undefined, 'insight touches neither index nor daily log');
 
 // 5b) related: existing = bare sibling link; missing = plain text
 const w3 = await T.memory_write.execute(
@@ -96,19 +119,21 @@ const fn4 = await readFile(w4.featureFile, 'utf8');
 ok(fn4.includes('另一功能（未建档）'), 'missing related renders as plain text');
 ok(!fn4.includes('](另一功能.md)'), 'no dangling href for missing related');
 
-// 6) resolve: second feature with an open item, then resolve it
+// 6) resolve: second feature with an open item, then resolve it. The raw daily
+// layer is free-form — simulate the model recording an open item itself.
 await T.memory_write.execute(
 	{ feature: '遗留功能', title: '引入遗留', summary: '有遗留项的功能', result: 'pending' },
 	exec,
 );
-const d0 = await T.memory_read.execute({ kind: 'daily' }, exec);
-ok(d0.content.includes('## 今日待观察'), 'daily has 待观察 section');
+const dailyPath0 = path.join(root, `${today}.md`);
+await writeFile(dailyPath0, `# ${today} 记录\n\n- 遗留功能有个开放风险 → [functions/遗留功能.md](functions/遗留功能.md)\n`, 'utf8');
 const w5 = await T.memory_write.execute(
 	{ feature: '测试功能', title: '解决遗留项', summary: '勾掉遗留功能的待观察', resolve: '遗留功能', result: 'done' },
 	exec,
 );
 const d1 = await T.memory_read.execute({ kind: 'daily' }, exec);
-ok(d1.content.includes('✅') && d1.content.includes('functions/遗留功能.md'), `resolve marks open item (logs: ${w5.resolvedDailyLogs.join(',')})`);
+ok(d1.content.includes('✅') && d1.content.includes('functions/遗留功能.md'), `resolve stamps the open item (logs: ${w5.resolvedDailyLogs.join(',')})`);
+ok(!d1.content.includes('已解决 → ['), 'bare ✅ stamp, no second pointer');
 
 // 7) supersede: new insight replaces the old one
 const i2 = await T.memory_insight.execute(
@@ -156,6 +181,7 @@ await T.memory_write.execute(
 	{ feature: '测试功能', title: '引用旧名', summary: '含旧名相关链接', related: ['旧名功能'], result: 'done' },
 	exec,
 );
+await T.memory_index.execute({ zone: 'functions', name: '旧名功能', summary: '将被重命名的功能' }, exec);
 const r1 = await T.memory_rename.execute({ from: '旧名功能', to: '新名功能' }, exec);
 ok(r1.mode === 'renamed', `rename mode: ${r1.mode}`);
 ok(r1.danglingAfter === 0, `dangling after rename: ${r1.danglingAfter}`);
@@ -168,6 +194,7 @@ ok(newIdx.content.includes('新名功能'), 'index row renamed');
 
 // 10) merge: fold 待并入 into 测试功能
 await T.memory_write.execute({ feature: '待并入', title: '并入前块', summary: '将被合并', result: 'done' }, exec);
+await T.memory_index.execute({ zone: 'functions', name: '待并入', summary: '将被合并的功能' }, exec);
 const r2 = await T.memory_rename.execute({ from: '待并入', to: '测试功能' }, exec);
 ok(r2.mode === 'merged', `merge mode: ${r2.mode}`);
 ok(r2.danglingAfter === 0, `dangling after merge: ${r2.danglingAfter}`);
@@ -183,14 +210,17 @@ for (const r of c1.results) console.log(`    [${r.level}] ${r.rule}: ${r.message
 
 // 11b) temperature: a feature nobody references is flagged as cold; a heavily
 // referenced one is not. At this point 测试功能 is referenced by the index and
-// insights, so it must NOT be cold; 前方无引用的功能域 would be.
+// insights, so it must NOT be cold; 无引用功能 would be.
 await T.memory_write.execute({ feature: '无引用功能', title: '孤立块', summary: '没有任何其他文件引用此功能', result: 'done' }, exec);
 const c2 = await T.memory_check.execute({}, exec);
 const cold = c2.results.filter((r) => r.rule === 'TEMP');
 ok(cold.some((r) => r.message.includes('无引用功能')), `cold flagged: ${cold.map((r) => r.message.split('：')[0]).join('; ')}`);
 ok(!cold.some((r) => r.message.includes('测试功能')), 'referenced feature not flagged cold');
 
-// 11c) dedupe: writing a summary highly overlapping another row's warns
+// 11c) dedupe: writing a summary highly overlapping an INDEXED row's warns.
+// In the layered flow the index only carries stabilized features, so dedupe
+// compares against indexed rows — index 无引用功能 first.
+await T.memory_index.execute({ zone: 'functions', name: '无引用功能', summary: '没有任何其他文件引用此功能' }, exec);
 const w6 = await T.memory_write.execute(
 	{ feature: '相近功能', title: '疑似重复写入', summary: '没有任何其他文件引用此功能的孤立块', result: 'done' },
 	exec,
@@ -201,7 +231,7 @@ ok(w6.warnings.some((x) => x.includes('疑似与已有功能域')), `dedupe warn
 // backlinked, so the default window suppresses the cold flag for it.
 mod.apply(fakeCtx, { memoryRoot: root });
 const tools3 = Object.fromEntries(
-	registered.filter((r) => r?.name && r.execute).slice(-6).map((t) => [t.name, t]),
+	registered.filter((r) => r?.name && r.execute).slice(-7).map((t) => [t.name, t]),
 );
 const c3 = await tools3.memory_check.execute({}, exec);
 ok(!c3.results.some((r) => r.rule === 'TEMP'), `grace window suppresses cold flag on fresh files (TEMP=${c3.results.filter((r) => r.rule === 'TEMP').length})`);
@@ -251,7 +281,6 @@ if (typeof ps === 'function') {
 	const citedText = cited.messages?.[0]?.content?.[0]?.text ?? '';
 	ok(citedText.length === 0 || !citedText.includes('functions/测试功能.md'), 'user-cited pointer not re-injected');
 	// mixed: one cited row + one uncited hit -> only the uncited one stays
-	const idxNow13 = await readFile(await (async () => w1.indexFile)(), 'utf8');
 	const mixed = await ps(
 		{ agent: agent2, messages: [{ role: 'user', content: [{ type: 'text', text: '看看 insights/闭环验证.md 和无引用功能 的记忆' }] }], turn: 2, step: 1, signal: new AbortController().signal },
 		nextEnter,
@@ -273,7 +302,10 @@ const w8 = await T.memory_write.execute(
 	{ feature: '摘要过长功能', title: '摘要过长', summary: longSummary, change: '简短改动', result: 'done' },
 	exec,
 );
-ok(w8.warnings.some((x) => x.includes('索引行摘要')), 'write warns on an over-long index summary');
+ok(w8.warnings.some((x) => x.includes('索引行摘要')), 'write warns on an over-long summary');
+// R14's index-row check reads MEMORY.md table rows, so push the over-long
+// summary through memory_index and expect the health check to flag it.
+await T.memory_index.execute({ zone: 'functions', name: '摘要过长功能', summary: longSummary }, exec);
 const c4 = await T.memory_check.execute({}, exec);
 const r14 = c4.results.filter((r) => r.rule === 'R14');
 ok(r14.some((r) => r.message.includes('冗长功能')), `R14 flags the un-distilled block (${r14.length} R14)`);
@@ -295,38 +327,16 @@ const w10 = await T.memory_write.execute(
 );
 ok(!w10.warnings.some((x) => x.includes('本块正文')), 'a distilled block raises no verbosity warning');
 
-// 15) daily-thread dedupe: the SECOND write with the same title + feature on
-// the same day is recognized as an identical audit line — it warns and the
-// daily file keeps exactly one copy (the function file is append-only and
-// still receives the block; the audit thread is the deduped surface).
-const w12 = await T.memory_write.execute(
-	{ feature: '测试功能', title: '重复写入审计行', summary: '验证每日线索去重', result: 'done' },
-	exec,
-);
-ok(!w12.warnings.some((x) => x.includes('重复写入被跳过')), 'first write of the title is not deduped');
-const w12b = await T.memory_write.execute(
-	{ feature: '测试功能', title: '重复写入审计行', summary: '验证每日线索去重', result: 'done' },
-	exec,
-);
-ok(w12b.warnings.some((x) => x.includes('重复写入被跳过')), `repeat write warns: ${w12b.warnings.join(' | ').slice(0, 60)}`);
-const dAfter = await T.memory_read.execute({ kind: 'daily' }, exec);
-const dupsAfter = dAfter.content.split('\n').filter((l) => l.includes('- 重复写入审计行 →'));
-ok(dupsAfter.length === 1, `daily line appears exactly once (${dupsAfter.length})`);
-// a different title on the same day still appends normally
-const w13 = await T.memory_write.execute(
-	{ feature: '测试功能', title: '同日不同标题照常入账', summary: '不同结论不受去重影响', result: 'done' },
-	exec,
-);
-ok(!w13.warnings.some((x) => x.includes('重复写入被跳过')), 'distinct title not deduped');
-const dAfter2 = await T.memory_read.execute({ kind: 'daily' }, exec);
-ok(dAfter2.content.includes('- 同日不同标题照常入账'), 'distinct daily line appended');
+// 15) memory_index is idempotent: indexing twice keeps exactly one row
+await T.memory_index.execute({ zone: 'functions', name: '测试功能', summary: '幂等索引' }, exec);
+const idxPath = path.join(root, 'MEMORY.md');
+const idxNow = await readFile(idxPath, 'utf8');
+ok((idxNow.match(/^\| 测试功能 \|/gm) ?? []).length === 1, 'memory_index is idempotent (one row)');
 
 // 15b) R15: duplicated index rows and duplicated table sections are flagged.
 // Simulate the fallback-table twin by hand-editing the index. The twin row
 // carries the twin's own summary, so the upsert's column-2 refresh cannot
 // absorb the duplicate — only the section self-heal (or a manual fix) removes it.
-const idxPath = w1.indexFile;
-const idxNow = await readFile(idxPath, 'utf8');
 const twinSection = [
 	'## 功能域（细节在子目录，本表只留指针）',
 	'',
@@ -340,12 +350,8 @@ const c5 = await T.memory_check.execute({}, exec);
 const r15 = c5.results.filter((r) => r.rule === 'R15');
 ok(r15.some((r) => r.message.includes('测试功能')), `R15 flags the duplicated row (${r15.length} R15)`);
 ok(r15.some((r) => r.message.includes('出现 2 次')), 'R15 flags the duplicated section');
-// the self-healing upsert removes the twin table on the next write
-const w14 = await T.memory_write.execute(
-	{ feature: '测试功能', title: '触发自愈的写入', summary: 'upsert 后重复表消失', result: 'done' },
-	exec,
-);
-ok(!w14.warnings.some((x) => x.includes('表')), 'self-heal write raises no duplicate-table warning');
+// the self-healing upsert removes the twin table on the next memory_index call
+await T.memory_index.execute({ zone: 'functions', name: '测试功能', summary: 'upsert 后重复表消失' }, exec);
 const idxHealed = await readFile(idxPath, 'utf8');
 ok(!idxHealed.includes('## 功能域（细节在子目录'), 'twin table removed by upsert self-heal');
 const rows = (idxHealed.match(/^\| 测试功能 \|/gm) ?? []).length;
@@ -366,13 +372,12 @@ await writeFile(fnPath15, fnText15.replace(/当前状态摘要（截至\s*\d{4}-
 const c8 = await T.memory_check.execute({}, exec);
 ok(c8.results.some((r) => r.rule === 'R3' && r.message.includes('缺少')), 'R3 flags a missing head summary');
 // R16: a dead absolute path in the index's env-constants is flagged.
-const idxPath16 = w1.indexFile;
-const idxText16 = await readFile(idxPath16, 'utf8');
-await writeFile(idxPath16, idxText16 + '\n- 旧工具链：`Z:/definitely/gone/tool.cmd`', 'utf8');
+const idxText16 = await readFile(idxPath, 'utf8');
+await writeFile(idxPath, idxText16 + '\n- 旧工具链：`Z:/definitely/gone/tool.cmd`', 'utf8');
 const c9 = await T.memory_check.execute({}, exec);
 ok(c9.results.some((r) => r.rule === 'R16' && r.message.includes('Z:/definitely/gone')), 'R16 flags a dead env-constant path');
 // a live path must NOT be flagged
-await writeFile(idxPath16, idxText16 + '\n- 临时目录：' + '`' + root.replace(/\\/g, '/') + '`', 'utf8');
+await writeFile(idxPath, idxText16 + '\n- 临时目录：' + '`' + root.replace(/\\/g, '/') + '`', 'utf8');
 const c10 = await T.memory_check.execute({}, exec);
 ok(!c10.results.some((r) => r.rule === 'R16'), 'R16 silent on live paths');
 
