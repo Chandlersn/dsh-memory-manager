@@ -2876,6 +2876,48 @@ function matchIndexRows(indexText, userTokens, limit = 3, usage) {
 }
 
 /**
+ * Rows of the index tables, as { name, summary, href, zone } — the same shape
+ * matchIndexRows builds, but without scoring. Used to materialize a
+ * decision-repair target into a recallable row.
+ */
+function indexRowsOf(indexText) {
+	const out = [];
+	for (const raw of indexText.split('\n')) {
+		const s = raw.trim();
+		if (!s.startsWith('|') || s.includes('---')) continue;
+		const cells = s.replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
+		if (cells.length < 3 || !cells[1]) continue;
+		const zm = (cells[2] || '').match(/\(([^)]+\.md)\)/);
+		if (!zm) continue;
+		const href = zm[1];
+		const zone = href.startsWith('skills/') ? 'skill' : href.startsWith('insights/') ? 'insight' : href.startsWith('functions/') ? 'function' : null;
+		if (!zone) continue;
+		out.push({ name: href.split('/').pop().replace(/\.md$/, ''), summary: cells[1], href, zone });
+	}
+	return out;
+}
+
+/**
+ * Decision-repair (MemOS borrow ④, simplified to our signals).
+ *
+ * MemOS: N tool failures within M steps → build a repair packet (prefer the
+ * high-value approach, avoid the low-value one) and inject it BEFORE THE NEXT
+ * step — never interrupting the in-flight one. We have no V-values, but the
+ * equivalent signal exists: an area corrected repeatedly in the recent window
+ * (the same raw material as the R18 circuit breaker) is exactly where the model
+ * is about to repeat a mistake.
+ *
+ * Returns the hrefs to force-recall on the NEXT pre-step, most-corrected first.
+ */
+function decisionRepairTargets(usageItems, { minCorrections = 2, minBadRate = 0.3, limit = 2 } = {}) {
+	return usageItems
+		.filter((it) => it.corrections >= minCorrections && it.badRate >= minBadRate)
+		.sort((a, b) => b.corrections - a.corrections || b.badRate - a.badRate)
+		.slice(0, limit)
+		.map((it) => ({ href: it.href, corrections: it.corrections, badRate: it.badRate, uses: it.uses }));
+}
+
+/**
  * Ranked full-text search over the whole memory root. Shared by the
  * `memory_search` tool and the panel's /search route so both rank identically
  * (the panel used to do a naive indexOf, whose order was file order).
@@ -2949,14 +2991,16 @@ async function searchMemory(root, rawQuery, { zone = 'all', limit = 20 } = {}) {
 /** Build one recall UserMessage (form 'recall', plugin producer kind). */
 function buildRecallMessage(lines) {
 	const hasSkill = lines.some((l) => l.zone === 'skill');
+	const hasRepair = lines.some((l) => l.repair);
 	const text = [
 		'### 记忆召回（memory-manager）',
 		'',
 		'本轮用户输入与以下已有记忆的索引行相关。**先查后写**：涉及这些主题时先读对应文件再行动，不要凭空重推已有结论；如确属新工作，正常进行即可：',
 		'',
-		...lines.map((l) => `- ${l.zone === 'skill' ? '⭐ 已结晶技能：' : ''}${l.summary} → [${l.href}](${l.href})${l.zone === 'skill' ? '（先读程序按步骤走，不要再现场推导）' : ''}`),
+		...lines.map((l) => `- ${l.zone === 'skill' ? '⭐ 已结晶技能：' : ''}${l.repair ? `⚠️ 决策修复（近 7 天纠正 ${l.repair.corrections} 次、纠正率 ${l.repair.badRate}）：` : ''}${l.summary} → [${l.href}](${l.href})${l.zone === 'skill' ? '（先读程序按步骤走，不要再现场推导）' : ''}`),
 		'',
 		hasSkill ? 'ℹ 命中 active 技能：这是过去反复验证过的操作程序，优先直接执行其步骤；执行结果与预期不符时，回到来源功能域重新推导。' : '',
+		hasRepair ? '⚠️ 决策修复命中：上面标 ⚠️ 的记忆近期被反复纠正——先读它再动手，别在同一个判断上再错一次（当前这一步未被打断）。' : '',
 	].filter((s) => s !== '').join('\n');
 	return {
 		role: 'user',
@@ -3410,11 +3454,32 @@ export function apply(ctx, config) {
 						// matchIndexRows). Signals already exist in .usage.jsonl;
 						// without this they were collected but never used to rank.
 						const usage = await readUsageCached();
-						const rows = matchIndexRows(indexText, tokensOf(userText), 3, usage)
+						const base = matchIndexRows(indexText, tokensOf(userText), 3, usage)
 							// Pointer dedupe: when the user's own text already cites a memory
 							// file (they quoted an earlier recall or wrote the link), re-
 							// injecting the same row just echoes what is already on screen.
 							.filter((l) => !userText.includes(l.href));
+						const rows = [...base];
+						// Decision-repair (④): an area corrected repeatedly is where a
+						// mistake is about to be repeated — force it into the NEXT step's
+						// context even when the current wording doesn't match it. The
+						// current step is never interrupted or modified.
+						if (usage && usage.size) {
+							const repairs = decisionRepairTargets([...usage.values()]).filter(
+								(r) => !rows.some((l) => l.href === r.href) && !userText.includes(r.href),
+							);
+							if (repairs.length) {
+								const indexRows = indexRowsOf(indexText);
+								for (const r of repairs) {
+									const row = indexRows.find((x) => x.href === r.href);
+									if (!row) continue;
+									rows.push({
+										...row,
+										repair: { corrections: r.corrections, badRate: r.badRate },
+									});
+								}
+							}
+						}
 						recallServed.set(payload.agent.id, signature);
 						if (rows.length) {
 							recall = createUserMessage(buildRecallMessage(rows));
@@ -3461,4 +3526,4 @@ export function apply(ctx, config) {
 	};
 }
 
-export { name, inject, dshHome, joinDshHome, resolveRoot, resolveDshRoot, runHealthCheck, panelizeHealth, zoneCounts, tokensOf, matchIndexRows, buildRecallMessage, DISCIPLINE_TEXT };
+export { name, inject, dshHome, joinDshHome, resolveRoot, resolveDshRoot, runHealthCheck, panelizeHealth, zoneCounts, tokensOf, matchIndexRows, buildRecallMessage, decisionRepairTargets, indexRowsOf, DISCIPLINE_TEXT };

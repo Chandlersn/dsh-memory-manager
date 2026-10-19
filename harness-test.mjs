@@ -135,7 +135,27 @@ const ranked = mod.matchIndexRows(rankIndex, mod.tokensOf('记忆 面板 逐帧 
 ok(ranked[0]?.name === '戊域', `IDF ranking prefers the rare-token row (${ranked[0]?.name})`);
 ok(ranked.length >= 2, `relative threshold keeps the strong common row too (${ranked.length} rows)`);
 
-// 3b) RRF fusion (MemOS borrow): the lexical IDF rank is fused with a USAGE
+// 3c) Decision-repair (MemOS borrow ④): the recent-correction signal that only
+// fed R18's circuit breaker now also decides what gets force-recalled NEXT step.
+// Pure function first — thresholds are the contract.
+const repItems = [
+	{ href: 'functions/常错域.md', corrections: 4, uses: 6, badRate: 0.67 },
+	{ href: 'functions/偶错域.md', corrections: 1, uses: 10, badRate: 0.09 },
+	{ href: 'functions/干净域.md', corrections: 0, uses: 12, badRate: 0 },
+];
+const repTargets = mod.decisionRepairTargets(repItems);
+ok(repTargets.length === 1 && repTargets[0].href === 'functions/常错域.md', `decision-repair picks the repeatedly-corrected area (${repTargets.length})`);
+ok(!repTargets.some((r) => r.href === 'functions/偶错域.md'), 'decision-repair ignores a single correction');
+// The repair row must be visibly marked in the injected message, otherwise the
+// model cannot tell a forced recall from a topical hit.
+const repairMsg = mod.buildRecallMessage([
+	{ name: '常错域', summary: '反复判错的地方', href: 'functions/常错域.md', zone: 'function', repair: { corrections: 4, badRate: 0.67 } },
+]).content[0].text;
+ok(repairMsg.includes('决策修复') && repairMsg.includes('纠正 4 次'), 'repair row is marked with its correction count');
+ok(repairMsg.includes('未被打断'), 'repair note says the current step was not interrupted');
+// indexRowsOf turns an href into a recallable row (used by the repair hook).
+const idxRows = mod.indexRowsOf('| 甲域 | 摘要甲 | [functions/甲域.md](functions/甲域.md) |');
+ok(idxRows.some((r) => r.href === 'functions/甲域.md' && r.zone === 'function'), 'indexRowsOf lists index rows by href');
 // rank, so a topically-relevant row that is also heavily used outranks one that
 // is merely relevant. Without a usage map the behavior must stay lexical.
 const fusionIndex = [
