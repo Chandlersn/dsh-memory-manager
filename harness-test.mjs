@@ -12,7 +12,7 @@
  * The Host installation must be discoverable (see resolveDshRoot): set
  * DSH_INSTALL_DIR when the harness install is not the process's own ancestor.
  */
-import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -39,6 +39,7 @@ console.log('section:', section?.name, '| bytes:', section?.text.length, '| ment
 
 const root = await mkdtemp(path.join(tmpdir(), 'dsh-memfo-'));
 const exec = {};
+const statExists = async (p) => { try { await (await import('node:fs/promises')).stat(p); return true; } catch { return false; } };
 // Second apply with an explicit root: this instance's tools and pre-step
 // listener both read the temp index. registered now holds BOTH applies' tool
 // definitions (same names), so take the LAST eight — the second apply's.
@@ -46,7 +47,7 @@ const exec = {};
 // temperature rule can be asserted deterministically (see 11d for the grace).
 const disposer2 = mod.apply(fakeCtx, { memoryRoot: root, newFeatureGraceDays: 0 });
 const tools2 = Object.fromEntries(
-	registered.filter((r) => r?.name && r.execute).slice(-8).map((t) => [t.name, t]),
+	registered.filter((r) => r?.name && r.execute).slice(-9).map((t) => [t.name, t]),
 );
 const T = tools2;
 const disposer = noop;
@@ -274,7 +275,7 @@ ok(w6.warnings.some((x) => x.includes('疑似与已有功能域')), `dedupe warn
 // backlinked, so the default window suppresses the cold flag for it.
 mod.apply(fakeCtx, { memoryRoot: root });
 const tools3 = Object.fromEntries(
-	registered.filter((r) => r?.name && r.execute).slice(-8).map((t) => [t.name, t]),
+	registered.filter((r) => r?.name && r.execute).slice(-9).map((t) => [t.name, t]),
 );
 const c3 = await tools3.memory_check.execute({}, exec);
 ok(!c3.results.some((r) => r.rule === 'TEMP'), `grace window suppresses cold flag on fresh files (TEMP=${c3.results.filter((r) => r.rule === 'TEMP').length})`);
@@ -447,6 +448,61 @@ ok(c9.results.some((r) => r.rule === 'R16' && r.message.includes('Z:/definitely/
 await writeFile(idxPath, idxText16 + '\n- 临时目录：' + '`' + root.replace(/\\/g, '/') + '`', 'utf8');
 const c10 = await T.memory_check.execute({}, exec);
 ok(!c10.results.some((r) => r.rule === 'R16'), 'R16 silent on live paths');
+
+// 17) federation (three-tier): project truth sources -> federation layer.
+// Two throwaway project roots, one throwaway federation root; sync copies each
+// MEMORY.md into sources/ and builds the mechanical project table; check lints
+// the layer (F1 missing index, F2 dangling link, F3 missing copy/row, F5 orphan).
+const fedRoot = await mkdtemp(path.join(tmpdir(), 'dsh-fed-'));
+const projA = await mkdtemp(path.join(tmpdir(), 'dsh-proj-a-'));
+const projB = await mkdtemp(path.join(tmpdir(), 'dsh-proj-b-'));
+for (const [dir, label] of [[projA, 'A'], [projB, 'B']]) {
+	await writeFile(path.join(dir, 'MEMORY.md'), `# ${label} 项目记忆\n\n## 功能模块索引（functions/）\n\n| 功能域摘要 | 一句话状态 | 过程链接 | 摘要 |\n|---|---|---|---|\n| ${label}功能 | ${label} 的一句话 | [functions/${label}功能.md](functions/${label}功能.md) |\n`, 'utf8');
+	await mkdir(path.join(dir, 'functions'), { recursive: true });
+	await writeFile(path.join(dir, 'functions', `${label}功能.md`), '# x\n', 'utf8');
+}
+mod.apply(fakeCtx, { memoryRoot: root, federation: { root: fedRoot, projects: [{ key: 'proj-a', root: projA }, { key: 'proj-b', root: projB }] } });
+const FED = Object.fromEntries(registered.filter((r) => r?.name && r.execute).slice(-9).map((t) => [t.name, t]));
+ok(typeof FED.memory_federation?.execute === 'function', 'memory_federation registered');
+const synced = await FED.memory_federation.execute({ action: 'sync' }, exec);
+ok(synced.projects.length === 2 && synced.projects.every((p) => p.copied), 'sync copies every project index');
+ok(await statExists(path.join(fedRoot, 'sources', 'proj-a.MEMORY.md')), 'sources/proj-a.MEMORY.md written');
+const fedIndex = await readFile(path.join(fedRoot, 'MEMORY.md'), 'utf8');
+ok(fedIndex.includes('## 项目索引（联邦层）') && fedIndex.includes('sources/proj-b.MEMORY.md'), 'federation index table links each copy');
+ok(fedIndex.includes('## 跨项目共识'), 'federation index keeps a consensus section for the model');
+const check1 = await FED.memory_federation.execute({ action: 'check' }, exec);
+ok(check1.failCount === 0 && check1.warnCount === 0, `federation check clean (${check1.failCount} FAIL / ${check1.warnCount} WARN)`);
+// re-sync must preserve a hand-written consensus line (model-owned section)
+await writeFile(path.join(fedRoot, 'MEMORY.md'), fedIndex.replace('- \n', '- 两个项目共用 Node 22 与 pnpm 工作流\n'), 'utf8');
+await FED.memory_federation.execute({ action: 'sync' }, exec);
+const fedIndex2 = await readFile(path.join(fedRoot, 'MEMORY.md'), 'utf8');
+ok(fedIndex2.includes('两个项目共用 Node 22'), 'sync preserves the model-written consensus section');
+// orphan copy -> F5 WARN
+await writeFile(path.join(fedRoot, 'sources', 'ghost.MEMORY.md'), '# ghost\n', 'utf8');
+const check2 = await FED.memory_federation.execute({ action: 'check' }, exec);
+ok(check2.findings.some((f) => f.rule === 'F5' && f.message.includes('ghost')), 'F5 flags an orphan copy');
+await rm(path.join(fedRoot, 'sources', 'ghost.MEMORY.md'), { force: true });
+// missing project MEMORY.md -> F3 FAIL
+await rm(path.join(projB, 'MEMORY.md'), { force: true });
+const check3 = await FED.memory_federation.execute({ action: 'check' }, exec);
+ok(check3.failCount >= 1 && check3.findings.some((f) => f.rule === 'F3' && f.message.includes('proj-b')), 'F3 flags a project without MEMORY.md');
+// dangling link in the federation index -> F2 FAIL
+await writeFile(path.join(fedRoot, 'MEMORY.md'), fedIndex2 + '\n- 参考：[不存在](sources/nope.MEMORY.md)\n', 'utf8');
+const check4 = await FED.memory_federation.execute({ action: 'check' }, exec);
+ok(check4.findings.some((f) => f.rule === 'F2'), 'F2 flags a dangling federation link');
+// unconfigured federation -> explicit error, not silence
+mod.apply(fakeCtx, { memoryRoot: root });
+const NOFED = Object.fromEntries(registered.filter((r) => r?.name && r.execute).slice(-9).map((t) => [t.name, t]));
+let fedThrew = null;
+try {
+	await NOFED.memory_federation.execute({ action: 'check' }, exec);
+} catch (e) {
+	fedThrew = String(e.message);
+}
+ok(fedThrew && fedThrew.includes('federation'), `unconfigured federation fails loud (${fedThrew?.slice(0, 40)})`);
+await rm(fedRoot, { recursive: true, force: true });
+await rm(projA, { recursive: true, force: true });
+await rm(projB, { recursive: true, force: true });
 
 await rm(root, { recursive: true, force: true });
 console.log(failures === 0 ? 'ALL PASS' : `${failures} FAILURES`);

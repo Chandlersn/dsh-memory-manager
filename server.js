@@ -1092,6 +1092,198 @@ function memorySearchTool(opts) {
 	});
 }
 
+// ---------------------------------------------------------------------------
+// federation (three-tier mode): project truth sources -> federation layer -> global
+// ---------------------------------------------------------------------------
+
+const FED_TABLE_HEADING = '## 项目索引（联邦层）';
+const FED_TABLE_HEADER = '| 项目 | 记忆规模 | 来源副本 |';
+const FED_CONSENSUS_HEADING = '## 跨项目共识';
+
+/** Read + validate the federation config; throws with an explicit fix-it message. */
+function federationConfig(opts) {
+	const fed = opts.federation;
+	if (!fed || typeof fed !== 'object') {
+		throw new Error('未配置联邦模式：在插件配置里给出 federation: { root, projects: [{ key, root }] }');
+	}
+	if (!fed.root || typeof fed.root !== 'string') throw new Error('federation.root 缺失（联邦层记忆根目录）');
+	const projects = Array.isArray(fed.projects) ? fed.projects : [];
+	if (!projects.length) throw new Error('federation.projects 为空：至少列出 { key, root } 两个字段');
+	const seen = new Set();
+	const out = projects.map((p) => {
+		const key = String(p?.key ?? '').trim();
+		if (!key) throw new Error('federation.projects 每一项都需要 key');
+		if (!/^[\w\u4e00-\u9fff.-]{1,40}$/.test(key)) throw new Error(`项目 key 不合法（不要带路径分隔符）：${key}`);
+		const lower = key.toLowerCase();
+		if (seen.has(lower)) throw new Error(`项目 key 重复：${key}`);
+		seen.add(lower);
+		if (!p?.root || typeof p.root !== 'string') throw new Error(`项目 ${key} 缺 root（该项目记忆根目录）`);
+		return { key, root: path.resolve(p.root) };
+	});
+	return { root: path.resolve(fed.root), projects: out };
+}
+
+/** Mechanical federation index: one row per project (no semantic fusion here). */
+function federationIndexText(rows) {
+	return [
+		'# 联邦记忆（跨项目索引）',
+		'',
+		'> 本层只做**跨项目整合**：项目真相源留在各项目自己的记忆根，这里存它们 `MEMORY.md` 的副本与一张项目索引。',
+		'> `memory_federation(action=sync)` 刷新副本与索引行；跨项目共识由模型蒸馏后写在下方小节，不自动生成。',
+		'',
+		FED_TABLE_HEADING,
+		'',
+		FED_TABLE_HEADER,
+		'|---|---|---|',
+		...rows,
+		'',
+		FED_CONSENSUS_HEADING,
+		'',
+		'- ',
+		'',
+	].join('\n');
+}
+
+function memoryFederationTool(opts) {
+	return defineTool({
+		name: 'memory_federation',
+		description:
+			'Three-tier federation mode (opt-in via plugin config `federation: { root, projects: [{ key, root }] }`). action=sync copies every configured project\'s MEMORY.md into `<federation.root>/sources/<key>.MEMORY.md` and rebuilds the federation index table (one mechanical row per project: size + link). action=check lints the federation layer: missing index, dangling links, missing project roots, missing/orphan copies, and env-constant absolute paths that no longer exist. Project truth sources are never edited by this tool, and cross-project consensus is NOT auto-distilled — the model writes that section itself.',
+		parameters: {
+			action: { type: 'string', required: true, enum: ['sync', 'check'], description: 'sync=刷新副本与索引行；check=只读体检（F1–F5）。' },
+		},
+		output: {
+			schema: {
+				type: 'object',
+				additionalProperties: false,
+				properties: {
+					action: { type: 'string', required: true },
+					federationRoot: { type: 'string', required: true },
+					projects: {
+						type: 'array',
+						required: true,
+						items: {
+							type: 'object',
+							additionalProperties: false,
+							properties: {
+								key: { type: 'string', required: true },
+								copied: { type: 'boolean', required: true },
+								bytes: { type: 'integer', required: true },
+								functions: { type: 'integer', required: true },
+								insights: { type: 'integer', required: true },
+								daily: { type: 'integer', required: true },
+							},
+						},
+					},
+					findings: {
+						type: 'array',
+						required: true,
+						items: {
+							type: 'object',
+							additionalProperties: false,
+							properties: {
+								level: { type: 'string', required: true, enum: ['WARN', 'FAIL'] },
+								rule: { type: 'string', required: true },
+								message: { type: 'string', required: true },
+							},
+						},
+					},
+					failCount: { type: 'integer', required: true },
+					warnCount: { type: 'integer', required: true },
+				},
+			},
+			render: (_args, v) => {
+				const lines = [
+					`联邦层：${v.federationRoot}（${v.action}）`,
+					...v.projects.map((p) => `- ${p.key}: ${p.copied ? '已同步' : '未同步'} · ${p.bytes}B · ${p.functions} 功能 / ${p.insights} 思想 / ${p.daily} 日线索`),
+				];
+				if (!v.findings.length) lines.push('体检：全部通过（F1–F5）');
+				else {
+					lines.push(`体检：${v.failCount} FAIL，${v.warnCount} WARN`);
+					for (const f of v.findings) lines.push(`  [${f.level}] ${f.rule}: ${f.message}`);
+				}
+				if (v.action === 'sync') lines.push('ℹ 跨项目共识不会自动生成——需要时把蒸馏结论写进「跨项目共识」小节。');
+				return [{ type: 'text', text: lines.join('\n') }];
+			},
+		},
+		presentCall: (args) => ({ card: 'generic', title: `Memory federation: ${args.action ?? ''}`, kind: 'other', rawInput: args }),
+		async execute(args, exec) {
+			const fed = federationConfig(opts);
+			const findings = [];
+			const add = (level, rule, message) => findings.push({ level, rule, message });
+			const sourcesDir = path.join(fed.root, 'sources');
+			await mkdir(sourcesDir, { recursive: true });
+			const projects = [];
+			for (const p of fed.projects) {
+				const memPath = path.join(p.root, 'MEMORY.md');
+				const text = await readIfExists(memPath);
+				const counts = await zoneCounts(p.root);
+				if (text === undefined) {
+					add('FAIL', 'F3', `项目 ${p.key} 的记忆根里没有 MEMORY.md：${p.root}`);
+					projects.push({ key: p.key, copied: false, bytes: 0, ...counts });
+					continue;
+				}
+				const bytes = byteLen(text);
+				let copied = false;
+				if (args.action === 'sync') {
+					await writeText(path.join(sourcesDir, `${p.key}.MEMORY.md`), text);
+					copied = true;
+				} else {
+					copied = await statExists(path.join(sourcesDir, `${p.key}.MEMORY.md`));
+					if (!copied) add('FAIL', 'F3', `缺少来源副本 sources/${p.key}.MEMORY.md（先 action=sync）`);
+				}
+				projects.push({ key: p.key, copied, bytes, ...counts });
+			}
+			const indexPath = path.join(fed.root, 'MEMORY.md');
+			if (args.action === 'sync') {
+				const rows = projects.map((p) => `| ${p.key} | ${p.functions} 功能 · ${p.insights} 思想 · ${p.daily} 日线索 · ${p.bytes}B | [sources/${p.key}.MEMORY.md](sources/${p.key}.MEMORY.md) |`);
+				const existing = await readIfExists(indexPath);
+				let next = federationIndexText(rows);
+				if (existing !== undefined) {
+					// Keep everything the model distilled (consensus + notes) and only
+					// replace this tool's own table block.
+					next = existing.replace(/\n## 项目索引（联邦层）[\s\S]*?(?=\n## |$)/, `\n${FED_TABLE_HEADING}\n\n${[FED_TABLE_HEADER, '|---|---|---|', ...rows].join('\n')}\n`);
+					if (!next.includes(FED_TABLE_HEADING)) next = federationIndexText(rows);
+				}
+				await writeText(indexPath, next);
+			} else {
+				// F1: federation index exists
+				const idxText = await readIfExists(indexPath);
+				if (idxText === undefined) {
+					add('FAIL', 'F1', `联邦层没有 MEMORY.md：${indexPath}（先 action=sync）`);
+				} else {
+					// F2: in-tree links resolve (the shared link scanner reports R10/R10e;
+					// remap it to the federation rule names so findings read coherently).
+					await checkLinks(idxText, indexPath, fed.root, (level, rule, message) => add(level, rule.startsWith('R10') ? 'F2' : rule, message));
+					for (const m of idxText.matchAll(/`([^`\n|]+)`/g)) {
+						const p0 = m[1].trim().replace(/[/\\]+$/, '');
+						if (!/^[A-Za-z]:[\\/]/.test(p0) && !p0.startsWith('/')) continue;
+						if (!(await statExists(p0))) add('WARN', 'F4', `联邦层引用的绝对路径已不存在 -> ${p0}`);
+					}
+					// F5: orphan copies
+					let copies = [];
+					try {
+						copies = (await readdir(sourcesDir)).filter((n) => n.endsWith('.MEMORY.md'));
+					} catch {
+						/* none */
+					}
+					for (const c of copies) {
+						if (!fed.projects.some((p) => `${p.key}.MEMORY.md` === c)) {
+							add('WARN', 'F5', `孤儿副本 sources/${c} 不对应任何已配置项目（移走或补配置）`);
+						}
+					}
+					for (const p of fed.projects) {
+						if (!idxText.includes(`sources/${p.key}.MEMORY.md`)) add('FAIL', 'F3', `项目索引表缺少 ${p.key} 一行（重新 sync）`);
+					}
+				}
+			}
+			const failCount = findings.filter((f) => f.level === 'FAIL').length;
+			const warnCount = findings.filter((f) => f.level === 'WARN').length;
+			return { action: args.action, federationRoot: fed.root, projects, findings, failCount, warnCount };
+		},
+	});
+}
+
 async function listMdDir(dir) {
 	let entries = [];
 	try {
@@ -2017,7 +2209,7 @@ function memoryIndexTool(opts) {
 const DISCIPLINE_TEXT = [
 	'## 持久记忆纪律（memory-manager）',
 	'',
-	'本 Harness 维护**全局**跨会话记忆（`~/.dsh/memory/`，即 dshHome 的 memory/ 目录；八个工具：memory_read / memory_search / memory_write / memory_index / memory_insight / memory_fold / memory_rename / memory_check；结构见 memory/MEMORY.md）。记忆对全部项目、全部会话通用，按功能域组织而非按项目隔离。**数据流单向四层，每层只吃上一层的产出**：',
+	'本 Harness 维护**全局**跨会话记忆（`~/.dsh/memory/`，即 dshHome 的 memory/ 目录；九个工具：memory_read / memory_search / memory_write / memory_index / memory_insight / memory_fold / memory_rename / memory_check / memory_federation；结构见 memory/MEMORY.md）。记忆对全部项目、全部会话通用，按功能域组织而非按项目隔离。**数据流单向四层，每层只吃上一层的产出**：',
 	'',
 	'- **第 0 层 · 每日记录（原始层）**：`YYYY-MM-DD.md` 是任务与对话过程的第一手数据，**本插件不约束其内容与格式**——用任何工具、任何方式自由记录（决策、对话、试错、片段都行）。它是一切蒸馏的原料；同一事实只在这里是"过程"，其余层只见结论。',
 	'- **第 1 层 · 功能域（memory_write）**：从每日原始记录中**归纳汲取**功能划分——一次实质工作 = 一个 functions/<功能域>.md 迭代块（蒸馏结论：动因/改动/判据/待观察 各一句）。`summary` 是本块的一句话概括；功能域该新建还是并入既有的，判断依据就是每日记录里反复出现的主题。',
@@ -2026,7 +2218,7 @@ const DISCIPLINE_TEXT = [
 	'- **先查后写**：涉及"项目里怎么做 / 为什么这么做 / 环境常量"时，先 `memory_read kind=index`（行内摘要判断相关性，再打开对应文件）；只记得片段、说不清在哪个域或哪天时用 `memory_search`（全库排序检索，返回命中的分区/文件/行号/小节/片段）。不要凭空重推已有结论。',
 	'- **蒸馏不搬过程**：迭代块只写结论；逐条实现清单、调试经过属于每日原始层与会话/代码。块 >900 字或概括 >110 字写入告警，体检 R14 复查。',
 	'- **经验二分**：会**重跑**的操作进 functions/；会**重套**的原则用 memory_insight 进 insights/；跨功能共识与环境常量只在 MEMORY.md。',
-	'- **项目归属**：涉及特定项目的记忆，在功能域 slug 或正文里注明项目名（如 `toolbox-login`）。',
+	'- **项目归属**：涉及特定项目的记忆，在功能域 slug 或正文里注明项目名（如 `toolbox-login`）。功能域多到单根过大时，可启用**联邦模式**（`federation: { root, projects }`）：项目真相源留在各项目记忆根，`memory_federation` 负责刷副本与跨项目索引，项目细节不上升。',
 	'- **收缩机制**：功能文件超 30KB 用 `memory_fold` 折叠最旧块；MEMORY.md 超线按 ### 子分区拆分；重命名/合并用 `memory_rename`（自动改写引用并验证死链清零）。',
 	'- 批量改动记忆后跑 `memory_check` 体检。',
 	'- 归属口诀：会**重跑**的操作（functions/）、会**重套**的原则（insights/）；原始过程永远只留在每日记录。',
@@ -2173,6 +2365,8 @@ export function apply(ctx, config) {
 		maxIndexHardBytes: Number.isFinite(config?.maxIndexHardBytes) ? config.maxIndexHardBytes : DEFAULTS.maxIndexHardBytes,
 		maxFunctionBytes: Number.isFinite(config?.maxFunctionBytes) ? config.maxFunctionBytes : DEFAULTS.maxFunctionBytes,
 		newFeatureGraceDays: Number.isFinite(config?.newFeatureGraceDays) ? config.newFeatureGraceDays : DEFAULTS.newFeatureGraceDays,
+		// Opt-in three-tier federation: { root, projects: [{ key, root }] }.
+		federation: config?.federation && typeof config.federation === 'object' ? config.federation : undefined,
 	};
 
 	const disposers = [
@@ -2184,6 +2378,7 @@ export function apply(ctx, config) {
 		ctx.tools.register(memoryFoldTool(opts)),
 		ctx.tools.register(memoryRenameTool(opts)),
 		ctx.tools.register(memoryCheckTool(opts)),
+		ctx.tools.register(memoryFederationTool(opts)),
 	];
 
 	// Proactive recall: on every proposed step, match the batch's user text

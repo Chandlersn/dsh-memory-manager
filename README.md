@@ -9,7 +9,7 @@
 把**会重跑的操作**沉淀成 `functions/`，把**会重套的原则**蒸馏成 `insights/`，
 索引只留一行摘要，并让每个会话开局就被注入这套纪律。
 
-- 八个记忆工具 + 一段系统提示纪律 + 一条 `agent/pre-step` 主动回忆钩子 + 一个只读 Web 面板
+- 九个记忆工具 + 一段系统提示纪律 + 一条 `agent/pre-step` 主动回忆钩子 + 一个只读 Web 面板
 - 写入即建档：`summary` 与 `currentState` 是必填参数，索引行不会漂移
 - 带机械体检（11 类规则），坏了能被检查出来，而不是靠记性
 - **粒度有闸门**：迭代块只写蒸馏结论，块 >900 字或索引行摘要 >110 字会在写入时告警并由体检 R14 点名
@@ -74,6 +74,7 @@ memory/
 | `memory_fold` | 功能文件超 30KB 时把最旧迭代块折叠成"早期演化"段（保留结论与全部日期标签） |
 | `memory_rename` | 重命名 / 合并功能域，自动改写所有引用并验证死链清零 |
 | `memory_check` | 体检：索引体积、缺摘要、孤儿文件、反向链接、日期乱序、死链、冷记忆、头部守卫、路径存活、块/行过详（R14）、重复行/表（R15） |
+| `memory_federation` | **联邦模式**（可选）：`sync` 把各项目 `MEMORY.md` 复制进联邦层 `sources/` 并重建项目索引表；`check` 体检 F1–F5（索引存在、链接可解析、项目/副本齐全、无孤儿副本、绝对路径存活） |
 
 系统提示里会注入一段纪律说明；`agent/pre-step` 钩子按用户输入与索引行的词元重合度打分，
 把命中的索引行作为一条 `recall` 消息注入。打分是 **IDF 加权**的：几乎每行都有的词（「功能」
@@ -113,7 +114,26 @@ plugin_manager install_bundle  <本目录绝对路径>
     maxIndexHardBytes: 15360               # 索引硬上限
     maxFunctionBytes: 30720                # 功能文件上限
     dshRoot: D:/dsh                        # 一般不需要，见下
+    federation:                            # 可选：三层联邦模式（不配则单根）
+      root: D:/fed/memory                  # 联邦层记忆根
+      projects:
+        - { key: printpress, root: 'D:/个人开发/new-tools/.memory' }
+        - { key: toolbox,    root: 'D:/rustbuild/.memory' }
 ```
+
+### 联邦模式（三层，可选）
+
+单个全局根在功能域几十个以后会拥挤。启用联邦后分三层，**项目细节不上升**：
+
+| 层 | 位置 | 内容 |
+|---|---|---|
+| 项目真相源 | 各项目自己的记忆根 | 该项目完整的 `MEMORY.md` + `functions/` + `insights/`，细节只在这里 |
+| 联邦层 | `federation.root` | `sources/<key>.MEMORY.md`（各项目索引副本）+ 一张项目索引表 + **模型手写的跨项目共识** |
+| 全局 | `~/.dsh/memory` | 只放跨项目共识与环境常量，不放项目细节 |
+
+`memory_federation(action=sync)` 刷副本与项目索引行（机械内容，不覆盖你手写的共识小节）；
+`memory_federation(action=check)` 跑 F1–F5 体检：索引存在、链接可解析、项目行与副本齐全、
+无孤儿副本、绝对路径仍存在。**工具只搬副本，跨项目共识需要模型蒸馏后自己写**——不做假融合。
 
 ### 插件从哪里找 Host 包
 

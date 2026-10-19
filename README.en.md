@@ -11,7 +11,7 @@ The one-line difference: it is not "notes per project" but an **iteration histor
 will **re-apply** is distilled into `insights/`, the index keeps a single line per row, and every session
 starts with that discipline injected into its system prompt.
 
-- Eight memory tools + an injected system-prompt discipline + an `agent/pre-step` recall hook + a read-only Web panel
+- Nine memory tools + an injected system-prompt discipline + an `agent/pre-step` recall hook + a read-only Web panel
 - Writing is filing: `summary` and `currentState` are required parameters, so the index row never drifts
 - Eleven mechanical lint rules, so rot gets detected instead of remembered
 - **Granularity gate**: iteration blocks hold distilled conclusions only; a block over 900 chars or an index
@@ -84,6 +84,7 @@ Layer 3 · MEMORY.md index + panel overview: one-line summaries + counts — a d
 | `memory_fold` | past 30KB, fold the oldest iteration blocks into an "early evolution" paragraph (conclusions and every date tag preserved) |
 | `memory_rename` | rename / merge a function area, rewrite every reference and verify zero dangling links |
 | `memory_check` | lint: index size, missing summaries, orphan files, backlinks, date ordering, dangling links, cold memory, head-summary guardrail, env-path liveness, over-long blocks/rows (R14), duplicated rows/sections (R15) |
+| `memory_federation` | **federation mode** (optional): `sync` copies each project's `MEMORY.md` into `sources/` and rebuilds the project index table; `check` lints F1–F5 (index present, links resolve, rows/copies complete, no orphans, absolute paths alive) |
 
 A discipline section is injected into the system prompt; the `agent/pre-step` hook scores the user's input
 against index rows and injects the matching rows as a single `recall` message. Scoring is **IDF-weighted**:
@@ -126,7 +127,28 @@ Configure it in the profile's `cordis.yml` when needed:
     maxIndexHardBytes: 15360               # index hard cap
     maxFunctionBytes: 30720                # function-file cap
     dshRoot: D:/dsh                        # usually unnecessary, see below
+    federation:                            # optional three-tier federation (single root otherwise)
+      root: D:/fed/memory                  # federation layer root
+      projects:
+        - { key: printpress, root: 'D:/dev/new-tools/.memory' }
+        - { key: toolbox,    root: 'D:/rustbuild/.memory' }
 ```
+
+### Federation mode (three tiers, optional)
+
+One global root gets crowded past a few dozen function areas. With federation enabled the memory splits into
+three tiers and **project detail never rises**:
+
+| Tier | Location | Holds |
+|---|---|---|
+| Project truth source | each project's own memory root | that project's full `MEMORY.md` + `functions/` + `insights/`; detail lives only here |
+| Federation layer | `federation.root` | `sources/<key>.MEMORY.md` (index copies) + a project index table + **a model-written cross-project consensus** |
+| Global | `~/.dsh/memory` | cross-project consensus and env constants only |
+
+`memory_federation(action=sync)` refreshes the copies and the mechanical project rows (it never touches the
+consensus section you wrote); `memory_federation(action=check)` lints F1–F5: index present, links resolve,
+project rows and copies complete, no orphan copies, absolute paths still exist. **The tool moves copies only —
+cross-project consensus must be distilled by the model**, no fake fusion.
 
 ### Where the plugin finds Host packages
 
