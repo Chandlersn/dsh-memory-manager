@@ -2560,7 +2560,21 @@ function memoryPanelApi(opts) {
 		try {
 			if (seg === 'overview') {
 				const health = panelizeHealth(await runHealthCheck(root, opts));
-				return json(res, 200, [{ ...health, title: '全局记忆', path: joinDshHome(), counts: await zoneCounts(root) }]);
+				// Panel-side usage snapshot: layer histogram + flip/correction hot
+				// spots, so the overview answers "how is the memory being used"
+				// alongside "how big is it". Optional data — absent when the log is
+				// empty (a fresh root starts with no signals).
+				const usage = summarizeUsage(await readUsage(root, 30));
+				const layerCounts = { 实验: 0, 专项: 0, 通用: 0 };
+				const hotspots = [];
+				for (const it of usage) {
+					if (layerCounts[it.layer] !== undefined) layerCounts[it.layer]++;
+					if (it.flips >= 2 || (it.uses >= 3 && it.badRate > 0.4)) {
+						hotspots.push({ href: it.href, flips: it.flips, badRate: it.badRate, uses: it.uses });
+					}
+				}
+				const signalCount = (await readIfExists(usagePath(root)))?.split('\n').filter((l) => l.trim()).length ?? 0;
+				return json(res, 200, [{ ...health, title: '全局记忆', path: joinDshHome(), counts: await zoneCounts(root), usage: { signalCount, layers: layerCounts, hotspots: hotspots.slice(0, 5) } }]);
 			}
 			if (seg === 'file') {
 				const name = url.searchParams.get('name');

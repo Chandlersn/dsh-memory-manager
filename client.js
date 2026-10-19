@@ -646,11 +646,14 @@ window.__ModuleLoader__.load({
 		// overview / lists / search
 		// ---------------------------------------------------------------------
 
-		function Overview({ health, counts, timeline, onOpen, onZone }) {
+		function Overview({ health, counts, timeline, usage, onOpen, onZone }) {
 			const problems = health?.results ?? [];
 			const fails = problems.filter((p) => p.level === 'FAIL');
 			const warns = problems.filter((p) => p.level === 'WARN');
 			const cold = problems.filter((p) => p.rule === 'TEMP');
+			const usageLayer = usage?.layers ?? {};
+			const hotspots = usage?.hotspots ?? [];
+			const hasSignals = (usage?.signalCount ?? 0) > 0;
 			return h(
 				'div',
 				{ style: { display: 'flex', flexDirection: 'column', gap: 12 } },
@@ -683,6 +686,38 @@ window.__ModuleLoader__.load({
 							h('div', { className: 'dmo-meta' }, g.label),
 						),
 					),
+				),
+				h(
+					Card,
+					null,
+					h(CardTitle, null, '使用信号'),
+					!hasSignals
+						? h('div', { className: 'dmo-meta' }, '还没有使用信号。召回命中与 memory_read 会自动记录；纠正/认可用 memory_usage(record) 记一笔。')
+						: h(
+								'div',
+								{ style: { display: 'flex', flexDirection: 'column', gap: 8 } },
+								h(
+									'div',
+									{ className: 'dmo-chips', 'data-dmo': 'usage-layers' },
+									h(Chip, null, `实验 ${usageLayer['实验'] ?? 0}`),
+									h(Chip, { tone: 'ok' }, `专项 ${usageLayer['专项'] ?? 0}`),
+									h(Chip, { tone: 'ok' }, `通用 ${usageLayer['通用'] ?? 0}`),
+									h('span', { className: 'dmo-meta' }, `30 天 ${usage.signalCount} 条信号`),
+								),
+								hotspots.length
+									? h(
+											'ul',
+											{ className: 'dmo-probs' },
+											hotspots.map((h0, i) =>
+												h('li', { key: i }, [
+													h0.flips >= 2 ? `结论反复推翻（翻转 ${h0.flips}）` : null,
+													h0.badRate > 0.4 ? `纠正率 ${Math.round(h0.badRate * 100)}%` : null,
+													` — ${h0.href}`,
+												].filter(Boolean).join(' · ')),
+											),
+										)
+									: h('div', { className: 'dmo-meta' }, '无热点：没有反复推翻或高纠正率的记忆。'),
+							),
 				),
 				h(
 					Card,
@@ -954,7 +989,7 @@ window.__ModuleLoader__.load({
 			else if (overview.error) main = h('div', { className: 'dmo-empty' }, `API 不可用：${overview.error}`);
 			else if (!ws) main = h('div', { className: 'dmo-empty' }, '没有已注册的 workspace。');
 			else if (!health?.initialized) main = h('div', { className: 'dmo-empty' }, '记忆还没有建立（`~/.dsh/memory/` 尚未创建）。让 Agent 做一次实质工作，它就会用 memory_write 写下第一份迭代。');
-			else if (view.kind === 'overview') main = h(Overview, { health, counts, timeline, onOpen: openFile, onZone: (z) => setView({ kind: 'zone', zone: z }) });
+			else if (view.kind === 'overview') main = h(Overview, { health, counts, timeline, usage: overview.data?.[0]?.usage, onOpen: openFile, onZone: (z) => setView({ kind: 'zone', zone: z }) });
 			else if (view.kind === 'zone') main = h(ZoneList, { zone: view.zone, rows: rowsOf(view.zone), sort, setSort, filter, setFilter, onOpen: openFile });
 			else if (fileText) main = h(Reader, { view, text: fileText, meta: fileMeta, kind, root: ws.root, onBack: back, onNavigate: navigate });
 			else main = h('div', { className: 'dmo-empty' }, fileRes.loading ? '读取文件…' : fileRes.error ? `读取失败：${fileRes.error}` : '文件为空。');

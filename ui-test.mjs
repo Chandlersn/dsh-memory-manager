@@ -167,6 +167,24 @@ const tl = overview.slice(overview.indexOf('data-dmo="timeline-row"'));
 ok(tl.indexOf('2026-10-18') < tl.indexOf('beta'), 'timeline is newest-first');
 ok(overview.includes('alpha 已稳定'), 'timeline rows carry the index one-line summary');
 ok(overview.includes('刚刚') || overview.includes('分钟前'), 'timeline shows relative time');
+// overview usage card: fixtures have no usage field -> the empty state explains
+// where signals come from instead of rendering a broken chart
+ok(overview.includes('还没有使用信号'), 'usage card explains itself when there are no signals');
+ok(count(overview, 'dmo-card') >= 3, `overview renders health + usage + timeline cards (${count(overview, 'dmo-card')})`);
+// with usage data, the layer histogram + hotspots render
+const overviewWithUsage = serialize(
+	FakeReact.createElement(MemoryPanel, {
+		__apiFixtures: {
+			...fixtures,
+			'/api/memory-org/overview?v=0': { data: [{ root: 'C:/x/memory', initialized: true, failCount: 0, warnCount: 1, results: [{ level: 'WARN', rule: 'TEMP', message: 'functions/beta.md 冷记忆' }], counts: { functions: 2, insights: 1, daily: 2 }, usage: { signalCount: 12, layers: { 实验: 2, 专项: 1, 通用: 0 }, hotspots: [{ href: 'functions/beta.md', flips: 2, badRate: 0.5, uses: 3 }] } }], loading: false, error: null },
+		},
+		initialView: { kind: 'overview' },
+	}),
+);
+ok(overviewWithUsage.includes('实验 2') && overviewWithUsage.includes('专项 1'), 'usage card renders the layer histogram');
+ok(overviewWithUsage.includes('30 天 12 条信号'), 'usage card shows the signal count');
+ok(overviewWithUsage.includes('结论反复推翻（翻转 2）'), 'hotspots name flip-heavy memories');
+ok(overviewWithUsage.includes('纠正率 50%'), 'hotspots name high correction rates');
 
 // --- zone list --------------------------------------------------------------
 const funList = render({ kind: 'zone', zone: 'functions' });
