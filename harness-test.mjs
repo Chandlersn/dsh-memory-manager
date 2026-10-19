@@ -47,7 +47,7 @@ const statExists = async (p) => { try { await (await import('node:fs/promises'))
 // temperature rule can be asserted deterministically (see 11d for the grace).
 const disposer2 = mod.apply(fakeCtx, { memoryRoot: root, newFeatureGraceDays: 0 });
 const tools2 = Object.fromEntries(
-	registered.filter((r) => r?.name && r.execute).slice(-10).map((t) => [t.name, t]),
+	registered.filter((r) => r?.name && r.execute).slice(-11).map((t) => [t.name, t]),
 );
 const T = tools2;
 const disposer = noop;
@@ -275,7 +275,7 @@ ok(w6.warnings.some((x) => x.includes('疑似与已有功能域')), `dedupe warn
 // backlinked, so the default window suppresses the cold flag for it.
 mod.apply(fakeCtx, { memoryRoot: root });
 const tools3 = Object.fromEntries(
-	registered.filter((r) => r?.name && r.execute).slice(-10).map((t) => [t.name, t]),
+	registered.filter((r) => r?.name && r.execute).slice(-11).map((t) => [t.name, t]),
 );
 const c3 = await tools3.memory_check.execute({}, exec);
 ok(!c3.results.some((r) => r.rule === 'TEMP'), `grace window suppresses cold flag on fresh files (TEMP=${c3.results.filter((r) => r.rule === 'TEMP').length})`);
@@ -462,7 +462,7 @@ for (const [dir, label] of [[projA, 'A'], [projB, 'B']]) {
 	await writeFile(path.join(dir, 'functions', `${label}功能.md`), '# x\n', 'utf8');
 }
 mod.apply(fakeCtx, { memoryRoot: root, federation: { root: fedRoot, projects: [{ key: 'proj-a', root: projA }, { key: 'proj-b', root: projB }] } });
-const FED = Object.fromEntries(registered.filter((r) => r?.name && r.execute).slice(-10).map((t) => [t.name, t]));
+const FED = Object.fromEntries(registered.filter((r) => r?.name && r.execute).slice(-11).map((t) => [t.name, t]));
 ok(typeof FED.memory_federation?.execute === 'function', 'memory_federation registered');
 const synced = await FED.memory_federation.execute({ action: 'sync' }, exec);
 ok(synced.projects.length === 2 && synced.projects.every((p) => p.copied), 'sync copies every project index');
@@ -492,7 +492,7 @@ const check4 = await FED.memory_federation.execute({ action: 'check' }, exec);
 ok(check4.findings.some((f) => f.rule === 'F2'), 'F2 flags a dangling federation link');
 // unconfigured federation -> explicit error, not silence
 mod.apply(fakeCtx, { memoryRoot: root });
-const NOFED = Object.fromEntries(registered.filter((r) => r?.name && r.execute).slice(-10).map((t) => [t.name, t]));
+const NOFED = Object.fromEntries(registered.filter((r) => r?.name && r.execute).slice(-11).map((t) => [t.name, t]));
 let fedThrew = null;
 try {
 	await NOFED.memory_federation.execute({ action: 'check' }, exec);
@@ -603,6 +603,49 @@ const rep2 = await US.execute({ action: 'report', days: 30 }, exec);
 const flipItem = rep2.items.find((i) => i.href === 'functions/翻转域.md');
 ok(flipItem && flipItem.flips >= 2, `usage report counts verdict flips (${flipItem?.flips})`);
 ok(rep2.warnings.some((w) => w.includes('反复推翻')), 'a flip warning surfaces for unstable conclusions');
+
+// 20) capability ledger: a CLI/MCP tool the agent actually used gets recorded
+// once (one file per tool, updated in place) with its exact invocation,
+// prerequisites and what it solved; record keeps the index row in sync.
+const cap1 = await T.memory_capability.execute(
+	{ action: 'record', name: 'ffmpeg', kind: 'cli', invocation: 'ffmpeg -f image2pipe -i pipe.png -c:v libx264 out.mp4', prereq: '已装 ffmpeg 7.x，PATH 可用', solved: 'OpenMontage 出片：静帧序列转 1920×1080 H.264', summary: '静帧序列转视频的渲染器' },
+	exec,
+);
+ok(cap1.created === true && cap1.file.replace(/\\/g, '/').includes('capabilities/ffmpeg.md'), 'capability record creates a ledger file');
+const capText = await readFile(cap1.file, 'utf8');
+ok(capText.includes('## 调用方式') && capText.includes('ffmpeg -f image2pipe'), 'ledger keeps the exact invocation');
+ok(capText.includes('> 摘要：静帧序列转视频的渲染器'), 'summary lands in the head line');
+const cap2 = await T.memory_capability.execute(
+	{ action: 'record', name: 'ffmpeg', kind: 'cli', invocation: 'ffmpeg -f image2pipe -i pipe.png -c:v libx264 -pix_fmt yuv420p out.mp4', solved: '批印坊 v2 成片 96s' },
+	exec,
+);
+ok(cap2.created === false && cap2.file === cap1.file, 'record updates in place (one file per tool)');
+const capText2 = await readFile(cap1.file, 'utf8');
+ok(capText2.includes('-pix_fmt yuv420p'), 'invocation refreshed to the newer command');
+ok(capText2.split('OpenMontage 出片').length === 2 && capText2.includes('批印坊 v2 成片 96s'), 'solved entries accumulate (ledger, not journal)');
+const idxCap = await T.memory_read.execute({ kind: 'index' }, exec);
+ok(idxCap.content.includes('| ffmpeg |') && idxCap.content.includes('capabilities/ffmpeg.md'), 'capability row lands in the index table');
+const capList = await T.memory_capability.execute({ action: 'list' }, exec);
+ok(capList.items.length === 1 && capList.items[0].name === 'ffmpeg' && capList.items[0].kind === 'cli', `list returns ledger entries (${capList.items.length})`);
+const capRead = await T.memory_capability.execute({ action: 'read', name: 'ffmpeg' }, exec);
+ok(capRead.content.includes('## 调用方式'), 'read returns the full ledger');
+let capThrew = 0;
+for (const args of [{ action: 'record', name: 'bad', kind: 'cli' }, { action: 'read', name: '不存在的能力' }]) {
+	try {
+		await T.memory_capability.execute(args, exec);
+	} catch {
+		capThrew++;
+	}
+}
+ok(capThrew === 2, 'capability record/read validate their inputs');
+const capViaRead = await T.memory_read.execute({ kind: 'capability', name: 'ffmpeg' }, exec);
+ok(capViaRead.found && capViaRead.content.includes('调用方式'), 'memory_read kind=capability works');
+const capSearch = await T.memory_search.execute({ q: 'image2pipe' }, exec);
+ok(capSearch.count >= 1 && capSearch.hits.some((h0) => h0.zone === 'capabilities'), `search covers capabilities (${capSearch.count} hits)`);
+const capSearchZone = await T.memory_search.execute({ q: 'image2pipe', zone: 'capabilities' }, exec);
+ok(capSearchZone.count >= 1 && capSearchZone.hits.every((h0) => h0.zone === 'capabilities'), 'capabilities zone filter works');
+const cCap = await T.memory_check.execute({}, exec);
+ok(!cCap.results.some((r) => r.message.includes('ffmpeg') && r.level === 'FAIL'), 'capability files do not trip the linter');
 
 await rm(root, { recursive: true, force: true });
 console.log(failures === 0 ? 'ALL PASS' : `${failures} FAILURES`);

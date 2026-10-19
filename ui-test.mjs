@@ -156,8 +156,8 @@ const count = (s, needle) => s.split(needle).length - 1;
 
 // --- overview ---------------------------------------------------------------
 const overview = render({ kind: 'overview' });
-ok(count(overview, 'data-dmo="nav-item"') === 5, `rail has 5 destinations (${count(overview, 'data-dmo="nav-item"')})`);
-ok(overview.includes('功能') && overview.includes('思想') && overview.includes('每日') && overview.includes('索引'), 'rail labels for every zone');
+ok(count(overview, 'data-dmo="nav-item"') === 6, `rail has 6 destinations (${count(overview, 'data-dmo="nav-item"')})`);
+ok(overview.includes('功能') && overview.includes('思想') && overview.includes('每日') && overview.includes('索引') && overview.includes('能力'), 'rail labels for every zone');
 ok(count(overview, 'data-dmo="growth-card"') === 3, 'overview shows three zone count cards');
 ok(overview.includes('WARN 1') && overview.includes('冷记忆 1'), 'health chips carry the warning and the cold count');
 ok(overview.includes('[WARN] TEMP: functions/beta.md 冷记忆'), 'the health list renders every problem from overview.results');
@@ -257,7 +257,7 @@ ok(searchView.includes('相关命中'), 'search hits render the API snippet text
 ok(searchView.includes('dmo-mark') && searchView.includes('冷记忆'), 'the query is highlighted inside the snippet');
 ok(searchView.includes('今日待观察'), 'search hits show their section heading');
 ok(searchView.includes('第 3 行'), 'search hits show the line number');
-ok(count(searchView, 'data-dmo="search-zone"') === 5, `search offers a zone filter (${count(searchView, 'data-dmo="search-zone"')} chips)`);
+ok(count(searchView, 'data-dmo="search-zone"') === 6, `search offers a zone filter (${count(searchView, 'data-dmo="search-zone"')} chips)`);
 ok(searchView.includes('dmo-chip btn active'), 'the active zone chip is marked');
 // a filtered empty result explains itself instead of looking broken
 const emptyFiltered = serialize(

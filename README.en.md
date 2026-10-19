@@ -11,9 +11,11 @@ The one-line difference: it is not "notes per project" but an **iteration histor
 will **re-apply** is distilled into `insights/`, the index keeps a single line per row, and every session
 starts with that discipline injected into its system prompt.
 
-- Ten memory tools + an injected system-prompt discipline + an `agent/pre-step` recall hook + a read-only Web panel
+- Eleven memory tools + an injected system-prompt discipline + an `agent/pre-step` recall hook + a read-only Web panel
 - Writing is filing: `summary` and `currentState` are required parameters, so the index row never drifts
 - Eleven mechanical lint rules, so rot gets detected instead of remembered
+- **Capability ledger**: every CLI / MCP / local tool you used is filed in `capabilities/` — look before you
+  rediscover it
 - **Granularity gate**: iteration blocks hold distilled conclusions only; a block over 900 chars or an index
   row over 110 chars warns at write time and is named by lint rule R14
 - Panel colors and sizes ride on the Host design tokens (`--dsw-alias-*` / `--dsw-radius-*`)
@@ -25,9 +27,10 @@ The root defaults to `~/.dsh/memory/` (override it with the `DSH_HOME` environme
 
 ```
 memory/
-├── MEMORY.md              # index: function-module index + innovation-insight index (one-line summary per row) + consensus + environment constants
+├── MEMORY.md              # index: function table + insight table + capability ledger table (one-line summary per row) + consensus + environment constants
 ├── functions/<area>.md    # one file per area, append-only iteration blocks (the date is just a tag)
 ├── insights/<theme>.md    # transferable principles, distilled upward from concrete areas, backlinked to their source
+├── capabilities/<tool>.md # capability ledger: how to invoke a CLI/MCP/local tool, prerequisites, what it solved
 ├── YYYY-MM-DD.md          # daily log: the raw layer — content & format unconstrained (first-hand task data)
 └── legacy/                # prototype-era logs (must carry a "historical form" header)
 ```
@@ -134,8 +137,9 @@ records *why* we believed it then.
 
 | Tool | What it does |
 |---|---|
-| `memory_read` | read the index / a function file / an insight file / a daily log (`kind=index` first, to judge relevance) |
+| `memory_read` | read the index / a function file / an insight file / a capability entry / a daily log (`kind=index` first, to judge relevance) |
 | `memory_search` | **ranked full-text search** across the whole root: scans bodies, not just one-line summaries, and returns zone/file/line/section/snippet. Use it when you remember a fragment but not the area or the day |
+| `memory_capability` | **the capability ledger**: `record` files a CLI/MCP/local tool you used (invocation, prerequisites, what it solved — one file per tool, updated in place); `list` before a task to see what is available; `read` for a tool's full entry |
 | `memory_write` | **append one iteration block** (a conclusion distilled from the raw daily record) and refresh the head stable-state summary; `summary` is the block's one-line takeaway. **Writes no index row, never touches the daily log** |
 | `memory_index` | **the integration layer**: once an area/theme stabilizes, upsert its row into the MEMORY.md index (row summary distilled from the block summaries); pass `group` to land in a `### 索引·<domain>` sub-table when the table has been split |
 | `memory_insight` | distil a transferable principle from the function division into `insights/`, backlink its source areas, `supersedes` to replace an older idea; three soft gates at write time (≥2 source areas / not a procedure / ≤200 chars) |

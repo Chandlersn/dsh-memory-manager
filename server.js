@@ -135,6 +135,8 @@ const DEFAULTS = {
 
 const FUNC_TABLE_HEADING = '## 功能模块索引';
 const INSIGHT_TABLE_HEADING = '## 创新优化思想索引';
+const CAP_TABLE_HEADING = '## 能力台账（可用工具 / MCP / CLI）';
+const CAP_TABLE_HEADER = '| 能力 | 一句话用途 | 台账 | 类型 |';
 const FUNC_TABLE_HEADER = '| 功能域摘要 | 一句话状态 / 待验证 | 过程链接 | 摘要 |';
 const INSIGHT_TABLE_HEADER = '| 思想主题 | 一句话内涵 / 解决的权衡 | 思想内容 | 相关（来源功能） |';
 // Daily-log structure is no longer imposed: the raw layer is free-form, so the
@@ -412,6 +414,11 @@ function memoryIndexTemplate() {
 		`${INSIGHT_TABLE_HEADING}（insights/）`,
 		'',
 		INSIGHT_TABLE_HEADER,
+		'|---|---|---|---|',
+		'',
+		`${CAP_TABLE_HEADING}（capabilities/）`,
+		'',
+		CAP_TABLE_HEADER,
 		'|---|---|---|---|',
 		'',
 		'## 决策共识 / 规范（跨功能、约束级）',
@@ -920,7 +927,7 @@ async function runHealthCheck(root, opts) {
 	const fnMtimes = new Map();
 	const insightTexts = [];
 
-	for (const zone of ['functions', 'insights']) {
+	for (const zone of ['functions', 'insights', 'capabilities']) {
 		const dir = path.join(root, zone);
 		let files = [];
 		try {
@@ -979,7 +986,7 @@ async function runHealthCheck(root, opts) {
 						break; // one report per file is enough
 					}
 				}
-			} else {
+			} else if (zone === 'insights') {
 				insightTexts.push(text);
 			}
 			await checkLinks(text, fp, root, add);
@@ -1099,8 +1106,8 @@ function memoryReadTool(opts) {
 			kind: {
 				type: 'string',
 				required: true,
-				enum: ['index', 'function', 'insight', 'daily'],
-				description: 'index=MEMORY.md; function=functions/<name>.md; insight=insights/<name>.md; daily=YYYY-MM-DD.md (latest when date omitted).',
+				enum: ['index', 'function', 'insight', 'capability', 'daily'],
+				description: 'index=MEMORY.md; function=functions/<name>.md; insight=insights/<name>.md; capability=capabilities/<name>.md (CLI/MCP ledger); daily=YYYY-MM-DD.md (latest when date omitted).',
 			},
 			name: {
 				type: 'string',
@@ -1150,8 +1157,8 @@ function memoryReadTool(opts) {
 				const text = await readIfExists(p);
 				return { found: text !== undefined, path: p, content: text ?? '', listing: [] };
 			}
-			if (args.kind === 'function' || args.kind === 'insight') {
-				const dir = path.join(root, args.kind === 'function' ? 'functions' : 'insights');
+			if (args.kind === 'function' || args.kind === 'insight' || args.kind === 'capability') {
+				const dir = path.join(root, args.kind === 'function' ? 'functions' : args.kind === 'insight' ? 'insights' : CAP_DIR);
 				if (!args.name) {
 					const listing = await listMdDir(dir);
 					return { found: listing.length > 0, path: dir, content: '', listing };
@@ -1199,7 +1206,7 @@ function memorySearchTool(opts) {
 			'Ranked full-text search across the ENTIRE memory root (index, functions/, insights/, daily logs) and return the best matching lines with their zone, file, line number, section heading and a snippet. Use it when you remember something was recorded but cannot tell which function area or which day: memory_read kind=index only scans one-line summaries, while this scans the bodies. Ranking is lexical (query substring, token hits, section heading, file name) with per-file caps, so a broad keyword does not return one file\'s whole history. Read the file afterwards with memory_read before re-deriving anything.',
 		parameters: {
 			q: { type: 'string', required: true, description: '检索词：一个词或短句（≥2 字符）。中文子串与英文单词都支持。' },
-			zone: { type: 'string', enum: ['all', 'functions', 'insights', 'daily'], description: '限定检索分区，缺省 all（含索引）。' },
+			zone: { type: 'string', enum: ['all', 'functions', 'insights', 'capabilities', 'daily'], description: '限定检索分区，缺省 all（含索引）。能力台账（CLI/MCP/本地工具）在 capabilities。' },
 			limit: { type: 'integer', description: '最多返回多少条命中（默认 20，最大 50）。' },
 		},
 		output: {
@@ -1240,7 +1247,7 @@ function memorySearchTool(opts) {
 			const root = resolveRoot(opts);
 			const q = oneLine(args.q);
 			if (charLen(q) < 2) throw new Error('q must be at least 2 characters');
-			const zone = ['functions', 'insights', 'daily'].includes(args.zone) ? args.zone : 'all';
+			const zone = ['functions', 'insights', 'capabilities', 'daily'].includes(args.zone) ? args.zone : 'all';
 			const limit = Math.min(Math.max(1, Number(args.limit) || 20), 50);
 			const hits = await searchMemory(root, q, { zone, limit });
 			return { count: hits.length, hits };
@@ -1561,6 +1568,181 @@ async function listMdDir(dir) {
 	// latest state at the top, not a file-manager's alphabetical order.
 	out.sort((a, b) => String(b.mtime).localeCompare(String(a.mtime)));
 	return out;
+}
+
+// ---------------------------------------------------------------------------
+// memory_capability — the tool/MCP ledger ("what can I use to solve this?")
+// ---------------------------------------------------------------------------
+//
+// The other zones answer "how did we do it" (functions/), "what principle holds"
+// (insights/), "what happened when" (daily). None of them answers "which CLI,
+// MCP server or local tool exists for this job, and how do I call it" — so every
+// session rediscovers it. This zone is a ledger of capability: one file per
+// tool/server, with the exact invocation, the prerequisites, and what it solved.
+
+const CAP_DIR = 'capabilities';
+
+function capabilityTemplate(name, kind, date) {
+	return [
+		`# 能力：${name}`,
+		'',
+		`> 类型：${kind} · 首次登记：${date}`,
+		'> 用途：任务开始前查这张台账，知道「有什么工具能用、怎么调」；不要重复摸索同一个工具。',
+		'',
+		'## 调用方式',
+		'',
+		'- ',
+		'',
+		'## 前提 / 环境',
+		'',
+		'- ',
+		'',
+		'## 解决过什么',
+		'',
+		'- ',
+		'',
+	].join('\n');
+}
+
+function memoryCapabilityTool(opts) {
+	return defineTool({
+		name: 'memory_capability',
+		description:
+			'Record or look up a LOCAL CAPABILITY in the memory ledger: a CLI tool, MCP server, local binary, or installed software the agent can call. The other zones answer "how we did it" / "what principle holds" / "what happened"; this one answers "what can I USE for this job, and how exactly do I invoke it". Use action=record after you discover or successfully use a tool (exact command, prerequisites, what it solved); use action=list before starting a task to see what is already available instead of rediscovering it. This is a CAPABILITY ledger, not an iteration log: per-tool one file, updated in place, never a dated journal.',
+		parameters: {
+			action: { type: 'string', required: true, enum: ['record', 'list', 'read'], description: 'record=登记/更新一个能力；list=列出全部能力（含一句话摘要）；read=读某个能力的完整台账。' },
+			name: { type: 'string', description: 'record/read 必填：能力名（作为文件名），如 `ffmpeg`、`gh-cli`、`playwright-mcp`。' },
+			kind: { type: 'string', enum: ['cli', 'mcp', 'binary', 'service', 'skill', 'other'], description: 'record 可选：能力类型，缺省 cli。' },
+			invocation: { type: 'string', description: 'record 必填：怎么调用（真实可执行的命令或调用形式，一句话）。' },
+			prereq: { type: 'string', description: 'record 可选：前提/环境（路径、token、版本、启动方式）。' },
+			solved: { type: 'string', description: 'record 可选：用它解决过什么（一句话；可多次 record 追加）。' },
+			summary: { type: 'string', description: 'record 可选：一句话摘要（进索引与列表用），缺省取 invocation 首句。' },
+		},
+		output: {
+			schema: {
+				type: 'object',
+				additionalProperties: false,
+				properties: {
+					action: { type: 'string', required: true },
+					file: { type: 'string' },
+					created: { type: 'boolean' },
+					items: {
+						type: 'array',
+						required: true,
+						items: {
+							type: 'object',
+							additionalProperties: false,
+							properties: {
+								name: { type: 'string', required: true },
+								kind: { type: 'string', required: true },
+								summary: { type: 'string', required: true },
+								invocation: { type: 'string', required: true },
+								updated: { type: 'string', required: true },
+							},
+						},
+					},
+					content: { type: 'string' },
+					warnings: { type: 'array', required: true, items: { type: 'string' } },
+				},
+			},
+			render: (_args, v) => {
+				if (v.action === 'read') return [{ type: 'text', text: v.content || '（空）' }];
+				if (v.action === 'record') {
+					const lines = [`已登记能力：${v.file}${v.created ? '（新建）' : '（更新）'}`];
+					for (const w of v.warnings) lines.push(`⚠ ${w}`);
+					lines.push('ℹ 下次做任务前先 memory_capability(action=list) 看有没有现成的。');
+					return [{ type: 'text', text: lines.join('\n') }];
+				}
+				if (!v.items.length) return [{ type: 'text', text: '能力台账还是空的。用到某个 CLI/MCP/本地工具后，用 memory_capability(action=record) 记一笔：调用方式、前提、解决过什么。' }];
+				const lines = [`能力台账（${v.items.length} 项）：`];
+				for (const it of v.items) lines.push(`- [${it.kind}] ${it.name} — ${it.summary}${it.invocation ? ` ｜ 调用：${it.invocation}` : ''}`);
+				for (const w of v.warnings) lines.push(`⚠ ${w}`);
+				return [{ type: 'text', text: lines.join('\n') }];
+			},
+		},
+		presentCall: (args) => ({ card: 'generic', title: `Memory capability: ${args.action ?? ''}${args.name ? ` ${args.name}` : ''}`, kind: 'other', rawInput: args }),
+		async execute(args, exec) {
+			const root = resolveRoot(opts);
+			const dir = path.join(root, CAP_DIR);
+			const warnings = [];
+			if (args.action === 'list') {
+				let names = [];
+				try {
+					names = (await readdir(dir)).filter((n) => n.endsWith('.md'));
+				} catch {
+					/* no ledger yet */
+				}
+				const items = [];
+				for (const f of names.sort()) {
+					const text = (await readIfExists(path.join(dir, f))) ?? '';
+					const kindM = text.match(/^> 类型：([^\s·]+)/m);
+					const invM = text.match(/## 调用方式\s*\n+-\s*(.+)/);
+					const summaryM = text.match(/^>\s*摘要：(.+)$/m);
+					const st = await stat(path.join(dir, f));
+					items.push({
+						name: f.replace(/\.md$/, ''),
+						kind: kindM ? kindM[1] : 'other',
+						summary: summaryM ? summaryM[1].trim() : (invM ? invM[1].trim().slice(0, 80) : '（无摘要）'),
+						invocation: invM ? invM[1].trim().slice(0, 120) : '',
+						updated: st.mtime.toISOString(),
+					});
+				}
+				return { action: 'list', items, warnings };
+			}
+			const name = safeSlug(args.name);
+			const p = path.join(dir, `${name}.md`);
+			if (args.action === 'read') {
+				const text = await readIfExists(p);
+				if (text === undefined) throw new Error(`能力台账里没有 ${name}（先 memory_capability(action=record)）`);
+				return { action: 'read', file: p, items: [], content: text, warnings };
+			}
+			// record / update
+			const invocation = oneLine(args.invocation);
+			if (!invocation) throw new Error('invocation is required: the exact command or call form, so the next session does not rediscover it');
+			const kind = ['cli', 'mcp', 'binary', 'service', 'skill', 'other'].includes(args.kind) ? args.kind : 'cli';
+			const date = localDateStr();
+			const existing = await readIfExists(p);
+			let text;
+			const created = existing === undefined;
+			if (created) {
+				text = capabilityTemplate(name, kind, date);
+			} else {
+				text = existing;
+			}
+			// invocation: replace the section body (single source of truth)
+			text = replaceSection(text, '## 调用方式', `- ${invocation}`);
+			if (args.prereq !== undefined && oneLine(args.prereq)) {
+				text = appendUnderHeading(text, '## 前提 / 环境', `- ${oneLine(args.prereq)}`).text;
+			}
+			if (args.solved !== undefined && oneLine(args.solved)) {
+				text = appendUnderHeading(text, '## 解决过什么', `- ${date} ${oneLine(args.solved)}`).text;
+			}
+			const summary = oneLine(args.summary ?? '') || invocation.slice(0, 80);
+			if (!/^>\s*摘要：/m.test(text)) {
+				// keep the summary line right under the type line
+				text = text.replace(/^(> 类型：.*)$/m, `$1\n> 摘要：${summary}`);
+			} else {
+				text = text.replace(/^>\s*摘要：.*$/m, `> 摘要：${summary}`);
+			}
+			await writeText(p, text);
+			// Keep the index row in sync: the capability table is the "what can I
+			// use" lookup surface, and a ledger nobody indexes is a ledger nobody
+			// finds.
+			const indexPath = path.join(root, 'MEMORY.md');
+			let indexText = (await readIfExists(indexPath)) ?? memoryIndexTemplate();
+			const row = `| ${name} | ${summary} | [capabilities/${name}.md](capabilities/${name}.md) | ${kind} |`;
+			indexText = upsertIndexRow(indexText, CAP_TABLE_HEADING, CAP_TABLE_HEADER, name, row);
+			await writeText(indexPath, indexText);
+			const st = await stat(p);
+			return {
+				action: 'record',
+				file: p,
+				created,
+				items: [{ name, kind, summary, invocation, updated: st.mtime.toISOString() }],
+				warnings,
+			};
+		},
+	});
 }
 
 function memoryWriteTool(opts) {
@@ -2267,10 +2449,10 @@ async function searchMemory(root, rawQuery, { zone = 'all', limit = 20 } = {}) {
 	const q = String(rawQuery ?? '').trim().toLowerCase();
 	if (q.length < 2) return [];
 	const tokens = tokensOf(q);
-	const zones = zone === 'all' ? ['index', 'functions', 'insights', 'daily'] : [zone];
+	const zones = zone === 'all' ? ['index', 'functions', 'insights', 'capabilities', 'daily'] : [zone];
 	const files = [];
 	if (zones.includes('index')) files.push({ zone: 'index', name: 'MEMORY.md', file: path.join(root, 'MEMORY.md') });
-	for (const z of ['functions', 'insights']) {
+	for (const z of ['functions', 'insights', 'capabilities']) {
 		if (!zones.includes(z)) continue;
 		let names = [];
 		try {
@@ -2498,14 +2680,15 @@ function memoryIndexTool(opts) {
 const DISCIPLINE_TEXT = [
 	'## 持久记忆纪律（memory-manager）',
 	'',
-	'本 Harness 维护**全局**跨会话记忆（`~/.dsh/memory/`，即 dshHome 的 memory/ 目录；十个工具：memory_read / memory_search / memory_write / memory_index / memory_insight / memory_fold / memory_rename / memory_check / memory_usage / memory_federation；结构见 memory/MEMORY.md）。记忆对全部项目、全部会话通用，按功能域组织而非按项目隔离。**数据流单向四层，每层只吃上一层的产出**：',
+	'本 Harness 维护**全局**跨会话记忆（`~/.dsh/memory/`，即 dshHome 的 memory/ 目录；十一个工具：memory_read / memory_search / memory_capability / memory_write / memory_index / memory_insight / memory_fold / memory_rename / memory_check / memory_usage / memory_federation；结构见 memory/MEMORY.md）。记忆对全部项目、全部会话通用，按功能域组织而非按项目隔离。**数据流单向四层，每层只吃上一层的产出**：',
 	'',
 	'- **第 0 层 · 每日记录（原始层）**：`YYYY-MM-DD.md` 是任务与对话过程的第一手数据，**本插件不约束其内容与格式**——用任何工具、任何方式自由记录（决策、对话、试错、片段都行）。它是一切蒸馏的原料；同一事实只在这里是"过程"，其余层只见结论。',
 	'- **第 1 层 · 功能域（memory_write）**：从每日原始记录中**归纳汲取**功能划分——一次实质工作 = 一个 functions/<功能域>.md 迭代块（蒸馏结论：动因/改动/判据/待观察 各一句）。`summary` 是本块的一句话概括；功能域该新建还是并入既有的，判断依据就是每日记录里反复出现的主题。',
 	'- **第 2 层 · 创新思想（memory_insight）**：从功能划分中**再提取**可迁移原则（会重套的、不绑定单一功能机制的），回链来源功能域；取代旧思想传 `supersedes`。',
 	'- **第 3 层 · 索引与总览（memory_index）**：**整合层**——功能域稳定后（有 ≥2 个迭代块，或用户可感知为独立主题时）用 memory_index 把它收进 MEMORY.md 索引；索引行摘要 = 从各迭代块的概括中提炼的"这个功能是什么"。索引是展示与检索的派生物，不与单次写入强绑。',
 	'- **层级定义（道/法/术/器，按普适程度分）**：**器**=指向内容的指针与检索面（MEMORY.md 双表+面板）；**术**=一个功能域"怎么做"的完整迭代史（functions/，判据"我会不会再跑一次这个操作"）；**法**=从具体操作提炼的可套原则（insights/，判据"换个项目/领域还成立吗"）；**道**=跨域都必须遵守的约束（MEMORY.md 共识区，判据"违反了会不会出事故"）。**放错层的三个信号**：① 在功能域里翻到普适断言 → 该升到 insights；② 同一句话想写进两个功能域 → 该升到 insights；③ 一条"原则"每次都要附带操作步骤才能用 → 该降回 functions。**反例**：索引行里写推导过程；迭代块里写"以后所有项目都应该……"；原则写成"1. 先运行 X；2. 再执行 Y"；把某次技术选型记成共识。',
-	'- **先查后写**：涉及"项目里怎么做 / 为什么这么做 / 环境常量"时，先 `memory_read kind=index`（行内摘要判断相关性，再打开对应文件）；只记得片段、说不清在哪个域或哪天时用 `memory_search`（全库排序检索，返回命中的分区/文件/行号/小节/片段）。不要凭空重推已有结论。',
+	'- **先查后写**：涉及"项目里怎么做 / 为什么这么做 / 环境常量"时，先 `memory_read kind=index`（行内摘要判断相关性，再打开对应文件）；只记得片段、说不清在哪个域或哪天时用 `memory_search`（全库排序检索，返回命中的分区/文件/行号/小节/片段）。**动手前先查 `memory_capability`**：本地 CLI / MCP / 已装软件都在 `capabilities/` 台账里，能省下一整轮摸索。不要凭空重推已有结论。',
+	'- **用到的工具要登记**：一旦发现或成功调用某个 CLI / MCP / 本地二进制 / 服务，立即 `memory_capability(action=record)`：真实可执行的调用方式、前提（路径/token/版本）、它解决过什么。台账按工具一文件、就地更新——**不是流水账，是索引**。下次同类任务先 `action=list`，不要重新摸索同一个工具。',
 	'- **蒸馏不搬过程**：迭代块只写结论；逐条实现清单、调试经过属于每日原始层与会话/代码。块 >900 字或概括 >110 字写入告警，体检 R14 复查。',
 	'- **经验二分**：会**重跑**的操作进 functions/；会**重套**的原则用 memory_insight 进 insights/；跨功能共识与环境常量只在 MEMORY.md。',
 	'- **使用信号让记忆自己排序**：召回命中与 memory_read 会自动记信号；用户纠正/明确认可时用 `memory_usage(action=record, kind=correction|positive)` 记一笔（这是分层判断里唯一不能自动获得的信号）。`memory_usage(action=report)` 给出 实验/专项/通用 建议；某域近 7 天纠正率 >40% 时体检 R18 报熔断——先重构再追加。',
@@ -2549,6 +2732,7 @@ async function zoneCounts(root) {
 	return {
 		functions: await count(path.join(root, 'functions'), (n) => n.endsWith('.md')),
 		insights: await count(path.join(root, 'insights'), (n) => n.endsWith('.md')),
+		capabilities: await count(path.join(root, 'capabilities'), (n) => n.endsWith('.md')),
 		daily: await count(root, (n) => /^\d{4}-\d{2}-\d{2}\.md$/.test(n)),
 	};
 }
@@ -2588,7 +2772,7 @@ function memoryPanelApi(opts) {
 					return json(res, 400, { error: 'invalid file name' });
 				}
 				const zone = url.searchParams.get('zone') ?? '';
-				if (!['', 'functions', 'insights', 'daily'].includes(zone)) {
+				if (!['', 'functions', 'insights', 'capabilities', 'daily'].includes(zone)) {
 					return json(res, 400, { error: 'invalid zone' });
 				}
 				if (zone === 'daily' && !/^\d{4}-\d{2}-\d{2}\.md$/.test(name)) {
@@ -2603,7 +2787,7 @@ function memoryPanelApi(opts) {
 			}
 			if (seg === 'list') {
 				const zone = url.searchParams.get('zone');
-				if (!['functions', 'insights', 'daily'].includes(zone)) return json(res, 400, { error: 'invalid zone' });
+				if (!['functions', 'insights', 'capabilities', 'daily'].includes(zone)) return json(res, 400, { error: 'invalid zone' });
 				const dir = zone === 'daily' ? root : path.join(root, zone);
 				let names = [];
 				try {
@@ -2637,7 +2821,7 @@ function memoryPanelApi(opts) {
 				// file order, so a hit in the first file always outranked a better
 				// one further down.
 				const zoneParam = url.searchParams.get('zone');
-				const zone = ['functions', 'insights', 'daily'].includes(zoneParam) ? zoneParam : 'all';
+				const zone = ['functions', 'insights', 'capabilities', 'daily'].includes(zoneParam) ? zoneParam : 'all';
 				const hits = await searchMemory(root, q, { zone, limit: 60 });
 				return json(res, 200, { hits });
 			}
@@ -2678,6 +2862,7 @@ export function apply(ctx, config) {
 	const disposers = [
 		ctx.tools.register(memoryReadTool(opts)),
 		ctx.tools.register(memorySearchTool(opts)),
+		ctx.tools.register(memoryCapabilityTool(opts)),
 		ctx.tools.register(memoryWriteTool(opts)),
 		ctx.tools.register(memoryIndexTool(opts)),
 		ctx.tools.register(memoryInsightTool(opts)),
