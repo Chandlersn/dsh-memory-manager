@@ -136,7 +136,31 @@ const DEFAULTS = {
 	// discipline — recall must never become the reason a step feels slow, and
 	// on timeout it degrades to no recall (never a partial/stale injection).
 	recallTimeoutMs: 3000,
+	// MemOS borrow ⑥: passive capture of the user's own words into the RAW daily
+	// layer. OFF by default — the raw layer is the model's to write, and blind
+	// logging of every turn is noise (and a privacy question). Opt in with
+	// `captureUserTurns: true`; each turn is truncated and de-duplicated.
+	captureUserTurns: false,
+	// Hard ceiling per captured line: a raw-layer note is a breadcrumb, not a
+	// transcript. Long prompts are cut so the daily file stays readable.
+	captureMaxChars: 160,
 };
+
+/**
+ * Build the passive-capture line for one user turn, or null when it should not
+ * be recorded (disabled, empty, or already present in today's log). Pure, so the
+ * privacy/truncation rules are testable without touching the filesystem.
+ */
+function captureLineFor(userText, todayLogText, { enabled = false, maxChars = DEFAULTS.captureMaxChars } = {}) {
+	if (!enabled) return null;
+	const text = String(userText ?? '').replace(/\s+/g, ' ').trim();
+	if (!text) return null;
+	const line = text.length > maxChars ? `${text.slice(0, maxChars)}…` : text;
+	const stamp = `- ${line}`;
+	// Exact-duplicate guard: repeating the same request must not pile up lines.
+	if (String(todayLogText ?? '').split('\n').some((l) => l.trim() === stamp)) return null;
+	return stamp;
+}
 
 const FUNC_TABLE_HEADING = '## 功能模块索引';
 const INSIGHT_TABLE_HEADING = '## 创新优化思想索引';
@@ -3389,6 +3413,8 @@ export function apply(ctx, config) {
 		// Foreground recall budget (ms). Config may SHORTEN it but never extend
 		// past the default — recall must stay bounded no matter the config.
 		recallTimeoutMs: resolveRecallBudget(config?.recallTimeoutMs),
+		// Passive capture into the raw daily layer (off unless opted in).
+		captureUserTurns: config?.captureUserTurns === true,
 		// Opt-in three-tier federation: { root, projects: [{ key, root }] }.
 		federation: config?.federation && typeof config.federation === 'object' ? config.federation : undefined,
 	};
@@ -3506,6 +3532,23 @@ export function apply(ctx, config) {
 					buildRecall(),
 					new Promise((resolve) => setTimeout(() => resolve(null), budgetMs)),
 				]);
+				// Passive capture (⑥): append the user's own words to today's RAW layer.
+				// Opt-in, best-effort and SIDE-STEPPED: it never blocks, never breaks
+				// the step, and never changes what was injected above.
+				if (opts.captureUserTurns && userText.trim()) {
+					void (async () => {
+						try {
+							const root = resolveRoot(opts);
+							const today = localDateStr();
+							const p = path.join(root, `${today}.md`);
+							const before = (await readIfExists(p)) ?? dailyTemplate(today);
+							const line = captureLineFor(userText, before, opts);
+							if (line) await appendFile(p, `${before.endsWith('\n') || before === '' ? '' : '\n'}${line}\n`, 'utf8');
+						} catch {
+							/* capture is a best-effort breadcrumb, never a failure */
+						}
+					})();
+				}
 			} catch {
 				recall = null; // degrade to plain admission
 			}
@@ -3553,4 +3596,4 @@ export function resolveRecallBudget(configured) {
 	return Math.min(Math.max(0, configured), ceiling);
 }
 
-export { name, inject, dshHome, joinDshHome, resolveRoot, resolveDshRoot, runHealthCheck, panelizeHealth, zoneCounts, tokensOf, matchIndexRows, buildRecallMessage, decisionRepairTargets, indexRowsOf, DEFAULTS, DISCIPLINE_TEXT };
+export { name, inject, dshHome, joinDshHome, resolveRoot, resolveDshRoot, runHealthCheck, panelizeHealth, zoneCounts, tokensOf, matchIndexRows, buildRecallMessage, decisionRepairTargets, indexRowsOf, captureLineFor, DEFAULTS, DISCIPLINE_TEXT };

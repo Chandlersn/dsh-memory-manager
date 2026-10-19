@@ -161,6 +161,17 @@ ok(mod.resolveRecallBudget(60_000) === 3000, 'config cannot EXTEND the budget pa
 ok(mod.resolveRecallBudget(200) === 200, 'config can shorten the budget');
 ok(mod.resolveRecallBudget(-5) === 0, 'negative budget clamps to 0 (still bounded)');
 
+// 3e) Passive capture (MemOS borrow ⑥): OFF by default — the raw layer belongs
+// to the model, so blind logging of every turn must be opt-in. Pure function
+// first: truncation + exact-duplicate guard + the off switch.
+ok(mod.DEFAULTS.captureUserTurns === false, 'passive capture is OFF by default (privacy/noise)');
+ok(mod.captureLineFor('记一下', '', { enabled: false }) === null, 'disabled capture records nothing');
+ok(mod.captureLineFor('  a   b  ', '', { enabled: true }) === '- a b', 'whitespace is normalized in the captured line');
+const truncated = mod.captureLineFor('x'.repeat(400), '', { enabled: true, maxChars: 160 });
+ok(truncated === `- ${'x'.repeat(160)}…`, `long turns are truncated (len=${truncated?.length})`);
+ok(mod.captureLineFor('同一条请求', '- 同一条请求', { enabled: true }) === null, 'an exact repeat is not appended twice');
+ok(mod.captureLineFor('', '', { enabled: true }) === null, 'empty turns are not captured');
+
 // indexRowsOf turns an href into a recallable row (used by the repair hook).
 const idxRows = mod.indexRowsOf('| 甲域 | 摘要甲 | [functions/甲域.md](functions/甲域.md) |');
 ok(idxRows.some((r) => r.href === 'functions/甲域.md' && r.zone === 'function'), 'indexRowsOf lists index rows by href');
