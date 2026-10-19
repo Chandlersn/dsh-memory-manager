@@ -103,6 +103,7 @@ const indexText = [
 	'| 思想主题 | 一句话内涵 / 解决的权衡 | 思想内容 | 相关（来源功能） |',
 	'|---|---|---|---|',
 	'| gamma | gamma 的思想内涵。 | [insights/gamma.md](insights/gamma.md) | [functions/alpha.md](functions/alpha.md) |',
+	'| 可观测性先于修 bug | 带空格的主题名也必须渲染成链接。 | [insights/可观测性先于修 bug.md](insights/可观测性先于修 bug.md) | [functions/alpha.md](functions/alpha.md) |',
 	'',
 	'## 环境常量（易忘）',
 	'',
@@ -213,8 +214,14 @@ ok(count(fnRead, 'clickable') > 4, 'rows and chips are interactive');
 
 // --- reader: index renders navigation tables instead of raw text ------------
 const idxRead = render({ kind: 'file', zone: '', name: null });
-ok(count(idxRead, 'dmo-idx-row') === 3, `index renders 3 clickable navigation rows (${count(idxRead, 'dmo-idx-row')})`);
+ok(count(idxRead, 'dmo-idx-row') === 4, `index renders 4 clickable navigation rows (${count(idxRead, 'dmo-idx-row')})`);
 ok(idxRead.includes('alpha 已稳定') && idxRead.includes('gamma 的思想内涵'), 'both index tables render');
+// A theme slug with a space (「可观测性先于修 bug」) is a legal filename: its
+// link must render as a button, not degrade to raw `[text](href)` text —
+// the old [^)\s] href pattern made the path appear twice and read as a dupe.
+ok(idxRead.includes('带空格的主题名也必须渲染成链接。'), 'spaced theme row renders its summary');
+ok(count(idxRead, 'title="insights/可观测性先于修 bug.md"') >= 1, 'spaced theme link renders as a button (not raw markdown)');
+ok(!/\[insights\/[^\]]*\]\(insights\//.test(idxRead), 'no raw markdown link survives inside the index tables');
 ok(count(idxRead, 'data-dmo="section"') === 0, 'index tables are not duplicated as section cards');
 ok(idxRead.includes('记忆根'), 'remaining index sections (env constants) render as cards');
 ok(idxRead.includes('clickable'), 'index rows open their target file in-panel');

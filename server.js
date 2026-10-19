@@ -811,7 +811,10 @@ async function checkLinks(text, filePath, root, add) {
 	const base = path.dirname(filePath);
 	const rootAbs = path.resolve(root);
 	const seen = new Set();
-	for (const m of stripped.matchAll(/\[[^\]\n]*\]\(([^)\s]+)\)/g)) {
+	// Slugs may contain spaces (safeSlug only forbids separators); a [^)\s]
+	// pattern silently SKIPPED those links, so a dangling spaced href never
+	// tripped R10. Match the same surface the writer produces.
+	for (const m of stripped.matchAll(/\[[^\]\n]*\]\(([^)\n]+)\)/g)) {
 		const rel = m[1].split('#')[0].trim();
 		if (!rel || rel.startsWith('/') || rel.startsWith('http') || rel.includes('attachments')) continue;
 		const resolved = path.resolve(base, rel);

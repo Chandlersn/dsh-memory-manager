@@ -333,7 +333,11 @@ window.__ModuleLoader__.load({
 			// collapse to plain text. The ✅ marker itself is collapsed into a chip
 			// tag (see the fourth token branch).
 			const seenTargets = new Set();
-			const re = /(\*\*[^*]+\*\*|`[^`]+`|\[[^\]\n]*\]\([^)\s]+\)|（✅[^）]*）)/g;
+			// Hrefs may contain spaces: safeSlug only forbids path separators, so
+			// themes like 「可观测性先于修 bug」 are legal filenames. An [^)\s]-style
+			// pattern silently degrades those links to raw text (path shown twice —
+			// reads as a duplicate row) instead of rendering them.
+			const re = /(\*\*[^*]+\*\*|`[^`]+`|\[[^\]\n]*\]\([^)\n]+\)|（✅[^）]*）)/g;
 			let last = 0;
 			let m;
 			let n = 0;

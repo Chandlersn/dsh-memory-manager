@@ -447,6 +447,17 @@ const rows = (idxHealed.match(/^\| 测试功能 \|/gm) ?? []).length;
 ok(rows === 1, `index has exactly one 测试功能 row (rows=${rows})`);
 const c6 = await T.memory_check.execute({}, exec);
 ok(c6.results.every((r) => r.rule !== 'R15'), `R15 clean after self-heal (${c6.results.filter((r) => r.rule === 'R15').length})`);
+// R10 must not silently skip links whose target contains a SPACE: safeSlug
+// allows spaces, so 「可观测性先于修 bug.md」 is a real filename shape. The old
+// [^)\s] href pattern matched zero links like this — a dangling one never
+// tripped the lint, and the panel rendered the raw markdown as "duplicated" text.
+await writeFile(idxPath, idxHealed + '\n- 空格悬空测试 → [insights/不存在的 主题.md](insights/不存在的 主题.md)\n', 'utf8');
+const cSpaced = await T.memory_check.execute({}, exec);
+ok(
+	cSpaced.results.some((r) => r.rule === 'R10' && r.message.includes('不存在的 主题.md')),
+	`R10 flags a spaced dangling href (${cSpaced.results.filter((r) => r.rule === 'R10').length} R10)`,
+);
+await writeFile(idxPath, idxHealed, 'utf8');
 
 // 16) R3 head guardrail: a head summary whose 截至 date is older than the newest
 // iteration block is flagged (append must pair with head refresh); a missing
