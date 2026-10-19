@@ -25,7 +25,7 @@ The root defaults to `~/.dsh/memory/` (override it with the `DSH_HOME` environme
 
 ```
 memory/
-├── MEMORY.md              # index: function table + insight table (one-line summary per row) + consensus + environment constants
+├── MEMORY.md              # index: function-module index + innovation-insight index (one-line summary per row) + consensus + environment constants
 ├── functions/<area>.md    # one file per area, append-only iteration blocks (the date is just a tag)
 ├── insights/<theme>.md    # transferable principles, distilled upward from concrete areas, backlinked to their source
 ├── YYYY-MM-DD.md          # daily decision thread (one line + link; a permanent, lightweight audit log)
@@ -140,7 +140,7 @@ accumulation (dozens of function areas, hundreds of daily threads) rather than a
   groups by month, so it never turns into a wall
 - **Reader**: function files fold per iteration block — only the newest is expanded by default (short files
   open fully) — with a date jump strip and "expand all"; insights and daily files open per section; the index
-  page renders the function and insight tables as **clickable navigation tables** and folds the rest
+  page renders the function-module and innovation-insight index tables as **clickable navigation tables** and folds the rest
 - **Navigation**: `functions/x.md`, `insights/y.md` and `YYYY-MM-DD.md` links inside a body navigate within
   the panel, without leaving the memory view
 - **Search**: global search in the header (350 ms debounce, ≥2 characters) with a snippet per hit; `/` focuses

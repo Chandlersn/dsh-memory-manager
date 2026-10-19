@@ -133,8 +133,8 @@ const DEFAULTS = {
 	newFeatureGraceDays: 3, // TEMP 冷记忆宽限期：最近改动过的不报冷
 };
 
-const FUNC_TABLE_HEADING = '## 功能域';
-const INSIGHT_TABLE_HEADING = '## 思想';
+const FUNC_TABLE_HEADING = '## 功能模块索引';
+const INSIGHT_TABLE_HEADING = '## 创新优化思想索引';
 const FUNC_TABLE_HEADER = '| 功能域摘要 | 一句话状态 / 待验证 | 过程链接 | 摘要 |';
 const INSIGHT_TABLE_HEADER = '| 思想主题 | 一句话内涵 / 解决的权衡 | 思想内容 | 相关（来源功能） |';
 const DAILY_SECTION = '## 今日功能线索';
@@ -304,12 +304,12 @@ function memoryIndexTemplate() {
 		'> 写入纪律：一次实质工作 = 一个 functions/<功能域>.md 迭代块（蒸馏结论，不是过程流水）+ 本索引一行摘要 + 当日线索一行；迭代细节永不写进本文件。',
 		'> 性质二分：可复跑的操作进 functions/，可重套的原则进 insights/（回链来源）；共识/规范与环境常量只留在本文件。',
 		'',
-		`${FUNC_TABLE_HEADING} ⌃ 聚合（细节在 functions/，本表只留指针）`,
+		`${FUNC_TABLE_HEADING}（细节在 functions/，本表只留指针）`,
 		'',
 		FUNC_TABLE_HEADER,
 		'|---|---|---|---|',
 		'',
-		`${INSIGHT_TABLE_HEADING} ⌃ 迁移思想（insights/）`,
+		`${INSIGHT_TABLE_HEADING}（insights/）`,
 		'',
 		INSIGHT_TABLE_HEADER,
 		'|---|---|---|---|',
@@ -362,7 +362,7 @@ function dailyTemplate(date) {
 
 function insightTemplate(theme, principle, srcLine, evolution, applicability, open, date) {
 	const parts = [
-		`# 迁移思想：${theme}`,
+		`# 创新优化思想：${theme}`,
 		'',
 		'> 性质：可重套的原则（不是可重跑的操作）；操作细节留在来源 functions/ 文件。',
 		`> 来源：${srcLine}`,

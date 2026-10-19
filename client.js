@@ -190,7 +190,7 @@ window.__ModuleLoader__.load({
 			for (const raw of String(text ?? '').split('\n')) {
 				const line = raw.trim();
 				if (line.startsWith('## ')) {
-					zone = line.includes('功能域') ? 'functions' : line.includes('思想') ? 'insights' : null;
+					zone = line.includes('功能模块') ? 'functions' : line.includes('思想') ? 'insights' : null;
 					continue;
 				}
 				if (!zone || !line.startsWith('|')) continue;
@@ -247,7 +247,7 @@ window.__ModuleLoader__.load({
 			const small = String(text ?? '').length < 4000;
 			sections.forEach((s, i) => {
 				if (kind === 'functions') open[i] = small || i === sections.length - 1;
-				else if (kind === 'index') open[i] = /功能域|思想/.test(s.heading);
+				else if (kind === 'index') open[i] = /功能模块|思想/.test(s.heading);
 				else open[i] = true;
 			});
 			return open;
@@ -434,7 +434,7 @@ window.__ModuleLoader__.load({
 		/** MEMORY.md navigation tables: each row opens its target file. */
 		function IndexTables({ text, onNavigate }) {
 			const { sections } = splitSections(text);
-			const wanted = sections.filter((s) => /功能域|思想/.test(s.heading));
+			const wanted = sections.filter((s) => /功能模块|思想/.test(s.heading));
 			if (!wanted.length) return null;
 			return h(
 				'div',
@@ -587,7 +587,7 @@ window.__ModuleLoader__.load({
 							'div',
 							{ style: { display: 'flex', flexDirection: 'column', gap: 6 } },
 							sections
-								.filter((s) => !/功能域|思想/.test(s.heading))
+								.filter((s) => !/功能模块|思想/.test(s.heading))
 								.map((s, i) => h(Card, { key: `x${i}`, tight: true }, h('h3', { className: 'dmo-h2' }, s.heading), h(MarkdownBody, { text: s.body, zone: '', onNavigate }))),
 						)
 					: h(
@@ -628,8 +628,8 @@ window.__ModuleLoader__.load({
 					'div',
 					{ className: 'dmo-growth' },
 					[
-						{ zone: 'functions', label: '功能域' },
-						{ zone: 'insights', label: '可迁移思想' },
+						{ zone: 'functions', label: '功能模块' },
+						{ zone: 'insights', label: '创新优化思想' },
 						{ zone: 'daily', label: '当日线索' },
 					].map((g) =>
 						h(
