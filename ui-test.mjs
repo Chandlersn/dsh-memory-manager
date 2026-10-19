@@ -120,7 +120,7 @@ const fixtures = {
 	'/api/memory-org/file?name=MEMORY.md&v=0': { data: { name: 'MEMORY.md', text: indexText }, loading: false, error: null },
 	'/api/memory-org/file?zone=functions&name=alpha.md': { data: { name: 'alpha.md', text: fnText }, loading: false, error: null },
 	'/api/memory-org/file?zone=insights&name=gamma.md': { data: { name: 'gamma.md', text: '> 性质：可重套的原则。\n\n## 核心原则\n\n- 原则本体。\n\n## 思想演进\n\n- 2026-10-18 首次沉淀。\n\n## 适用面（超出来源功能的部分）\n\n- 适用面正文。\n\n## 待观察\n\n- 待观察正文。' }, loading: false, error: null },
-	'/api/memory-org/file?zone=daily&name=2026-10-18.md': { data: { name: '2026-10-18.md', text: '## 今日线索\n\n- 功能：alpha → [functions/alpha.md](functions/alpha.md)\n\n## 今日待观察\n\n- 待验证项' }, loading: false, error: null },
+	'/api/memory-org/file?zone=daily&name=2026-10-18.md': { data: { name: '2026-10-18.md', text: '## 今日线索\n\n- 功能：alpha → [functions/alpha.md](functions/alpha.md)（✅ 2026-10-19 已解决 → [functions/alpha.md](functions/alpha.md)）\n\n## 今日待观察\n\n- 待验证项' }, loading: false, error: null },
 	// Shapes below mirror the live API byte for byte (see the contract block in
 	// api-test.mjs): overview carries `results`, search hits carry `snippet` +
 	// `heading`. Fixtures that invent field names hide exactly the mismatch a user
@@ -208,6 +208,15 @@ ok(insRead.includes('核心原则') && insRead.includes('适用面'), 'insight s
 const dayRead = render({ kind: 'file', zone: 'daily', name: '2026-10-18.md' });
 ok(dayRead.includes('今日线索') && dayRead.includes('今日待观察'), 'daily threads render their sections');
 ok(dayRead.includes('clickable'), 'daily bullet links navigate in-panel');
+// The ✅ resolution stamp collapses into one compact chip (not a second inline
+// pointer), and a repeated pointer to the same target degrades to plain text.
+ok(count(dayRead, 'dmo-resolve') === 1, `resolution stamp renders as one chip (${count(dayRead, 'dmo-resolve')})`);
+ok(!dayRead.includes('（✅ 2026-10-19 已解决 →'), 'raw stamp text is gone');
+const raiseIdx = dayRead.indexOf('功能：alpha');
+const dupIdx = dayRead.indexOf('功能：alpha', raiseIdx + 1);
+ok(raiseIdx !== -1, 'raise-site link present');
+const linkBtns = dayRead.split('class="dmo-link"').length - 1;
+ok(linkBtns === 1, `alpha is a clickable link exactly once in the row (buttons=${linkBtns}, secondTextIdx=${dupIdx})`);
 // Daily bullet lines flip to newest-first inside the reader (the file is an
 // append-only audit trail; the latest situation must sit on top). The fixture
 // body has alpha's bullet before 待观察's; after the flip 待观察 must come first.

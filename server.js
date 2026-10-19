@@ -504,7 +504,10 @@ async function resolveOpenItems(root, feature, sinceDate, today) {
 				// Only thread lines (raise site): a bullet that links the feature
 				// file. Resolution notes are added inline at the raise site.
 				if (!/^- .+→/.test(lines[i])) continue;
-				lines[i] = `${lines[i]}（✅ ${today} 已解决 → [functions/${feature}.md](functions/${feature}.md)）`;
+				// The raise-site line already ends with a link to the same file —
+				// appending the full resolution pointer would duplicate the target
+				// twice in one row. Stamp a bare marker instead.
+				lines[i] = `${lines[i]}（✅ ${today} 已解决）`;
 				changed = true;
 			}
 			if (changed) {

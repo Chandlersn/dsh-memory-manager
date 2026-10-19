@@ -85,6 +85,7 @@ window.__ModuleLoader__.load({
 .dmo-chip.fail{background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 10%,transparent);border-color:transparent;color:var(--dsw-alias-state-error-primary)}
 .dmo-chip.btn{cursor:pointer}
 .dmo-chip.btn:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.dmo-resolve{display:inline-flex;align-items:center;padding:0 8px;border-radius:999px;font-size:11px;line-height:18px;font-weight:500;white-space:nowrap;background:color-mix(in srgb,var(--dsw-alias-state-success-primary) 10%,transparent);color:var(--dsw-alias-state-success-primary);vertical-align:1px}
 .dmo-tl{display:flex;flex-direction:column}
 .dmo-tl-row{display:flex;align-items:center;gap:8px;width:100%;padding:6px 8px;border:none;border-radius:var(--dsw-radius-sm);background:transparent;color:inherit;text-align:left;cursor:pointer;font:inherit}
 .dmo-tl-row:hover{background:var(--dsw-alias-interactive-bg-hover)}
@@ -324,7 +325,12 @@ window.__ModuleLoader__.load({
 		function inline(text, keyBase, zone, onNavigate) {
 			const src = String(text ?? '');
 			const out = [];
-			const re = /(\*\*[^*]+\*\*|`[^`]+`|\[[^\]\n]*\]\([^)\s]+\))/g;
+			// One pointer per row: the same target rendered twice in a single line
+			// (raise-site link + ✅ resolution pointer) reads as a stutter — repeats
+			// collapse to plain text. The ✅ marker itself is collapsed into a chip
+			// tag (see the fourth token branch).
+			const seenTargets = new Set();
+			const re = /(\*\*[^*]+\*\*|`[^`]+`|\[[^\]\n]*\]\([^)\s]+\)|（✅[^）]*）)/g;
 			let last = 0;
 			let m;
 			let n = 0;
@@ -334,11 +340,27 @@ window.__ModuleLoader__.load({
 				const key = `${keyBase}-${n++}`;
 				if (tok.startsWith('**')) out.push(h('strong', { key }, tok.slice(2, -2)));
 				else if (tok.startsWith('`')) out.push(h('code', { key }, tok.slice(1, -1)));
-				else {
+				else if (tok.startsWith('（✅')) {
+					// Resolution stamp → a compact, non-repeating chip. Any link inside
+					// stays reachable as the chip's click target instead of a second
+					// inline pointer.
+					const linkM = /\[([^\]]*)\]\(([^)]+)\)/.exec(tok);
+					const label = tok
+						.replace(/^[（(]/, '')
+						.replace(/[）)]$/, '')
+						.replace(/\s*→\s*\[[^\]]*\]\([^)]*\)/, '')
+						.trim();
+					const target = linkM ? resolveHref(linkM[2], zone) : null;
+					const jump = target && onNavigate ? () => onNavigate(target) : undefined;
+					out.push(h('span', { key, className: 'dmo-resolve', onClick: jump, title: jump ? `打开 ${target.name}` : undefined }, label));
+				} else {
 					const mm = /^\[([^\]]*)\]\(([^)]+)\)$/.exec(tok);
 					const label = mm[1] || mm[2];
 					const target = resolveHref(mm[2], zone);
-					if (target && onNavigate) {
+					if (target && seenTargets.has(target.zone + ':' + target.name)) {
+						out.push(label);
+					} else if (target) {
+						seenTargets.add(target.zone + ':' + target.name);
 						out.push(
 							h(
 								'button',
