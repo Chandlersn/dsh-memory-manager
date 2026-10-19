@@ -850,9 +850,14 @@ async function runHealthCheck(root, opts) {
 	// recall inject the same fact twice and hides which row is authoritative.
 	const rowSlugCount = new Map();
 	let dupeRows = 0;
+	// A grouped index (### 索引·<domain>, see upsertIndexRow's group branch) shares
+	// ONE header row across every sub-table by design, so headers are not evidence
+	// of a stale duplicate row — skip them before counting slug cells.
+	const tableHeaders = new Set([FUNC_TABLE_HEADER, INSIGHT_TABLE_HEADER, CAP_TABLE_HEADER, FED_TABLE_HEADER]);
 	for (const raw of memText.split('\n')) {
 		const s = raw.trim();
 		if (!s.startsWith('|')) continue;
+		if (tableHeaders.has(s)) continue;
 		const cells = s.replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
 		if (cells.length < 3 || cells.every((c) => /^[-: ]*$/.test(c))) continue;
 		const slug = cells[0];

@@ -392,6 +392,13 @@ await T.memory_index.execute({ zone: 'functions', name: '测试功能', summary:
 const grouped2 = await readFile(idxPath, 'utf8');
 ok((grouped2.match(/^\| 测试功能 \|/gm) ?? []).length === 1, 'grouped upsert is idempotent');
 ok(grouped2.includes('基础设施域更新后的一行'), 'grouped upsert replaced the summary');
+// R15 must NOT flag the shared header row: every `### 索引·<域>` sub-table reuses
+// FUNC_TABLE_HEADER by design, so a repeated header is structure, not a stale row.
+const cGroup = await T.memory_check.execute({}, exec);
+ok(
+	cGroup.results.every((r) => !(r.rule === 'R15' && r.message.includes('功能域摘要'))),
+	`R15 ignores shared group headers (${cGroup.results.filter((r) => r.rule === 'R15').length} R15)`
+);
 // R5 scaling hint: 41 flat rows and no ### 索引· -> WARN
 const flatRows = Array.from({ length: 41 }, (_, i) => `| 域${i} | 第 ${i} 个功能的一句话 | [functions/域${i}.md](functions/域${i}.md) |`).join('\n');
 const flatIndex = ['# 索引', '', '## 功能模块索引（functions/）', '', '| 功能域摘要 | 一句话状态 | 过程链接 | 摘要 |', '|---|---|---|---|', flatRows, '', '## 创新优化思想索引（insights/）', '', '| 思想主题 | 内涵 | 思想内容 | 相关 |', '|---|---|---|---|'].join('\n');
