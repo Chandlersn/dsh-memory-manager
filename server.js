@@ -613,6 +613,46 @@ function upsertIndexRow(indexText, headingPrefix, headerRow, firstCell, newRow, 
 		return lines.join('\n');
 	}
 	let headIdx = -1;
+	// UNGROUPED upsert is a migration OUT of any `### 索引·<group>` sub-table:
+	// the row must not survive in a sub-section while landing in the flat table
+	// (that duplication is exactly what R15 catches on the next check). Purge
+	// matching rows inside sub-sections ONLY (the flat table keeps its in-place
+	// replace), then drop sub-sections left with no data row.
+	{
+		let inSub = false;
+		for (let i = secStart + 1; i < secEnd; i++) {
+			if (lines[i].startsWith('## ')) break;
+			if (lines[i].startsWith('### ')) {
+				inSub = lines[i].startsWith('### 索引·');
+				continue;
+			}
+			if (!inSub || !lines[i].startsWith('|')) continue;
+			const cells = lines[i].split('|');
+			if (cells.length >= 2 && cells[1].trim() === firstCell) lines.splice(i, 1);
+		}
+	}
+	for (let i = lines.length - 1; i > secStart; i--) {
+		if (i >= secEnd || !lines[i].startsWith('### 索引·')) continue;
+		let j = i + 1;
+		while (j < secEnd && !lines[j].startsWith('#')) j++;
+		const hasData = lines
+			.slice(i, j)
+			.some((l) => l.startsWith('|') && l !== headerRow && !/^[-: |]+$/.test(l));
+		if (!hasData) {
+			let from = i;
+			while (from > secStart && lines[from - 1].trim() === '') from--;
+			let to = j;
+			while (to < secEnd && lines[to].trim() === '') to++;
+			lines.splice(from, to - from);
+		}
+	}
+	secEnd = lines.length;
+	for (let i = secStart + 1; i < lines.length; i++) {
+		if (lines[i].startsWith('## ')) {
+			secEnd = i;
+			break;
+		}
+	}
 	for (let i = secStart + 1; i < secEnd; i++) {
 		if (lines[i].startsWith('|')) {
 			headIdx = i;

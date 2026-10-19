@@ -399,6 +399,15 @@ ok(
 	cGroup.results.every((r) => !(r.rule === 'R15' && r.message.includes('功能域摘要'))),
 	`R15 ignores shared group headers (${cGroup.results.filter((r) => r.rule === 'R15').length} R15)`
 );
+// Ungrouping is the OTHER half of the migration: a later upsert WITHOUT group
+// must move the row back to the flat table and drop the emptied sub-section —
+// otherwise the row lives in two tables and R15 fires on the next check.
+await T.memory_index.execute({ zone: 'functions', name: '测试功能', summary: '回到总表的一行' }, exec);
+const ungrouped = await readFile(idxPath, 'utf8');
+ok((ungrouped.match(/^\| 测试功能 \|/gm) ?? []).length === 1, 'ungrouped upsert leaves exactly one row');
+ok(ungrouped.includes('回到总表的一行'), 'ungrouped upsert wrote the new summary into the flat table');
+ok(!ungrouped.includes('### 索引·基础设施'), 'the emptied group section was removed');
+ok(ungrouped.includes('### 索引·业务功能') && ungrouped.includes('| 检索目标 |'), 'a sibling group that still has rows survives');
 // R5 scaling hint: 41 flat rows and no ### 索引· -> WARN
 const flatRows = Array.from({ length: 41 }, (_, i) => `| 域${i} | 第 ${i} 个功能的一句话 | [functions/域${i}.md](functions/域${i}.md) |`).join('\n');
 const flatIndex = ['# 索引', '', '## 功能模块索引（functions/）', '', '| 功能域摘要 | 一句话状态 | 过程链接 | 摘要 |', '|---|---|---|---|', flatRows, '', '## 创新优化思想索引（insights/）', '', '| 思想主题 | 内涵 | 思想内容 | 相关 |', '|---|---|---|---|'].join('\n');
