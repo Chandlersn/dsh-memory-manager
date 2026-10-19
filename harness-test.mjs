@@ -670,6 +670,14 @@ for (const args of [{ action: 'record', name: 'bad', kind: 'cli' }, { action: 'r
 	}
 }
 ok(capThrew === 2, 'capability record/read validate their inputs');
+// Boundary (user correction 2026-10-19): the ledger is for EXTERNAL tools only.
+// The tool description and the injected discipline must both name what does NOT
+// belong — harness built-ins and the project's own scripts/API — or agents
+// re-file system capabilities as "discoveries" and the ledger becomes noise.
+ok(/EXTERNAL CAPABILITY/.test(T.memory_capability.description), 'tool description scopes the ledger to external tools');
+ok(/built-in/.test(T.memory_capability.description) && /own scripts/.test(T.memory_capability.description), 'tool description names the two excluded classes');
+const capDisc = mod.DISCIPLINE_TEXT ?? '';
+ok(capDisc.includes('外部工具') && capDisc.includes('harness 自带工具'), 'discipline text names the ledger boundary (external tools only)');
 const capViaRead = await T.memory_read.execute({ kind: 'capability', name: 'ffmpeg' }, exec);
 ok(capViaRead.found && capViaRead.content.includes('调用方式'), 'memory_read kind=capability works');
 const capSearch = await T.memory_search.execute({ q: 'image2pipe' }, exec);

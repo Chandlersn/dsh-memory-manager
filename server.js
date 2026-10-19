@@ -1656,7 +1656,7 @@ function memoryCapabilityTool(opts) {
 	return defineTool({
 		name: 'memory_capability',
 		description:
-			'Record or look up a LOCAL CAPABILITY in the memory ledger: a CLI tool, MCP server, local binary, or installed software the agent can call. The other zones answer "how we did it" / "what principle holds" / "what happened"; this one answers "what can I USE for this job, and how exactly do I invoke it". Use action=record after you discover or successfully use a tool (exact command, prerequisites, what it solved); use action=list before starting a task to see what is already available instead of rediscovering it. This is a CAPABILITY ledger, not an iteration log: per-tool one file, updated in place, never a dated journal.',
+			'Record or look up an EXTERNAL CAPABILITY: a third-party CLI, MCP server, local binary, or installed software the agent can call. The boundary is what counts as external — do NOT record (a) the harness\'s own built-in tools (shell/file/web/scheduler: the agent already knows them, recording is pure noise), (b) the project\'s own scripts or the plugin\'s own API (that is a functions/ iteration block), (c) anything the system provides natively. Record a tool only when USING it took discovery: the exact invocation, prerequisites, and the traps hit. The other zones answer "how we did it" / "what principle holds" / "what happened"; this one answers "what can I USE for this job, and how exactly do I invoke it". Use action=record after you discover or successfully use such a tool; use action=list before starting a task to see what is already available instead of rediscovering it. This is a CAPABILITY ledger, not an iteration log: per-tool one file, updated in place, never a dated journal.',
 		parameters: {
 			action: { type: 'string', required: true, enum: ['record', 'list', 'read'], description: 'record=登记/更新一个能力；list=列出全部能力（含一句话摘要）；read=读某个能力的完整台账。' },
 			name: { type: 'string', description: 'record/read 必填：能力名（作为文件名），如 `ffmpeg`、`gh-cli`、`playwright-mcp`。' },
@@ -2734,8 +2734,8 @@ const DISCIPLINE_TEXT = [
 	'- **第 2 层 · 创新思想（memory_insight）**：从功能划分中**再提取**可迁移原则（会重套的、不绑定单一功能机制的），回链来源功能域；取代旧思想传 `supersedes`。',
 	'- **第 3 层 · 索引与总览（memory_index）**：**整合层**——功能域稳定后（有 ≥2 个迭代块，或用户可感知为独立主题时）用 memory_index 把它收进 MEMORY.md 索引；索引行摘要 = 从各迭代块的概括中提炼的"这个功能是什么"。索引是展示与检索的派生物，不与单次写入强绑。',
 	'- **层级定义（道/法/术/器，按普适程度分）**：**器**=指向内容的指针与检索面（MEMORY.md 双表+面板）；**术**=一个功能域"怎么做"的完整迭代史（functions/，判据"我会不会再跑一次这个操作"）；**法**=从具体操作提炼的可套原则（insights/，判据"换个项目/领域还成立吗"）；**道**=跨域都必须遵守的约束（MEMORY.md 共识区，判据"违反了会不会出事故"）。**放错层的三个信号**：① 在功能域里翻到普适断言 → 该升到 insights；② 同一句话想写进两个功能域 → 该升到 insights；③ 一条"原则"每次都要附带操作步骤才能用 → 该降回 functions。**反例**：索引行里写推导过程；迭代块里写"以后所有项目都应该……"；原则写成"1. 先运行 X；2. 再执行 Y"；把某次技术选型记成共识。',
-	'- **先查后写**：涉及"项目里怎么做 / 为什么这么做 / 环境常量"时，先 `memory_read kind=index`（行内摘要判断相关性，再打开对应文件）；只记得片段、说不清在哪个域或哪天时用 `memory_search`（全库排序检索，返回命中的分区/文件/行号/小节/片段）。**动手前先查 `memory_capability`**：本地 CLI / MCP / 已装软件都在 `capabilities/` 台账里，能省下一整轮摸索。不要凭空重推已有结论。',
-	'- **用到的工具要登记**：一旦发现或成功调用某个 CLI / MCP / 本地二进制 / 服务，立即 `memory_capability(action=record)`：真实可执行的调用方式、前提（路径/token/版本）、它解决过什么。台账按工具一文件、就地更新——**不是流水账，是索引**。下次同类任务先 `action=list`，不要重新摸索同一个工具。',
+	'- **先查后写**：涉及"项目里怎么做 / 为什么这么做 / 环境常量"时，先 `memory_read kind=index`（行内摘要判断相关性，再打开对应文件）；只记得片段、说不清在哪个域或哪天时用 `memory_search`（全库排序检索，返回命中的分区/文件/行号/小节/片段）。**动手前先查 `memory_capability`**：外部 CLI / MCP / 已装软件都在 `capabilities/` 台账里，能省下一整轮摸索。不要凭空重推已有结论。',
+	'- **用到的外部工具要登记**：只有**项目外部**的工具才进台账——第三方 CLI / MCP / 已装软件，且调用它需要摸索（确切命令、前提、踩过的坑）。不登记：harness 自带工具（shell/文件/网络等，模型本来就会）、本项目自己的脚本与 API（那是 functions/ 迭代块）。台账按工具一文件、就地更新——**不是流水账，是索引**。下次同类任务先 `action=list`，不要重新摸索同一个工具。',
 	'- **蒸馏不搬过程**：迭代块只写结论；逐条实现清单、调试经过属于每日原始层与会话/代码。块 >900 字或概括 >110 字写入告警，体检 R14 复查。',
 	'- **经验二分**：会**重跑**的操作进 functions/；会**重套**的原则用 memory_insight 进 insights/；跨功能共识与环境常量只在 MEMORY.md。',
 	'- **使用信号让记忆自己排序**：召回命中与 memory_read 会自动记信号；用户纠正/明确认可时用 `memory_usage(action=record, kind=correction|positive)` 记一笔（这是分层判断里唯一不能自动获得的信号）。`memory_usage(action=report)` 给出 实验/专项/通用 建议；某域近 7 天纠正率 >40% 时体检 R18 报熔断——先重构再追加。',
@@ -3004,4 +3004,4 @@ export function apply(ctx, config) {
 	};
 }
 
-export { name, inject, dshHome, joinDshHome, resolveRoot, resolveDshRoot, runHealthCheck, panelizeHealth, zoneCounts, tokensOf, matchIndexRows };
+export { name, inject, dshHome, joinDshHome, resolveRoot, resolveDshRoot, runHealthCheck, panelizeHealth, zoneCounts, tokensOf, matchIndexRows, DISCIPLINE_TEXT };
