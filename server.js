@@ -393,8 +393,13 @@ function sepOf(headerRow) {
 /**
  * Upsert one index row into the table under `headingPrefix` (first cell match).
  * Creates the section at the end when the table is missing.
+ *
+ * `group` (optional) writes the row into a `### 索引·<group>` sub-section — the
+ * scale escape hatch: past ~40 function rows the single table is split by
+ * domain, and the index must still upsert into the RIGHT sub-table instead of
+ * appending to whichever table happens to come first.
  */
-function upsertIndexRow(indexText, headingPrefix, headerRow, firstCell, newRow) {
+function upsertIndexRow(indexText, headingPrefix, headerRow, firstCell, newRow, group) {
 	const lines = indexText.split('\n');
 	let secStart = -1;
 	for (let i = 0; i < lines.length; i++) {
@@ -405,6 +410,9 @@ function upsertIndexRow(indexText, headingPrefix, headerRow, firstCell, newRow) 
 	}
 	if (secStart === -1) {
 		const t = indexText.replace(/\n*$/, '\n');
+		if (group) {
+			return `${t}\n${headingPrefix}（细节在子目录）\n\n### 索引·${group}\n\n${headerRow}\n${sepOf(headerRow)}\n${newRow}\n`;
+		}
 		return `${t}\n${headingPrefix}（细节在子目录）\n\n${headerRow}\n${sepOf(headerRow)}\n${newRow}\n`;
 	}
 	// Self-heal: a heading that only STARTS WITH the anchor prefix (an older
@@ -422,9 +430,85 @@ function upsertIndexRow(indexText, headingPrefix, headerRow, firstCell, newRow) 
 		while (end < lines.length && !lines[end].startsWith('## ')) end++;
 		lines.splice(i, end - i);
 	}
-	let headIdx = -1;
+	// Section bounds: the next `## ` heading ends this section (a `### ` sub
+	// heading does not, it belongs to the same zone).
+	let secEnd = lines.length;
 	for (let i = secStart + 1; i < lines.length; i++) {
-		if (lines[i].startsWith('## ')) break;
+		if (lines[i].startsWith('## ')) {
+			secEnd = i;
+			break;
+		}
+	}
+	// Upsert into the first table inside [from, to): replace the row whose first
+	// cell matches, else append after the last row. Returns false when the range
+	// holds no table at all.
+	const upsertIn = (from, to) => {
+		let headIdx = -1;
+		for (let i = from; i < to; i++) {
+			if (lines[i].startsWith('|')) {
+				headIdx = i;
+				break;
+			}
+		}
+		if (headIdx === -1) return false;
+		let end = headIdx + 1;
+		while (end < to && lines[end].startsWith('|')) end++;
+		for (let i = headIdx + 1; i < end; i++) {
+			const cells = lines[i].split('|');
+			if (cells.length >= 2 && cells[1].trim() === firstCell) {
+				lines[i] = newRow;
+				return true;
+			}
+		}
+		lines.splice(end, 0, newRow);
+		return true;
+	};
+	if (group) {
+		const subHead = `### 索引·${group}`;
+		// Grouping is a MIGRATION: if the row already exists in another table of
+		// this zone (typically the flat top-level table it is moving out of),
+		// drop those copies first — otherwise splitting the table duplicates the
+		// row and trips R15 on the very next check.
+		for (let i = lines.length - 1; i > secStart; i--) {
+			if (i >= secEnd) continue;
+			if (!lines[i].startsWith('|')) continue;
+			const cells = lines[i].split('|');
+			if (cells.length >= 2 && cells[1].trim() === firstCell) lines.splice(i, 1);
+		}
+		// Bounds may have shifted after the purge; re-derive them.
+		secEnd = lines.length;
+		for (let i = secStart + 1; i < lines.length; i++) {
+			if (lines[i].startsWith('## ')) {
+				secEnd = i;
+				break;
+			}
+		}
+		let subStart = -1;
+		for (let i = secStart + 1; i < secEnd; i++) {
+			if (lines[i].startsWith(subHead)) {
+				subStart = i;
+				break;
+			}
+		}
+		if (subStart === -1) {
+			// New sub-section at the end of the zone (trailing blanks trimmed).
+			let at = secEnd;
+			while (at > secStart + 1 && lines[at - 1].trim() === '') at--;
+			lines.splice(at, 0, '', subHead, '', headerRow, sepOf(headerRow), newRow);
+			return lines.join('\n');
+		}
+		let subEnd = secEnd;
+		for (let i = subStart + 1; i < secEnd; i++) {
+			if (lines[i].startsWith('### ')) {
+				subEnd = i;
+				break;
+			}
+		}
+		if (!upsertIn(subStart + 1, subEnd)) lines.splice(subStart + 1, 0, '', headerRow, sepOf(headerRow), newRow);
+		return lines.join('\n');
+	}
+	let headIdx = -1;
+	for (let i = secStart + 1; i < secEnd; i++) {
 		if (lines[i].startsWith('|')) {
 			headIdx = i;
 			break;
@@ -637,6 +721,23 @@ async function runHealthCheck(root, opts) {
 	if (emptySummary) add('WARN', 'R5', `${emptySummary} 个索引行缺少一行摘要（摘要列是索引判断相关性的唯一依据）`);
 	if (longRows.length) {
 		add('WARN', 'R14', `索引行摘要过长（摘要是一句话，细节应留在功能文件）：${longRows.join('、')}`);
+	}
+
+	// R5 scaling: past ~40 function rows a single flat table costs too much to
+	// scan. The escape hatch is `### 索引·<域>` sub-sections plus memory_index's
+	// `group` argument; flag a big ungrouped table so the split happens before
+	// the index gets uncomfortable rather than after.
+	{
+		const at = memText.indexOf(FUNC_TABLE_HEADING);
+		if (at !== -1) {
+			const rest = memText.slice(at);
+			const stop = rest.indexOf('\n## ', 1);
+			const section = stop === -1 ? rest : rest.slice(0, stop);
+			const rows = section.split(/\r?\n/).filter((l) => l.trim().startsWith('|') && !l.includes('---')).length - 1;
+			if (rows > 40 && !section.includes('### 索引·')) {
+				add('WARN', 'R5', `功能表已 ${rows} 行（>40）：按「### 索引·<域>」拆分子分区，并在 memory_index 传 group 参数落对表`);
+			}
+		}
 	}
 
 	// R15: duplicated rows / duplicated table sections. The index is a lookup
@@ -1829,6 +1930,7 @@ function memoryIndexTool(opts) {
 			zone: { type: 'string', required: true, enum: ['functions', 'insights'], description: '收进哪张索引表。' },
 			name: { type: 'string', required: true, description: '功能域或思想主题 slug（functions/ 或 insights/ 下的既有文件名，不含 .md）。' },
 			summary: { type: 'string', required: true, description: '索引行摘要：一句话（≤60 字）说清"这是什么/解决什么"，供检索时判断相关性；从各迭代块的概括中提炼，不复制细节。' },
+			group: { type: 'string', description: '可选：功能表已按 `### 索引·<域>` 分组时，指定这一行落到哪个子分区（如「基础设施」「业务功能」）；缺省写入无标题的总表。' },
 			sources: { type: 'array', description: 'zone=insights 必填：来源功能域 slug 列表（渲染进"相关（来源功能）"列）。', items: { type: 'string' } },
 		},
 		output: {
@@ -1889,6 +1991,7 @@ function memoryIndexTool(opts) {
 				zone === 'insights' ? INSIGHT_TABLE_HEADER : FUNC_TABLE_HEADER,
 				name,
 				row,
+				zone === 'functions' && typeof args.group === 'string' && args.group.trim() ? oneLine(args.group).slice(0, 20) : undefined,
 			);
 			await writeText(indexPath, indexText);
 			const indexBytes = byteLen(indexText);

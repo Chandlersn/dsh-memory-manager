@@ -376,6 +376,30 @@ const idxPath = path.join(root, 'MEMORY.md');
 const idxNow = await readFile(idxPath, 'utf8');
 ok((idxNow.match(/^\| 测试功能 \|/gm) ?? []).length === 1, 'memory_index is idempotent (one row)');
 
+// 15a) grouping for scale: past ~40 rows the index splits into `### 索引·<域>`.
+// memory_index must land each row in its own sub-table, upsert within it, and
+// the health check must nag while a big table is still flat.
+await T.memory_index.execute({ zone: 'functions', name: '测试功能', summary: '基础设施域的一行', group: '基础设施' }, exec);
+await T.memory_index.execute({ zone: 'functions', name: '检索目标', summary: '业务域的一行', group: '业务功能' }, exec);
+const grouped = await readFile(idxPath, 'utf8');
+ok(grouped.includes('### 索引·基础设施') && grouped.includes('### 索引·业务功能'), 'memory_index creates per-group sub-sections');
+const infraStart = grouped.indexOf('### 索引·基础设施');
+const bizStart = grouped.indexOf('### 索引·业务功能');
+const infraBlock = grouped.slice(infraStart, bizStart === -1 ? undefined : bizStart);
+ok(infraBlock.includes('| 测试功能 |') && !infraBlock.includes('| 检索目标 |'), 'each row lands in its own group block');
+await T.memory_index.execute({ zone: 'functions', name: '测试功能', summary: '基础设施域更新后的一行', group: '基础设施' }, exec);
+const grouped2 = await readFile(idxPath, 'utf8');
+ok((grouped2.match(/^\| 测试功能 \|/gm) ?? []).length === 1, 'grouped upsert is idempotent');
+ok(grouped2.includes('基础设施域更新后的一行'), 'grouped upsert replaced the summary');
+// R5 scaling hint: 41 flat rows and no ### 索引· -> WARN
+const flatRows = Array.from({ length: 41 }, (_, i) => `| 域${i} | 第 ${i} 个功能的一句话 | [functions/域${i}.md](functions/域${i}.md) |`).join('\n');
+const flatIndex = ['# 索引', '', '## 功能模块索引（functions/）', '', '| 功能域摘要 | 一句话状态 | 过程链接 | 摘要 |', '|---|---|---|---|', flatRows, '', '## 创新优化思想索引（insights/）', '', '| 思想主题 | 内涵 | 思想内容 | 相关 |', '|---|---|---|---|'].join('\n');
+const flatRoot = await mkdtemp(path.join(tmpdir(), 'dsh-flat-'));
+await writeFile(path.join(flatRoot, 'MEMORY.md'), flatIndex, 'utf8');
+const flatHealth = await mod.runHealthCheck(flatRoot, { maxIndexBytes: 64 * 1024, maxIndexHardBytes: 96 * 1024, maxFunctionBytes: 30 * 1024, newFeatureGraceDays: 0 });
+ok(flatHealth.results.some((r) => r.rule === 'R5' && r.message.includes('拆分子分区')), `R5 flags a big flat function table (${flatHealth.results.filter((r) => r.rule === 'R5').length} R5)`);
+await rm(flatRoot, { recursive: true, force: true });
+
 // 15b) R15: duplicated index rows and duplicated table sections are flagged.
 // Simulate the fallback-table twin by hand-editing the index. The twin row
 // carries the twin's own summary, so the upsert's column-2 refresh cannot

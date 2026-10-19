@@ -62,6 +62,10 @@ Layer 3 · MEMORY.md index + panel overview: one-line summaries + counts — a d
 - **The index is derived, not synchronized**: `memory_write` no longer auto-writes index rows or daily
   threads; an area is indexed with `memory_index` only once **stabilized** (≥2 iteration blocks, or
   clearly a standalone topic), its row summary distilled from the block summaries.
+- **Scale has an escape hatch**: past ~40 function rows the table splits into `### 索引·<domain>` sub-sections
+  (「基础设施」「业务功能」…), and `memory_index`'s `group` argument writes into the right sub-table — grouping
+  is a migration, so the old flat row is moved rather than duplicated; `memory_check` nags while a big table
+  is still flat.
 - **Two gates**: a block body over 900 chars or a summary over 110 chars warns at write time, and
   `memory_check` reports **R14** at the same time. The system shrinks, it does not only grow.
 - **Compaction**: past 30KB, `memory_fold` folds the oldest iteration blocks into an "early evolution"
@@ -75,7 +79,7 @@ Layer 3 · MEMORY.md index + panel overview: one-line summaries + counts — a d
 | `memory_read` | read the index / a function file / an insight file / a daily log (`kind=index` first, to judge relevance) |
 | `memory_search` | **ranked full-text search** across the whole root: scans bodies, not just one-line summaries, and returns zone/file/line/section/snippet. Use it when you remember a fragment but not the area or the day |
 | `memory_write` | **append one iteration block** (a conclusion distilled from the raw daily record) and refresh the head stable-state summary; `summary` is the block's one-line takeaway. **Writes no index row, never touches the daily log** |
-| `memory_index` | **the integration layer**: once an area/theme stabilizes, upsert its row into the MEMORY.md index (row summary distilled from the block summaries) |
+| `memory_index` | **the integration layer**: once an area/theme stabilizes, upsert its row into the MEMORY.md index (row summary distilled from the block summaries); pass `group` to land in a `### 索引·<domain>` sub-table when the table has been split |
 | `memory_insight` | distil a transferable principle from the function division into `insights/`, backlink its source areas, `supersedes` to replace an older idea |
 | `memory_fold` | past 30KB, fold the oldest iteration blocks into an "early evolution" paragraph (conclusions and every date tag preserved) |
 | `memory_rename` | rename / merge a function area, rewrite every reference and verify zero dangling links |
