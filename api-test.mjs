@@ -129,6 +129,27 @@ console.log(`    search "插件": ${JSON.parse(search.body).hits.length} hits`);
 const shortQ = await call('/api/memory-org/search?q=a');
 ok(shortQ.status === 200 && JSON.parse(shortQ.body).hits.length === 0, 'sub-2-char query returns empty');
 
+// --- recall preview (MemOS borrow ②) ---------------------------------------
+// Same pipeline the pre-step hook runs, exposed for debugging: "what would this
+// input recall, and why". Short queries must not error out (the panel calls it
+// on every keystroke-ish interaction).
+const prevShort = await call('/api/memory-org/recall-preview?q=a');
+ok(prevShort.status === 200 && JSON.parse(prevShort.body).rows.length === 0, 'recall-preview tolerates a sub-2-char query');
+const prev = await call('/api/memory-org/recall-preview?q=' + encodeURIComponent('记忆 插件'));
+ok(prev.status === 200, `recall-preview 200 (${prev.status})`);
+const pv = JSON.parse(prev.body);
+ok(Array.isArray(pv.rows) && Array.isArray(pv.tokens), 'recall-preview returns rows + tokens');
+console.log(`    recall-preview "记忆 插件": ${pv.rows.length} rows, ${pv.usageSignals ?? 0} usage signals`);
+// Contract the panel will read: each row explains itself (reasons) and carries
+// the fused score, so ranking is inspectable instead of guessed at.
+if (pv.rows.length) {
+	const r0 = pv.rows[0];
+	ok(typeof r0.href === 'string' && Array.isArray(r0.reasons), 'preview row carries href + reasons');
+	ok(typeof r0.fusedScore === 'number', 'preview row carries its fused score');
+} else {
+	ok(true, 'preview row contract (no hits on this root — shape untested)');
+}
+
 // --- response contract the panel client reads --------------------------------
 // The panel is a separate half that only sees these JSON shapes; a renamed field
 // silently blanks a chip or a snippet (that is how "UI 和系统没匹配上" happens).

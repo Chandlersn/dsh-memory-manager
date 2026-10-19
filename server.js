@@ -3224,6 +3224,49 @@ function memoryPanelApi(opts) {
 				if (text === undefined) return json(res, 404, { error: 'file not found' });
 				return json(res, 200, { name, text });
 			}
+			// Recall preview (MemOS borrow ②): run the REAL pre-step pipeline
+			// against an arbitrary query and return what would be injected, with
+			// why. Recall quality was previously only observable after the fact;
+			// this makes "this input recalls these rows, for these reasons" a
+			// first-class, debuggable answer (same code path, same RRF fusion).
+			if (seg === 'recall-preview') {
+				const q = (url.searchParams.get('q') ?? '').trim();
+				if (q.length < 2) return json(res, 200, { query: q, rows: [], message: '（查询至少 2 个字符）' });
+				const indexText = (await readIfExists(path.join(root, 'MEMORY.md'))) ?? '';
+				if (!indexText) return json(res, 200, { query: q, rows: [], message: '（记忆根尚未建档）' });
+				const usageItems = summarizeUsage(await readUsage(root, 30));
+				const usage = new Map(usageItems.map((it) => [it.href, it]));
+				const tokens = tokensOf(q);
+				const rows = matchIndexRows(indexText, tokens, 3, usage)
+					.filter((l) => !q.includes(l.href))
+					.map((r) => {
+						const u = usage.get(r.href);
+						const reasons = [];
+						const nameTokens = tokensOf(r.name);
+						const hits = [...tokens].filter((t) => nameTokens.has(t));
+						if (hits.length) reasons.push(`名称命中：${hits.join('、')}`);
+						if (r.lexical !== undefined) reasons.push(`词法分 ${Number(r.lexical).toFixed(2)}`);
+						if (u) reasons.push(`使用 ${u.uses} 次 · 认可 ${u.positives} · 纠正率 ${u.badRate}`);
+						return {
+							href: r.href,
+							zone: r.zone,
+							summary: r.summary,
+							fusedScore: Number(r.score.toFixed(4)),
+							lexicalScore: r.lexical === undefined ? undefined : Number(r.lexical.toFixed(2)),
+							usage: u ? { uses: u.uses, positives: u.positives, corrections: u.corrections, badRate: u.badRate, layer: u.layer } : null,
+							reasons,
+							// Would the user's own text have suppressed this row?
+							suppressedByPointerDedupe: false,
+						};
+					});
+				return json(res, 200, {
+					query: q,
+					tokens: [...tokens],
+					usageSignals: usageItems.length,
+					rows,
+					message: rows.length ? '' : '（无命中：该输入不会注入任何召回）',
+				});
+			}
 			if (seg === 'list') {
 				const zone = url.searchParams.get('zone');
 				if (!['functions', 'insights', 'capabilities', 'skills', 'daily'].includes(zone)) return json(res, 400, { error: 'invalid zone' });
