@@ -1115,6 +1115,28 @@ ok(r20.some((r) => r.message.includes('何时使用')), 'R20 flags a missing tri
 	ok(r20s.some((r) => r.message.includes('缺项目') && r.message.includes('scope_project')), 'R20s: project scope without scope_project WARNs');
 	ok(r20s.some((r) => r.rule === 'R20h' && r.message.includes('坏名')), 'R20h: non-kebab hostName WARNs before the host ignores it');
 	ok(!r20s.some((r) => r.message.includes('空壳技能')), 'hand-managed (non-owned) files are not scope-WARNed');
+	// The scope field must have a CONSUMER, not just a writer+auditor (the day's
+	// theme: a written-but-unread field is dead). skillAppliesToProject is the
+	// reader — pure-function floors first, then the tool's project filter.
+	ok(bridge.skillAppliesToProject({ scope: 'global' }, 'any') === true, 'global applies to every project');
+	ok(bridge.skillAppliesToProject({ scope: 'project', scope_project: 'alpha' }, 'alpha') === true, 'project matches its own key');
+	ok(bridge.skillAppliesToProject({ scope: 'project', scope_project: 'alpha' }, 'beta') === false, 'project excludes other keys');
+	ok(bridge.skillAppliesToProject({}, 'alpha') === false, 'missing scope is NOT definitely applicable');
+	ok(bridge.skillAppliesToProject({ scope: 'global' }) === true, 'no project key disables the filter');
+	// A project-scoped, host-published skill end-to-end through the tool:
+	await T.memory_skill.execute(
+		{ action: 'crystallize', name: '甲项目技能', summary: '只适用甲', when: '甲项目', procedure: ['一', '二'], verification: '路由过滤', sources: ['测试功能'], scope: 'project', scopeProject: 'alpha-proj', hostName: 'alpha-only-skill' },
+		exec,
+	);
+	await T.memory_skill.execute({ action: 'activate', name: '甲项目技能' }, exec);
+	const listAlpha = await T.memory_skill.execute({ action: 'list', project: 'alpha-proj' }, exec);
+	ok(listAlpha.items.some((i) => i.name === '甲项目技能'), 'the project filter keeps its own project skill');
+	const item = listAlpha.items.find((i) => i.name === '甲项目技能');
+	ok(item.scope === 'project' && item.published === true, 'list READS BACK scope + published (bridge gate parity)');
+	const listBeta = await T.memory_skill.execute({ action: 'list', project: 'beta-proj' }, exec);
+	ok(!listBeta.items.some((i) => i.name === '甲项目技能'), 'the project filter drops another project\'s skill');
+	ok(listBeta.items.some((i) => i.name === privName && i.scope === 'global'), 'global skills survive every project filter');
+	ok(!listBeta.items.some((i) => i.name === '缺作用域'), 'an unscoped owned skill is not counted as applicable');
 }
 await rm(root, { recursive: true, force: true });
 console.log(failures === 0 ? 'ALL PASS' : `${failures} FAILURES`);

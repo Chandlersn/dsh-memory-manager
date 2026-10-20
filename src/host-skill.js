@@ -51,6 +51,28 @@ function publishable(fields) {
 }
 
 /**
+ * Single source of truth for "is this skill currently published to the host?".
+ * The bridge (list/get) AND the plugin's own `memory_skill(list)` read-back both
+ * call it, so the publish state the tool REPORTS can never drift from what the
+ * provider actually advertises — the day's recurring theme, one predicate.
+ */
+export const isPublishable = (fields) => publishable(fields);
+
+/**
+ * Routing (skill_scope.py --route, lifted into the plugin): does this skill
+ * apply to a project? global → everywhere; project → only its scope_project;
+ * an owned skill with no/unknown scope is NOT "确定适用". This is what finally
+ * makes `scope` a field some code READS rather than just writes + audits.
+ */
+export function skillAppliesToProject(fields, projectKey) {
+	if (!projectKey) return true; // no filter requested
+	const scope = String(fields.scope ?? '').toLowerCase();
+	if (scope === 'global') return true;
+	if (scope === 'project') return Boolean(fields.scope_project ?? fields.scopeProject) && (fields.scope_project ?? fields.scopeProject) === projectKey;
+	return false; // missing/unknown scope: never counted as definitely applicable
+}
+
+/**
  * Register the bridge on the host context. Returns `{ invalidate, dispose }`,
  * or `undefined` when the host exposes no skill registry (the plugin keeps
  * running on its own recall — this seam must never be load-bearing).

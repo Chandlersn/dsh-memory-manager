@@ -45,7 +45,7 @@ import {
 } from './src/markdown.js';
 import { tokensOf, matchIndexRows, buildRecallMessage } from './src/recall.js';
 import { redactSecrets, scanSecrets } from './src/secrets.js';
-import { isSkillName, registerMemorySkillBridge } from './src/host-skill.js';
+import { isSkillName, registerMemorySkillBridge, parseSkillText, isPublishable, skillAppliesToProject } from './src/host-skill.js';
 import { resolveDshRoot, setHostRoot, loadHost, defineTool, createUserMessage } from './src/host.js';
 import {
 	name, inject, DEFAULTS, FUNC_TABLE_HEADING, INSIGHT_TABLE_HEADING, CAP_TABLE_HEADING,
@@ -1368,6 +1368,7 @@ function memorySkillTool(opts, hooks = {}) {
 			'Crystallize a REPEATED, CONFIRMED operation into a callable procedure under skills/ (the missing “use” step of the data flow: record → distill → promote → display → USE). actions: candidates = which areas the usage signals nominate (pure aggregation: >=6 uses, >=1 confirmation, correction rate <20%, not already crystallized) — call it periodically and decide; crystallize = write skills/<name>.md from an area\'s proven steps (YOU write the procedure, the tool files and indexes it, status=candidate); activate/retire = lifecycle transitions (activate only after the procedure was actually followed successfully; retire when the environment changed, the file stays as history); list/read = what skills exist / full text. A skill file answers “do it exactly like THIS” — distinct from capabilities/ (“what tool exists”) and insights/ (“what principle holds”). A crystallized skill carries scope (global/project) and, with a kebab-case hostName, is published to the host skill catalog once active so the `skill` tool can load it directly.',
 		parameters: {
 			action: { type: 'string', required: true, enum: ['candidates', 'crystallize', 'activate', 'retire', 'list', 'read'], description: 'candidates=看提名；crystallize=结晶一份技能；activate/retire=生命周期；list/read=查。' },
+			project: { type: 'string', description: 'list 可选：按项目 key 过滤（skill_scope --route 语义）——global 技能全保留，project 技能只留 scope_project 匹配的，无 scope 的不计入确定适用。' },
 			name: { type: 'string', description: 'crystallize/activate/retire/read 必填：技能名（文件名 slug）。' },
 			summary: { type: 'string', description: 'crystallize 必填：一句话用途（索引行与命中提示用）。' },
 			when: { type: 'string', description: 'crystallize 必填：什么任务信号出现时该用这条技能（触发条件，一句话）。' },
@@ -1415,6 +1416,11 @@ function memorySkillTool(opts, hooks = {}) {
 								status: { type: 'string', required: true },
 								summary: { type: 'string', required: true },
 								updated: { type: 'string', required: true },
+								// Declared here or the Host rejects the receipt — the
+								// 5.11.3 lesson, applied BEFORE shipping, not after a
+								// silent-write + rejected-receipt surprise.
+								scope: { type: 'string' },
+								published: { type: 'boolean' },
 							},
 						},
 					},
@@ -1422,7 +1428,7 @@ function memorySkillTool(opts, hooks = {}) {
 					warnings: { type: 'array', required: true, items: { type: 'string' } },
 				},
 			},
-			render: (_args, v) => {
+			render: (args, v) => {
 				if (v.action === 'read') return [{ type: 'text', text: v.content || '（空）' }];
 				if (v.action === 'candidates') {
 					if (!v.candidates?.length) return [{ type: 'text', text: `暂无提名（门槛：≥${SKILL_NOMINATE.minUses} 次使用 + ≥${SKILL_NOMINATE.minPositives} 次确认 + 纠正率 <${SKILL_NOMINATE.maxBadRate * 100}%）。使用信号继续累积，隔段时间再查。` }];
@@ -1432,9 +1438,15 @@ function memorySkillTool(opts, hooks = {}) {
 					return [{ type: 'text', text: lines.join('\n') }];
 				}
 				if (v.action === 'list') {
-					if (!v.items.length) return [{ type: 'text', text: '还没有技能。先 memory_skill(candidates) 看提名，再把反复验证过的操作结晶成程序。' }];
-					const lines = [`技能台账（${v.items.length} 项）：`];
-					for (const it of v.items) lines.push(`- [${it.status}] ${it.name} — ${it.summary}`);
+					const proj = oneLine(args.project ?? '');
+					if (!v.items.length) return [{ type: 'text', text: proj ? `没有适用于项目「${proj}」的技能（global 或 scope_project 匹配的才算）。` : '还没有技能。先 memory_skill(candidates) 看提名，再把反复验证过的操作结晶成程序。' }];
+					const lines = [`技能台账（${v.items.length} 项${proj ? `，已按项目「${proj}」路由过滤` : ''}）：`];
+					for (const it of v.items) {
+						// scope is READ here (and drives the filter above); published
+						// reflects the bridge's real gate, not a re-derivation.
+						const scopeTag = it.scope && it.scope !== 'unknown' ? ` · ${it.scope}` : '';
+						lines.push(`- [${it.status}${it.published ? '→宿主' : ''}${scopeTag}] ${it.name} — ${it.summary}`);
+					}
 					for (const w of v.warnings) lines.push(`⚠ ${w}`);
 					return [{ type: 'text', text: lines.join('\n') }];
 				}
@@ -1450,7 +1462,7 @@ function memorySkillTool(opts, hooks = {}) {
 			const root = resolveRoot(opts);
 			const dir = path.join(root, SKILL_DIR);
 			const warnings = [];
-			const listAll = async () => {
+			const listAll = async (projectKey) => {
 				let names = [];
 				try {
 					names = (await readdir(dir)).filter((n) => n.endsWith('.md'));
@@ -1460,12 +1472,20 @@ function memorySkillTool(opts, hooks = {}) {
 				const items = [];
 				for (const f of names.sort()) {
 					const text = (await readIfExists(path.join(dir, f))) ?? '';
-					// frontmatter `status:` is canonical; tolerate the pre-5.12 head
-					// format ("> 状态：x") so hand-written or older files still parse.
-					const stM = text.match(/^status:\s*([a-z]+)/m) ?? text.match(/^> 状态：([a-z]+)/m);
-					const sumM = text.match(/^>\s*摘要：(.+)$/m) ?? text.match(/^description:\s*"?([^"\n]+)"?/m);
+					// ONE parser now: the same frontmatter reader the host bridge
+					// uses, so what `list` reports (scope, published) can never drift
+					// from what the provider actually advertises. The legacy head
+					// format ("> 状态：x", no frontmatter) still resolves through the
+					// regex fallbacks.
+					const { fields, body } = parseSkillText(text);
+					const status = fields.status ?? (body.match(/^> 状态：([a-z]+)/m) ?? [])[1] ?? 'candidate';
+					const summary = (body.match(/^>\s*摘要：(.+)$/m) ?? [])[1]?.trim() || fields.description || '（无摘要）';
+					const scope = fields.scope ?? 'unknown';
+					// `published` reads isPublishable — the bridge's own gate. scope
+					// finally has a consumer: the project filter below.
+					if (projectKey && !skillAppliesToProject(fields, projectKey)) continue;
 					const st = await stat(path.join(dir, f));
-					items.push({ name: f.replace(/\.md$/, ''), status: stM ? stM[1] : 'candidate', summary: sumM ? sumM[1].trim() : '（无摘要）', updated: st.mtime.toISOString() });
+					items.push({ name: f.replace(/\.md$/, ''), status, summary, updated: st.mtime.toISOString(), scope, published: isPublishable(fields) });
 				}
 				return items;
 			};
@@ -1493,7 +1513,8 @@ function memorySkillTool(opts, hooks = {}) {
 				return { action: 'candidates', candidates, items: [], warnings };
 			}
 			if (args.action === 'list') {
-				return { action: 'list', items: await listAll(), warnings };
+				const project = oneLine(args.project ?? '');
+				return { action: 'list', items: await listAll(project || undefined), warnings };
 			}
 			const name = safeSlug(args.name);
 			const p = path.join(dir, `${name}.md`);
