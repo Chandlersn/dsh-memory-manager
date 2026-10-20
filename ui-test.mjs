@@ -124,22 +124,24 @@ const fixtures = {
 	'/api/memory-org/list?zone=functions&v=0': { data: { files: [{ name: 'alpha.md', bytes: fnText.length, mtime: iso(30) }, { name: 'beta.md', bytes: 900, mtime: iso(2000) }] }, loading: false, error: null },
 	'/api/memory-org/list?zone=insights&v=0': { data: { files: [{ name: 'gamma.md', bytes: 500, mtime: iso(120) }] }, loading: false, error: null },
 	'/api/memory-org/list?zone=skills&v=0': { data: { files: [{ name: '分离延迟重启.md', bytes: 700, mtime: iso(60) }] }, loading: false, error: null },
-	// Skill library payload — mirrors the live /shapes byte for byte: the host
-	// half NEVER carries our published skill (the endpoint folds it into memory
-	// by provider), so the fixture must not invent a row the server would drop.
+	// Skill library payload — 5.20.0 storage scan: the host side lists what is
+	// ON DISK (bundle dirs with their file trees); no registry fields, no
+	// hostDegraded (a missing root just means no bundles there).
 	'/api/memory-org/skills?v=0': {
 		data: {
 			memory: [
-				{ name: '分离延迟重启', hostName: 'detached-restart', description: '会话跑在宿主内时用分离进程延迟重启', whenToUse: '需要重启宿主时', status: 'active', scope: 'global', scopeProject: '', published: true, path: 'C:/x/memory/skills/分离延迟重启.md', mtime: iso(60) },
-				{ name: '草稿技能', hostName: '', description: '一个还没转正的候选', whenToUse: '', status: 'candidate', scope: 'project', scopeProject: 'demo', published: false, path: 'C:/x/memory/skills/草稿技能.md', mtime: iso(10) },
+				{ name: '分离延迟重启', hostName: 'detached-restart', description: '会话跑在宿主内时用分离进程延迟重启', status: 'active', scope: 'global', scopeProject: '', published: true, kind: 'memory', dir: 'C:/x/memory/skills', files: [{ rel: '', name: '分离延迟重启.md', bytes: 700 }] },
+				{ name: '草稿技能', hostName: '', description: '一个还没转正的候选', status: 'candidate', scope: 'project', scopeProject: 'demo', published: false, kind: 'memory', dir: 'C:/x/memory/skills', files: [{ rel: '', name: '草稿技能.md', bytes: 300 }] },
 			],
-			host: [{ name: 'cordis-plugin-development', description: '设计/调试插件', whenToUse: '', source: 'bundled', provider: 'agent-preset', modelInvocable: true, userInvocable: true, path: 'D:/dsh/…/SKILL.md' }],
-			hostDegraded: false,
+			host: [
+				{ name: 'skill-creator', description: 'Guide for creating effective skills.', source: 'user-dsh', kind: 'host', dir: 'C:/x/.dsh/skills/skill-creator', files: [{ rel: '', name: 'SKILL.md', bytes: 17957 }, { rel: 'scripts/init_skill.py', name: 'init_skill.py', bytes: 11627 }, { rel: 'scripts/quick_validate.py', name: 'quick_validate.py', bytes: 2165 }] },
+			],
 		},
 		loading: false,
 		error: null,
 	},
-	'/api/memory-org/skill?name=cordis-plugin-development': { data: { name: 'cordis-plugin-development', description: '设计/调试插件', content: '# Cordis 插件开发\n\n先看 provider 契约。' }, loading: false, error: null },
+	'/api/memory-org/skill?name=skill-creator&kind=host': { data: { name: 'skill-creator', kind: 'host', text: '---\nname: skill-creator\ndescription: Guide\n---\n\n# Skill Creator\n\n先看 provider 契约。', files: [{ rel: '', name: 'SKILL.md', bytes: 60 }, { rel: 'scripts/init_skill.py', name: 'init_skill.py', bytes: 11627 }, { rel: 'scripts/quick_validate.py', name: 'quick_validate.py', bytes: 2165 }] }, loading: false, error: null },
+	'/api/memory-org/skillfile?name=skill-creator&file=scripts%2Fquick_validate.py': { data: { name: 'skill-creator', file: 'scripts/quick_validate.py', text: '#!/usr/bin/env python3\nimport sys\n' }, loading: false, error: null },
 	'/api/memory-org/list?zone=daily&v=0': { data: { files: [{ name: '2026-10-18.md', bytes: 400, mtime: iso(5) }, { name: '2026-09-30.md', bytes: 800, mtime: iso(18_000) }] }, loading: false, error: null },
 	'/api/memory-org/file?name=MEMORY.md&v=0': { data: { name: 'MEMORY.md', text: indexText }, loading: false, error: null },
 	'/api/memory-org/file?zone=functions&name=alpha.md': { data: { name: 'alpha.md', text: fnText }, loading: false, error: null },
@@ -225,6 +227,8 @@ ok(dailyList.indexOf('2026-10') < dailyList.indexOf('2026-09'), 'months run newe
 // --- skill library: one destination, two sides behind a toggle ---------------
 // The tab is NAVIGATION state (view.tab), so each side renders deterministically
 // without a live useState — exactly why the panel test can assert both halves.
+// 5.20.0: the payload is a STORAGE scan — rows carry their file lists, the
+// detail view renders SKILL.md plus a clickable file tree (scripts/...).
 const skillMem = render({ kind: 'zone', zone: 'skills', tab: 'memory' });
 ok(count(skillMem, 'data-dmo="skill-tab"') === 2, 'the library offers two toggle tabs');
 ok(skillMem.includes('结晶技能 2') && skillMem.includes('系统技能 1'), 'tabs carry per-side counts');
@@ -232,14 +236,20 @@ ok(skillMem.includes('分离延迟重启') && skillMem.includes('草稿技能'),
 ok(skillMem.includes('已发布宿主'), 'a published skill carries its publish badge');
 ok(skillMem.includes('active') && skillMem.includes('candidate'), 'lifecycle statuses render');
 ok(skillMem.includes('global') && skillMem.includes('project:demo'), 'scope renders, project keeps its key');
-ok(!skillMem.includes('cordis-plugin-development'), 'the memory tab does not leak host rows');
+ok(!skillMem.includes('skill-creator'), 'the memory tab does not leak host rows');
 const skillHost = render({ kind: 'zone', zone: 'skills', tab: 'host' });
-ok(skillHost.includes('cordis-plugin-development') && skillHost.includes('bundled'), 'host tab lists installed skills with their source');
-ok(!skillHost.includes('分离延迟重启'), 'the host tab does not leak memory rows (no double count on screen)');
+ok(skillHost.includes('skill-creator') && skillHost.includes('user-dsh'), 'host tab lists stored bundles with their root source');
+ok(skillHost.includes('3 文件'), 'a bundle row shows its stored file count');
+ok(!skillHost.includes('分离延迟重启'), 'the host tab does not leak memory rows');
 ok(count(skillHost, 'data-dmo="skill-row"') === 1, `host tab rows == host payload length (${count(skillHost, 'data-dmo="skill-row"')})`);
-// The host detail view reads through the registry route (a name, never a path).
-const hostRead = render({ kind: 'hostskill', name: 'cordis-plugin-development' });
-ok(hostRead.includes('先看 provider 契约') && hostRead.includes('只读'), 'host skill body renders from the registry route, read-only');
+// The detail view renders the STORED SKILL.md and the bundle's file tree; each
+// stored file is one click away (a name + a relative file, never a client path).
+const hostRead = render({ kind: 'hostskill', name: 'skill-creator' });
+ok(hostRead.includes('先看 provider 契约') && hostRead.includes('存储内容 · 只读'), 'the stored SKILL.md renders, read-only');
+ok(hostRead.includes('文件 3') && hostRead.includes('scripts/init_skill.py') && hostRead.includes('scripts/quick_validate.py'), 'the bundle file tree is listed (SKILL.md + scripts)');
+const hostFile = render({ kind: 'hostskill', name: 'skill-creator', file: 'scripts/quick_validate.py' });
+ok(hostFile.includes('#!/usr/bin/env python3'), 'a stored resource file renders its raw text');
+ok(hostFile.includes('scripts/quick_validate.py'), 'the file view titles the selected resource');
 ok(hostRead.includes('返回技能库'), 'the detail view offers the way back');
 
 // --- reader: long function file folds to the newest block -------------------

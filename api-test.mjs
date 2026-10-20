@@ -109,72 +109,47 @@ ok(file.status === 200 || file.status === 404, `read MEMORY.md (${file.status})`
 if (file.status === 200) ok(JSON.parse(file.body).text.includes('记忆管理'), 'MEMORY.md content');
 else console.log('    （全局根尚未建档——正常，等首次 memory_write 建立）');
 
-// --- skill library (5.18.0) --------------------------------------------------
-// TWO paths must be covered, not one (the day's recurring lesson): this test's
-// fakeCtx has NO skill service, so the bridge is absent — /skills must answer
-// with the memory half + hostDegraded=true, NOT an unexplained empty host list.
-// The publish path (a real registry) is covered end-to-end in harness-test with
-// the fake-registry provider; the endpoint's degrade contract is pinned here.
+// --- skill library (5.20.0 storage scan) --------------------------------------
+// The endpoint scans DISK (memory single-file skills + host bundle roots), NOT
+// the registry — the panel shows what is stored; invocation policy stays the
+// machine's surface. Two paths still covered: this fakeCtx has no skill
+// service at all (irrelevant now — storage scan never touches the registry),
+// and the real host roots on this machine carry real bundles.
 const skillLib = await call('/api/memory-org/skills');
-ok(skillLib.status === 200, `/skills answers 200 even without a host skill service (${skillLib.status})`);
+ok(skillLib.status === 200, `/skills answers 200 (${skillLib.status})`);
 const sl = JSON.parse(skillLib.body);
 ok(Array.isArray(sl.memory) && Array.isArray(sl.host), 'skills payload splits memory + host groups');
-ok(sl.hostDegraded === true, 'no bridge => hostDegraded true (never a silently-empty host list)');
+ok(!('hostDegraded' in sl), 'no hostDegraded field: a missing root just means no bundles there');
 const sepRow = (sl.memory ?? []).find((s) => s.name === '分离延迟重启');
 ok(!!sepRow, 'crystallized skill from the real root appears in the memory group');
 if (sepRow) {
-	const SK = ['name', 'status', 'published', 'scope', 'description'];
+	const SK = ['name', 'status', 'published', 'scope', 'description', 'kind', 'files'];
 	const missSK = SK.filter((k) => !(k in sepRow));
 	ok(missSK.length === 0, `memory skill row carries its panel fields (missing: ${missSK.join(',') || 'none'})`);
-	ok(sepRow.status === 'active' && sepRow.published === true && sepRow.scope === 'global', `real skill reports active+published+global (${sepRow.status}/${sepRow.published}/${sepRow.scope})`);
+	ok(sepRow.kind === 'memory' && Array.isArray(sepRow.files) && sepRow.files.length === 1, 'a memory skill stores exactly its own file');
 }
-// The host-body route is name-validated BEFORE any registry touch: a traversal
-// or a non-kebab name must be a 400, never a path read.
+// Host rows are STORAGE bundles: dir bundles with their real file trees.
+const scRow = (sl.host ?? []).find((s) => s.name === 'skill-creator');
+ok(!!scRow && scRow.kind === 'host', 'the installed skill-creator bundle is listed');
+if (scRow) {
+	ok(scRow.source === 'user-dsh', `host row carries its root source (${scRow.source})`);
+	ok(Array.isArray(scRow.files) && scRow.files.some((f) => f.rel === 'SKILL.md') && scRow.files.some((f) => f.rel === 'scripts/quick_validate.py'), `bundle file tree includes SKILL.md + scripts (${scRow.files.length} files)`);
+}
+// /skill reads a STORED main file; kind picks the root; traversal is a 400.
+const memBody = await call(`/api/memory-org/skill?name=${encoded('分离延迟重启')}&kind=memory`);
+ok(memBody.status === 200 && JSON.parse(memBody.body).text.includes('程序体'), 'memory skill body reads from storage');
 const badName = await call(`/api/memory-org/skill?name=${encoded('../server')}`);
-ok(badName.status === 400, 'host skill route rejects a non-kebab name (no traversal surface)');
-const noBridge = await call('/api/memory-org/skill?name=detached-restart');
-ok(noBridge.status === 404, 'without a bridge, a valid name resolves 404 (not 500)');
-// The OTHER endpoint path: a host WITH a skill registry. Without this second
-// fakeCtx the publish branch (host rows listed + our provider's row folded into
-// the memory half) would ship untested — the day's lesson, applied proactively.
-let routeHandler2 = null;
-const fakeRegistry = {
-	registerProvider: (make) => { make({ signal: new AbortController().signal, invalidate: () => {} }); return noop; },
-	list: async () => [
-		{ name: 'cordis-plugin-development', description: '插件开发', source: 'bundled', provider: 'agent-preset', invocation: { modelInvocable: true, userInvocable: true }, path: 'D:/x/SKILL.md' },
-		{ name: 'detached-restart', description: '我们的已发布技能', source: 'custom', provider: 'dsh-memory-manager', invocation: { modelInvocable: true, userInvocable: true }, path: path.join(root, 'skills', '分离延迟重启.md') },
-	],
-	get: async (name) => (name === 'cordis-plugin-development' ? { name, description: '插件开发', content: '# body from provider' } : undefined),
-};
-const fakeCtx2 = {
-	tools: { register: () => noop },
-	on: () => noop,
-	get: (svc) => (svc === 'skills' ? fakeRegistry : undefined),
-	inject(names, fn) {
-		fn({
-			webServer: { register(route) { if (route.path === '/api/memory-org') routeHandler2 = route.handler; return noop; } },
-			effect: (f) => f(),
-		});
-	},
-	systemPrompt: { getSectionOrder: () => 2900, section: () => noop },
-};
-mod.apply(fakeCtx2, { memoryRoot: path.join(root, 'nonexistent-branch') });
-if (!routeHandler2) throw new Error('second route was not registered');
-async function call2(pathname) {
-	const url = new URL(pathname, 'http://localhost');
-	let captured;
-	const res = { writeHead(status) { captured = { status }; }, end(body) { captured.body = body; } };
-	await routeHandler2({ url: url.pathname + url.search }, res);
-	return captured;
-}
-const lib2 = JSON.parse((await call2('/api/memory-org/skills')).body);
-ok(lib2.hostDegraded === false, 'with a registry the host half is live (not degraded)');
-ok(lib2.host.length === 1 && lib2.host[0].name === 'cordis-plugin-development', `host half lists foreign providers only (got ${lib2.host.map((x) => x.name)})`);
-ok(!lib2.host.some((x) => x.name === 'detached-restart'), 'our published skill is folded out of the host half (no double count)');
-const body2 = await call2('/api/memory-org/skill?name=cordis-plugin-development');
-ok(body2.status === 200 && JSON.parse(body2.body).content.includes('body from provider'), 'host skill body loads through the registry');
-const miss2 = await call2('/api/memory-org/skill?name=ghost-skill');
-ok(miss2.status === 404, 'a name the catalog does not resolve is 404');
+ok(badName.status === 400, 'skill route rejects traversal in the name');
+const missHost = await call('/api/memory-org/skill?name=ghost-skill&kind=host');
+ok(missHost.status === 404, 'an unknown host bundle is 404');
+// /skillfile reads a stored RESOURCE inside a host bundle; rel paths are
+// validated (no .., no backslash) and resolved server-side from the root.
+const pyFile = await call(`/api/memory-org/skillfile?name=skill-creator&file=${encoded('scripts/quick_validate.py')}`);
+ok(pyFile.status === 200 && JSON.parse(pyFile.body).text.includes('validate_skill'), 'a stored resource file reads through /skillfile');
+const badRel = await call(`/api/memory-org/skillfile?name=skill-creator&file=${encoded('../quick_validate.py')}`);
+ok(badRel.status === 400, 'skillfile rejects .. in the relative path');
+const badRel2 = await call(`/api/memory-org/skillfile?name=skill-creator&file=${encoded('scripts\\x.py')}`);
+ok(badRel2.status === 400, 'skillfile rejects backslashes in the relative path');
 
 // --- overview / counts -------------------------------------------------------
 const idx = await call('/api/memory-org/overview');

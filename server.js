@@ -2733,10 +2733,16 @@ function memoryPanelApi(opts) {
 			// it folds into the memory half and the host half never double-counts
 			// it. Reads go through the bridge's borrowed registry — the same
 			// catalog the host tool resolves, one source of truth.
+			// Skill library (5.20.0): scan STORAGE, not the registry. The registry
+			// answers "what can the machine invoke" (publish gates, invocation
+			// policy); the panel is a READER for what is actually stored — SKILL.md
+			// bodies, scripts/, references/. Two different surfaces, deliberately
+			// not one source (the user's point: 后端运行逻辑与前端展示不必一致).
+			// Host roots mirror dsh-skill-filesystem's roots() so what is listed
+			// here is exactly what is on disk there.
 			if (seg === 'skills') {
 				const ourDir = path.join(root, SKILL_DIR);
 				const memory = [];
-				const seenPaths = new Set();
 				let ourNames = [];
 				try {
 					ourNames = (await readdir(ourDir)).filter((n) => n.endsWith('.md'));
@@ -2747,63 +2753,117 @@ function memoryPanelApi(opts) {
 					const fp = path.join(ourDir, n);
 					const text = (await readIfExists(fp)) ?? '';
 					const { fields } = parseSkillText(text);
-					const status = fields.status ?? 'candidate';
 					memory.push({
 						name: n.replace(/\.md$/, ''),
 						hostName: fields.hostName || '',
 						description: fields.description || fields.whenToUse || '',
-						whenToUse: fields.whenToUse || '',
-						status,
+						status: fields.status ?? 'candidate',
 						scope: fields.scope || '',
 						scopeProject: fields.scope_project || '',
 						published: isPublishable(fields),
-						path: fp,
-						mtime: (await stat(fp)).mtime.toISOString(),
+						kind: 'memory',
+						dir: ourDir,
+						files: [{ rel: '', name: n, bytes: (await stat(fp)).size }],
 					});
-					seenPaths.add(path.resolve(fp));
 				}
-				let host = [];
-				// No bridge (a host without the skill service) is DEGRADED, not an
-				// empty list — silently-empty would read as "no skills installed".
-				let degraded = !opts.bridge;
-				try {
-					const rows = (await opts.bridge?.registry?.list({})) ?? [];
-					host = rows
-						// Our published rows already live in `memory` (folded via
-						// seenPaths below); listing them again under 系统技能 would
-						// show one skill twice across the two tabs.
-						.filter((r) => !(r.provider === PROVIDER_NAME || (r.path && seenPaths.has(path.resolve(r.path)))))
-						.map((r) => ({
-							name: r.name,
-							description: r.description || '',
-							whenToUse: r.whenToUse || '',
-							source: r.source || 'custom',
-							provider: r.provider || '',
-							modelInvocable: r.invocation?.modelInvocable !== false,
-							userInvocable: r.invocation?.userInvocable !== false,
-							path: r.path || '',
-						}))
-						.sort((a, b) => a.name.localeCompare(b.name));
-				} catch {
-					degraded = true;
+				const hostDshHome = dshHome();
+				const agentsHome = process.env.DSH_AGENTS_HOME || path.join(homedir(), '.agents');
+				const hostRoots = [
+					{ dir: path.join(hostDshHome, 'skills'), source: 'user-dsh' },
+					{ dir: path.join(agentsHome, 'skills'), source: 'user-agents' },
+				];
+				const host = [];
+				const seenDirs = new Set();
+				for (const r of hostRoots) {
+					let entries = [];
+					try {
+						entries = await readdir(r.dir, { withFileTypes: true });
+					} catch {
+						continue; // root absent
+					}
+					for (const e of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+						// Directory bundle: <root>/<name>/SKILL.md
+						if (!e.isDirectory()) continue;
+						const dir2 = path.join(r.dir, e.name);
+						const key = path.resolve(dir2);
+						if (seenDirs.has(key)) continue;
+						seenDirs.add(key);
+						const text = await readIfExists(path.join(dir2, 'SKILL.md'));
+						if (text === undefined) continue;
+						const { fields } = parseSkillText(text);
+						// Walk the bundle so the panel can show every stored file.
+						const files = [];
+						const walk = async (rel) => {
+							const abs = path.join(dir2, rel);
+							for (const de of await readdir(abs, { withFileTypes: true })) {
+								const rel2 = rel ? `${rel}/${de.name}` : de.name;
+								if (de.isDirectory()) await walk(rel2);
+								else files.push({ rel: rel2, name: de.name, bytes: (await stat(path.join(dir2, rel2))).size });
+							}
+						};
+						await walk('');
+						host.push({
+							name: fields.name || e.name,
+							description: fields.description || '',
+							source: r.source,
+							kind: 'host',
+							dir: dir2,
+							files,
+						});
+					}
 				}
-				return json(res, 200, { memory, host, hostDegraded: degraded });
+				host.sort((a, b) => a.name.localeCompare(b.name));
+				return json(res, 200, { memory, host });
 			}
-			// One host skill's full body, loaded through the registry (never the
-			// request path): `name` is validated against the host grammar first, so
-			// there is no traversal surface — the registry resolves the winning
-			// candidate and its provider owns the read.
+			// One stored skill's main file: either a memory single-file skill or a
+			// host bundle's SKILL.md — resolved by the SERVER from known roots, the
+			// request only names the skill. No paths travel from the client.
 			if (seg === 'skill') {
 				const nameParam = (url.searchParams.get('name') ?? '').trim();
-				if (!isSkillName(nameParam)) return json(res, 400, { error: 'invalid skill name' });
-				let def;
-				try {
-					def = await opts.bridge?.registry?.get(nameParam, {});
-				} catch {
-					def = undefined;
+				const kind = url.searchParams.get('kind') === 'memory' ? 'memory' : 'host';
+				if (!nameParam || /[\\/]|\.\./.test(nameParam)) return json(res, 400, { error: 'invalid skill name' });
+				// The file list travels WITH the body: the panel's detail view needs
+				// it, and re-deriving it client-side would mean the client knowing
+				// the host roots (it does not — the server resolves them).
+				const filesOf = async (dir2, fn) => {
+					const files = [];
+					const walk = async (rel) => {
+						for (const de of await readdir(path.join(dir2, rel), { withFileTypes: true })) {
+							const rel2 = rel ? `${rel}/${de.name}` : de.name;
+							if (de.isDirectory()) await walk(rel2);
+							else files.push({ rel: rel2, name: de.name, bytes: (await stat(path.join(dir2, rel2))).size });
+						}
+					};
+					await walk('');
+					return files;
+				};
+				if (kind === 'memory') {
+					const text = await readIfExists(path.join(root, SKILL_DIR, `${nameParam}.md`));
+					if (text === undefined) return json(res, 404, { error: 'skill not found' });
+					return json(res, 200, { name: nameParam, kind, text, files: [{ rel: '', name: `${nameParam}.md`, bytes: byteLen(text) }] });
 				}
-				if (!def) return json(res, 404, { error: 'skill not found in the host catalog' });
-				return json(res, 200, { name: def.name, description: def.description || '', content: def.content || '' });
+				const dir2 = path.join(dshHome(), 'skills', nameParam);
+				const text = await readIfExists(path.join(dir2, 'SKILL.md'));
+				if (text === undefined) return json(res, 404, { error: 'skill not found' });
+				let files = [];
+				try {
+					files = await filesOf(dir2);
+				} catch {
+					/* bundle dir vanished mid-read — body still answers */
+				}
+				return json(res, 200, { name: nameParam, kind, text, files });
+			}
+			// One stored file inside a host skill bundle (scripts/references/...):
+			// the request names skill + relative file; the server re-resolves the
+			// bundle root so no client path ever reaches the filesystem.
+			if (seg === 'skillfile') {
+				const nameParam = (url.searchParams.get('name') ?? '').trim();
+				const rel = (url.searchParams.get('file') ?? '').trim();
+				if (!nameParam || /[\\/]|\.\./.test(nameParam)) return json(res, 400, { error: 'invalid skill name' });
+				if (!rel || rel.includes('..') || rel.startsWith('/') || rel.startsWith('\\') || /[\\]/.test(rel)) return json(res, 400, { error: 'invalid file path' });
+				const text = await readIfExists(path.join(dshHome(), 'skills', nameParam, rel));
+				if (text === undefined) return json(res, 404, { error: 'file not found' });
+				return json(res, 200, { name: nameParam, file: rel, text });
 			}
 			if (seg === 'list') {
 				const zone = url.searchParams.get('zone');
@@ -2854,8 +2914,9 @@ function memoryPanelApi(opts) {
 					'<li><code>GET /api/memory-org/check</code> — 体检</li>' +
 					'<li><code>GET /api/memory-org/list?zone=functions|insights|daily</code> — 分区文件列表</li>' +
 					'<li><code>GET /api/memory-org/file?zone=functions&amp;name=&lt;file&gt;.md</code> — 读记忆文件（省略 zone 即索引）</li>' +
-					'<li><code>GET /api/memory-org/skills</code> — 技能库（结晶 + 宿主已装，两组）</li>' +
-					'<li><code>GET /api/memory-org/skill?name=&lt;kebab&gt;</code> — 宿主技能正文（经注册表，非路径）</li>' +
+					'<li><code>GET /api/memory-org/skills</code> — 技能库（扫存储：记忆根单文件 + 宿主目录包，各带文件树）</li>' +
+					'<li><code>GET /api/memory-org/skill?name=&lt;skill&gt;&amp;kind=memory|host</code> — 存储的技能主文件 + 文件清单（记忆侧 &lt;slug&gt;.md / 宿主侧 &lt;bundle&gt;/SKILL.md）</li>' +
+					'<li><code>GET /api/memory-org/skillfile?name=&lt;bundle&gt;&amp;file=&lt;rel&gt;</code> — 宿主包内资源文件原文（scripts/references；根由服务端解析，相对路径禁穿越）</li>' +
 					'<li><code>GET /api/memory-org/search?q=&lt;关键词&gt;</code> — 全库搜索</li></ul>',
 			);
 		} catch (err) {

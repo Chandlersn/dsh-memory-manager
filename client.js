@@ -845,7 +845,7 @@ window.__ModuleLoader__.load({
 					h('input', { className: 'dmo-filter', style: { width: 180 }, placeholder: '按名称或描述过滤…', value: filter, onChange: (e) => setFilter(e.target.value), 'data-dmo': 'skill-filter' }),
 				),
 				data?.hostDegraded && tab === 'host'
-					? h('div', { className: 'dmo-empty' }, '宿主未暴露技能注册表（或读取失败），系统技能暂不可列；结晶技能不受影响。')
+					? h('div', { className: 'dmo-empty' }, '宿主技能根不可读，系统技能暂不可列；结晶技能不受影响。')
 					: null,
 				error
 					? h('div', { className: 'dmo-empty' }, `读取技能库失败：${error}`)
@@ -866,12 +866,12 @@ window.__ModuleLoader__.load({
 									h(
 										'div',
 										{ className: 'dmo-row-top' },
-										h('span', { className: 'dmo-row-name' }, tab === 'host' ? s.name : `${s.name}`),
+										h('span', { className: 'dmo-row-name' }, s.name),
 										h(
 											'span',
 											{ className: 'dmo-row-meta' },
 											tab === 'host'
-												? h(Chip, {}, s.source || 'host')
+												? h(Chip, {}, `${s.source || 'host'} · ${s.files?.length ?? 0} 文件`)
 												: h(
 														'span',
 														{},
@@ -885,13 +885,24 @@ window.__ModuleLoader__.load({
 								),
 							),
 						)
-					: h('div', { className: 'dmo-empty' }, filter ? '没有匹配的技能。' : tab === 'host' ? '宿主目录没有可列的系统技能。' : '还没有结晶技能——memory_skill(candidates) 看提名，反复跑通的操作可结晶成程序。'),
+					: h('div', { className: 'dmo-empty' }, filter ? '没有匹配的技能。' : tab === 'host' ? '宿主技能根没有可列的目录包。' : '还没有结晶技能——memory_skill(candidates) 看提名，反复跑通的操作可结晶成程序。'),
 			);
 		}
 
 		/** A host skill's body, loaded through the registry (read-only view). */
-		function HostSkillView({ res, name, onBack }) {
-			const d = res.data;
+		/**
+		 * A host skill's STORED-CONTENT view: the SKILL.md body rendered plus the
+		 * bundle's file tree (scripts/references/...) — each file one click away.
+		 * The panel reads what is ON DISK; the registry (invocation policy, publish
+		 * gates) is the machine's surface and is deliberately not consulted here.
+		 * `sel` is navigation state owned by the parent (the same reasoning as the
+		 * library tab: a local useState would be untestable under the UI shim).
+		 */
+		function HostSkillView({ data, name, onBack, sel, onSel, fixtures }) {
+			const d = data?.data;
+			const files = d?.files ?? [];
+			const fileUrl = sel ? `${API}/skillfile?name=${enc(name)}&file=${enc(sel)}` : null;
+			const fileRes = useApi(fileUrl, fixtures);
 			return h(
 				'div',
 				{ style: { display: 'flex', flexDirection: 'column', gap: 8 } },
@@ -900,19 +911,52 @@ window.__ModuleLoader__.load({
 					{ className: 'dmo-toolbar' },
 					h(Btn, { sm: true, onClick: onBack, title: '返回技能库', 'data-dmo': 'back' }, '← 返回技能库'),
 					h('span', { className: 'grow' }),
-					h('span', { className: 'dmo-meta' }, '系统技能 · 只读'),
+					h('span', { className: 'dmo-meta' }, '存储内容 · 只读'),
 				),
-				res.loading
-					? h('div', { className: 'dmo-empty' }, '读取技能正文…')
-					: res.error
-						? h('div', { className: 'dmo-empty' }, `读取失败：${res.error}`)
-						: h(
-								'div',
-								{ className: 'dmo-card' },
-								h('h3', { className: 'dmo-h2', style: { margin: '0 0 6px' } }, name),
-								d?.description ? h('div', { className: 'dmo-row-sum', style: { marginBottom: 6 } }, d.description) : null,
-								h(MarkdownBody, { text: d?.content ?? '', zone: undefined, onNavigate: () => {} }),
+				h(
+					'div',
+					{ style: { display: 'flex', gap: 10, alignItems: 'flex-start' } },
+					h(
+						'div',
+						{ style: { width: 230, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 6 } },
+						h('div', { className: 'dmo-meta', style: { padding: '0 2px' } }, `文件 ${files.length}`),
+						h(
+							'div',
+							{ className: 'dmo-chips' },
+							files.map((f) =>
+								h('button', {
+									key: f.rel, type: 'button',
+									className: `dmo-chip btn${sel === f.rel ? ' active' : ''}`,
+									'data-dmo': 'skill-file',
+									onClick: () => onSel(f.rel),
+									title: f.rel,
+								}, f.rel || 'SKILL.md'),
 							),
+						),
+					),
+					h(
+						'div',
+						{ style: { flex: 1, minWidth: 0 } },
+						sel === null
+							? h(
+									'div',
+									{ className: 'dmo-card' },
+									h('h3', { className: 'dmo-h2', style: { margin: '0 0 6px' } }, name),
+									d?.description ? h('div', { className: 'dmo-row-sum', style: { marginBottom: 6 } }, d.description) : null,
+									h(MarkdownBody, { text: d?.text ?? '', zone: undefined, onNavigate: () => {} }),
+								)
+							: fileRes.loading
+								? h('div', { className: 'dmo-empty' }, '读取文件…')
+								: fileRes.error
+									? h('div', { className: 'dmo-empty' }, `读取失败：${fileRes.error}`)
+									: h(
+											'div',
+											{ className: 'dmo-card' },
+											h('h3', { className: 'dmo-h2', style: { margin: '0 0 6px' } }, sel),
+											h('pre', { className: 'dmo-md', style: { whiteSpace: 'pre-wrap', fontSize: 12 } }, fileRes.data?.text ?? ''),
+										),
+					),
+				),
 			);
 		}
 
@@ -1034,7 +1078,7 @@ window.__ModuleLoader__.load({
 			// read). A null url returns an idle state — the hooks stay unconditional.
 			const onSkills = view.kind === 'zone' && view.zone === 'skills';
 			const skillLib = useApi(onSkills ? `${API}/skills?v=${tick}` : null, fixtures);
-			const hostSkill = useApi(view.kind === 'hostskill' ? `${API}/skill?name=${enc(view.name)}` : null, fixtures);
+			const hostSkill = useApi(view.kind === 'hostskill' ? `${API}/skill?name=${enc(view.name)}&kind=host` : null, fixtures);
 			const search = useApi(live.length >= 2 ? `${API}/search?q=${enc(live)}${searchZone !== 'all' ? `&zone=${searchZone}` : ''}` : null, fixtures);
 
 			const ws = overview.data?.[0];
@@ -1140,7 +1184,7 @@ window.__ModuleLoader__.load({
 					onOpenHost: (name) => setView({ kind: 'hostskill', name }),
 					filter, setFilter,
 				});
-			else if (view.kind === 'hostskill') main = h(HostSkillView, { res: hostSkill, name: view.name, onBack: back });
+			else if (view.kind === 'hostskill') main = h(HostSkillView, { data: hostSkill, name: view.name, onBack: back, sel: view.file ?? null, onSel: (f) => setView({ kind: 'hostskill', name: view.name, file: f }), fixtures });
 			else if (view.kind === 'zone') main = h(ZoneList, { zone: view.zone, rows: rowsOf(view.zone), sort, setSort, filter, setFilter, onOpen: openFile });
 			else if (fileText) main = h(Reader, { view, text: fileText, meta: fileMeta, kind, root: ws.root, onBack: back, onNavigate: navigate });
 			else main = h('div', { className: 'dmo-empty' }, fileRes.loading ? '读取文件…' : fileRes.error ? `读取失败：${fileRes.error}` : '文件为空。');
