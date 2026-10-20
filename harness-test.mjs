@@ -975,10 +975,6 @@ ok(!skBareText.includes('](../测试功能.md)'), 'no zone-less bare href surviv
 	const cSk = await T.memory_check.execute({}, exec);
 	ok(!cSk.results.some((r) => r.rule === 'R10' && r.level === 'FAIL' && r.message.includes('裸来源技能')), 'crystallized skill links resolve (no R10)');
 }
-{
-	const cSk = await T.memory_check.execute({}, exec);
-	ok(!cSk.results.some((r) => r.rule === 'R10' && r.level === 'FAIL' && r.message.includes('裸来源技能')), 'crystallized skill links resolve (no R10)');
-}
 // The frontmatter router (skill-creator lesson): description carries the WHEN.
 ok(/^---\nname: 分离延迟重启\n/m.test(skText) && /^description: "当.*时使用本技能/m.test(skText), 'skill file is frontmatter-shaped with a router description');
 ok(skText.includes('agent_created: true') && skText.includes('status: candidate'), 'frontmatter carries agent_created + status');
@@ -1023,6 +1019,103 @@ const r20 = cSk.results.filter((r) => r.rule === 'R20' || r.rule === 'R20e');
 ok(r20.some((r) => r.message.includes('状态「weird」非法')), 'R20 flags an illegal status');
 ok(r20.some((r) => r.message.includes('调用步骤')), 'R20 flags an empty procedure');
 ok(r20.some((r) => r.message.includes('何时使用')), 'R20 flags a missing trigger section');
+
+// 24) host skill bridge + scope metadata (5.17.0). The core lesson this encodes
+// is the same as 5.16.3's: a compat path MUST be exercised with the legacy
+// artifact. The bridge must be tested with a FAKE registry too — the whole
+// plugin suite runs against a ctx with no `skills` service at all, which only
+// ever exercised the degrade path.
+{
+	const bridge = await import(new URL('./src/host-skill.js', import.meta.url).href);
+	// Name grammar parity with the Host (drift guard: the real package's regex).
+	ok(bridge.isSkillName('detached-restart') && !bridge.isSkillName('Detached_Restart') && !bridge.isSkillName('分离重启'), 'isSkillName mirrors kebab-case incl. CJK rejection');
+	ok(bridge.isSkillName('a') && !bridge.isSkillName('a-') && !bridge.isSkillName('-a') && !bridge.isSkillName('a--b'), 'isSkillName rejects degenerate hyphen runs');
+	const src = await readFile(new URL('./src/host-skill.js', import.meta.url), 'utf8');
+	const hostSkillSrc = await readFile(new URL(`file:///${(process.env.DSH_INSTALL_DIR ?? 'D:/dsh').replace(/\\/g, '/')}/node_modules/@deepseek-ai/dsh-skill/lib/index.js`), 'utf8').catch(() => '');
+	const hostRe = /const SKILL_NAME = (\/[^\n]+\/);/.exec(hostSkillSrc)?.[1];
+	ok(!hostRe || hostRe === '/^[a-z0-9]+(?:-[a-z0-9]+)*$/', `grammar matches the Host (${hostRe ?? 'host unreadable — local checks above still apply'})`);
+	// parseSkillText: frontmatter quoted/array/plain values + missing block.
+	const ps = bridge.parseSkillText('---\nname: x\ndescription: "带: 冒号 的值"\nstatus: active\n---\n\n正文开始\n');
+	ok(ps.fields.description === '带: 冒号 的值' && ps.fields.status === 'active' && ps.body.startsWith('正文开始'), 'parseSkillText handles quoted scalars and body split');
+	ok(bridge.parseSkillText('# 无 frontmatter').fields.description === undefined, 'head-less text parses without throwing');
+	// End-to-end against a fake registry — the degrade path alone would have
+	// hidden every provider bug forever.
+	const providers = [];
+	const fakeRegistry = {
+		registerProvider: (make) => {
+			providers.push(make({ signal: new AbortController().signal, invalidate: () => {} }));
+			return () => providers.length === 0;
+		},
+	};
+	const fakeCtx = { get: (n) => (n === 'skills' ? fakeRegistry : undefined) };
+	const bridgeHandle = bridge.registerMemorySkillBridge(fakeCtx, { skillsDir: path.join(root, 'skills') });
+	ok(!!bridgeHandle && providers.length === 1, 'bridge registers exactly one provider on a host WITH the skill service');
+	// The publish gate end-to-end: candidate -> invisible, active+hostName ->
+	// visible, retired -> gone, and NO hostName never publishes whatever its
+	// status.
+	const pubName = '桥接技能';
+	await T.memory_skill.execute(
+		{
+			action: 'crystallize',
+			name: pubName,
+			summary: '验证宿主桥接',
+			when: '桥接回归时',
+			procedure: ['步骤一', '步骤二'],
+			verification: 'list 可见',
+			sources: ['测试功能'],
+			hostName: 'bridge-test-skill',
+			scope: 'project',
+			scopeProject: 'demo-project',
+		},
+		exec,
+	);
+	const provider = providers[0];
+	const listed = await provider.list({});
+	ok(listed.every((c) => c.name !== 'bridge-test-skill'), 'candidate is NOT published to the host');
+	await T.memory_skill.execute({ action: 'activate', name: pubName, note: '桥接回归跑通' }, exec);
+	const listed2 = await provider.list({});
+	const row = listed2.find((c) => c.name === 'bridge-test-skill');
+	ok(!!row && row.invocation.modelInvocable === true && row.source === 'custom' && row.rank > 600, 'active+hostName publishes with rank above bundled (user wins ties)');
+	const def = await provider.get(row, {});
+	ok(def?.content.includes('步骤一') && def.name === 'bridge-test-skill' && def.resourceBase?.kind === 'directory', 'provider.get loads the live body for the winning candidate');
+	await T.memory_skill.execute({ action: 'retire', name: pubName, note: '桥接测试完' }, exec);
+	const listed3 = await provider.list({});
+	ok(!listed3.some((c) => c.name === 'bridge-test-skill'), 'retire un-publishes in real time (no cache)');
+	// get() re-checks: a retire between list and get must not still load.
+	const stale = { locator: path.join(root, 'skills', `${pubName}.md`), name: 'bridge-test-skill' };
+	ok((await provider.get(stale, {})) === undefined, 'get() rejects a skill retired after discovery');
+	// No hostName => never published, even active (internal-recall-only skills).
+	const privName = '内部技能';
+	await T.memory_skill.execute(
+		{ action: 'crystallize', name: privName, summary: '不注册宿主', when: '内部用', procedure: ['一', '二'], verification: '不进宿主', sources: ['测试功能'] },
+		exec,
+	);
+	await T.memory_skill.execute({ action: 'activate', name: privName }, exec);
+	ok((await provider.list({})).every((c) => c.name !== privName), 'a skill without hostName stays out of the host catalog');
+	// Scope + whenToUse in the template (G1/G2): written, parseable, audited.
+	const privText = await readFile(path.join(root, 'skills', `${privName}.md`), 'utf8');
+	ok(privText.includes('scope: global') && privText.includes('whenToUse:'), 'template writes scope default and whenToUse');
+	ok(privText.includes('scope_project') === false, 'global scope carries no scope_project');
+	// R20s audit (skill_scope.py mirror): an OWNED skill missing scope WARNs;
+	// project without scope_project WARNs; a bad hostName WARNs (R20h).
+	await writeFile(path.join(root, 'skills', '缺作用域.md'), '---\nname: 缺作用域\ndescription: d\nagent_created: true\nstatus: candidate\n---\n\n## 何时使用\n\n- x\n\n## 调用步骤\n\n1. a\n2. b\n', 'utf8');
+	await writeFile(path.join(root, 'skills', '缺项目.md'), '---\nname: 缺项目\ndescription: d\nagent_created: true\nscope: project\nstatus: candidate\n---\n\n## 何时使用\n\n- x\n\n## 调用步骤\n\n1. a\n2. b\n', 'utf8');
+	await writeFile(path.join(root, 'skills', '坏名.md'), '---\nname: 坏名\ndescription: d\nagent_created: true\nscope: global\nhostName: Bad_Name\nstatus: candidate\n---\n\n## 何时使用\n\n- x\n\n## 调用步骤\n\n1. a\n2. b\n', 'utf8');
+	// Re-crystallize KEEPS the lifecycle (the 5.17.0 thorn): activating then
+	// improving must not silently demote.
+	const keepCry = await T.memory_skill.execute(
+		{ action: 'crystallize', name: privName, summary: '重结晶但应保持 active', when: '内部用', procedure: ['一', '二'], verification: '状态不丢', sources: ['测试功能'] },
+		exec,
+	);
+	ok(keepCry.status === 'active', 're-crystallization keeps status=active');
+	ok(keepCry.warnings.some((w) => w.includes('生命周期保留')), 'keeping the lifecycle is visible in the receipt');
+	const cBridge = await T.memory_check.execute({}, exec);
+	const r20s = cBridge.results.filter((r) => r.rule === 'R20s' || r.rule === 'R20h');
+	ok(r20s.some((r) => r.message.includes('缺作用域')), 'R20s: owned skill without scope WARNs (skill_scope.py parity)');
+	ok(r20s.some((r) => r.message.includes('缺项目') && r.message.includes('scope_project')), 'R20s: project scope without scope_project WARNs');
+	ok(r20s.some((r) => r.rule === 'R20h' && r.message.includes('坏名')), 'R20h: non-kebab hostName WARNs before the host ignores it');
+	ok(!r20s.some((r) => r.message.includes('空壳技能')), 'hand-managed (non-owned) files are not scope-WARNed');
+}
 await rm(root, { recursive: true, force: true });
 console.log(failures === 0 ? 'ALL PASS' : `${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);

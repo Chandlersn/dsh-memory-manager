@@ -19,7 +19,10 @@ discipline injected into its system prompt.
   you rediscover it (harness built-ins and the project's own scripts/APIs are NOT capabilities)
 - **Skill crystallization**: operations that keep being re-run and confirmed become callable procedures in
   `skills/` (mechanical nomination from usage signals; the model decides to crystallize; candidate → active →
-  retired, and only active skills enter recall)
+  retired, and only active skills enter recall). Each skill carries `scope` (global/project, audited by R20s);
+  an `active` skill with a kebab-case `hostName` is published through an optional bridge into the host skill
+  catalog and becomes loadable by the `skill` tool — a host without that service degrades silently and the
+  plugin's own recall keeps serving every skill
 - **Granularity gate**: iteration blocks hold distilled conclusions only; a block over 900 chars or an index
   row over 110 chars warns at write time and is named by lint rule R14
 - **Memory defence (Hindsight-borrowed)**: every plugin write path replaces credential shapes (API keys/tokens/

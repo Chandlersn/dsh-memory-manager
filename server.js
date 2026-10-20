@@ -45,6 +45,7 @@ import {
 } from './src/markdown.js';
 import { tokensOf, matchIndexRows, buildRecallMessage } from './src/recall.js';
 import { redactSecrets, scanSecrets } from './src/secrets.js';
+import { isSkillName, registerMemorySkillBridge } from './src/host-skill.js';
 import { resolveDshRoot, setHostRoot, loadHost, defineTool, createUserMessage } from './src/host.js';
 import {
 	name, inject, DEFAULTS, FUNC_TABLE_HEADING, INSIGHT_TABLE_HEADING, CAP_TABLE_HEADING,
@@ -406,6 +407,19 @@ async function runHealthCheck(root, opts) {
 				// failure quick_validate flags for a missing description field.
 				const hasDesc = /^description:\s*"?([^"\n]+)"?/m.test(stripped) || /^>\s*摘要：\s*\S/m.test(stripped);
 				if (!hasDesc) add('WARN', 'R20', `skills/${f} 缺 description/摘要：没有路由说明的技能不会被命中`);
+				// Scope audit (memory-function-org skill_scope.py, 5.17.0): an owned
+				// (agent_created) skill without scope is a cross-project recall risk —
+				// a procedure proven in project A silently fires in project B. Only
+				// owned skills WARN; hand-managed files get nothing (the script's rule).
+				const owned = /agent_created:\s*(?:true|1)/.test(stripped);
+				const scopeM = (stripped.match(/^scope:\s*([a-z]+)/m) ?? [])[1];
+				if (owned && !scopeM) add('WARN', 'R20s', `skills/${f} 自有技能缺 scope 字段：重结晶补一次（memory_skill 已支持 scope/scopeProject），global=跨项目通用 / project=须带 scope_project`);
+				else if (scopeM === 'project' && !/^scope_project:\s*\S/m.test(stripped)) add('WARN', 'R20s', `skills/${f} scope=project 但缺 scope_project：项目归属未知，路由无法判定适用性`);
+				// hostName, when present, must satisfy the Host's name grammar or the
+				// provider silently ignores the skill at discovery ("ignored: invalid
+				// skill name") — a broken promise, cheaper caught here than in logs.
+				const hostM = (stripped.match(/^hostName:\s*(\S+)/m) ?? [])[1];
+				if (hostM && !isSkillName(hostM)) add('WARN', 'R20h', `skills/${f} hostName「${hostM}」不是 kebab-case：宿主目录会忽略它，改成小写-连字符形式`);
 				if (sStatus !== 'retired') {
 					const steps = (/## 调用步骤\s*\n([\s\S]*?)(?=\n## |$)/.exec(stripped) ?? [])[1] ?? '';
 					const numbered = (steps.match(/^\s*1[.、]/gm) ?? []).length;
@@ -1076,12 +1090,30 @@ async function listMdDir(dir) {
  * fields), adapted to our one-file-per-skill layout. `status` extends the
  * frontmatter with our lifecycle; `agent_created` marks files this tool owns.
  */
+/**
+ * Skill-name grammar comes from the bridge module (one source with the host
+ * provider); the harness drift-guard compares it against the real package.
+ */
+
 function skillTemplate(name, f) {
 	return [
 		'---',
 		`name: ${name}`,
 		`description: "${f.description}"`,
+		`whenToUse: "${f.when.replace(/"/g, "'")}"`,
+		// Host interoperability (5.17.0): the filesystem provider only admits
+		// kebab-case names, and a Chinese slug can never be one. hostName is the
+		// OPTIONAL address the skill takes in the host catalog; without it the
+		// skill still works through our own recall but is never registered to
+		// ctx.skills. (isSkillName in src/host-skill.js validates it.)
+		...(f.hostName ? [`hostName: ${f.hostName}`] : []),
 		'agent_created: true',
+		// Scope metadata (memory-function-org §技能作用域元数据): an owned skill
+		// MUST carry scope — the audit WARNs without it, and cross-project recall
+		// has no way to tell "applies everywhere" from "only valid in project A".
+		`scope: ${f.scope}`,
+		...(f.scope === 'project' && f.scopeProject ? [`scope_project: ${f.scopeProject}`] : []),
+		...(f.scopeNotes ? [`scope_notes: "${f.scopeNotes.replace(/"/g, "'")}"`] : []),
 		`status: ${f.status}`,
 		`created: ${f.date}`,
 		`sources: [${f.srcs.join(', ')}]`,
@@ -1319,11 +1351,21 @@ function memoryCapabilityTool(opts) {
  * → retired (environment changed; file kept as history). Borrowed from MemOS's
  * skill tier, adapted to the file discipline.
  */
-function memorySkillTool(opts) {
+function memorySkillTool(opts, hooks = {}) {
+	// After any write that can change what the HOST catalog should contain
+	// (crystallize / activate / retire), nudge the bridge to invalidate. A
+	// failure here must never break the tool receipt.
+	const publish = () => {
+		try {
+			hooks.onSkillChange?.();
+		} catch {
+			/* host refresh is best-effort; the disk is the source of truth */
+		}
+	};
 	return defineTool({
 		name: 'memory_skill',
 		description:
-			'Crystallize a REPEATED, CONFIRMED operation into a callable procedure under skills/ (the missing “use” step of the data flow: record → distill → promote → display → USE). actions: candidates = which areas the usage signals nominate (pure aggregation: >=6 uses, >=1 confirmation, correction rate <20%, not already crystallized) — call it periodically and decide; crystallize = write skills/<name>.md from an area\'s proven steps (YOU write the procedure, the tool files and indexes it, status=candidate); activate/retire = lifecycle transitions (activate only after the procedure was actually followed successfully; retire when the environment changed, the file stays as history); list/read = what skills exist / full text. A skill file answers “do it exactly like THIS” — distinct from capabilities/ (“what tool exists”) and insights/ (“what principle holds”).',
+			'Crystallize a REPEATED, CONFIRMED operation into a callable procedure under skills/ (the missing “use” step of the data flow: record → distill → promote → display → USE). actions: candidates = which areas the usage signals nominate (pure aggregation: >=6 uses, >=1 confirmation, correction rate <20%, not already crystallized) — call it periodically and decide; crystallize = write skills/<name>.md from an area\'s proven steps (YOU write the procedure, the tool files and indexes it, status=candidate); activate/retire = lifecycle transitions (activate only after the procedure was actually followed successfully; retire when the environment changed, the file stays as history); list/read = what skills exist / full text. A skill file answers “do it exactly like THIS” — distinct from capabilities/ (“what tool exists”) and insights/ (“what principle holds”). A crystallized skill carries scope (global/project) and, with a kebab-case hostName, is published to the host skill catalog once active so the `skill` tool can load it directly.',
 		parameters: {
 			action: { type: 'string', required: true, enum: ['candidates', 'crystallize', 'activate', 'retire', 'list', 'read'], description: 'candidates=看提名；crystallize=结晶一份技能；activate/retire=生命周期；list/read=查。' },
 			name: { type: 'string', description: 'crystallize/activate/retire/read 必填：技能名（文件名 slug）。' },
@@ -1333,6 +1375,10 @@ function memorySkillTool(opts) {
 			pitfalls: { type: 'string', description: 'crystallize 可选：前提与踩过的坑（一段话）。' },
 			verification: { type: 'string', description: 'crystallize 必填：怎么算执行成功（判据，一句话）。' },
 			sources: { type: 'array', description: 'crystallize 必填：证据来源（functions/xxx.md 等，提名/召回据此关联），items: { type: string }。', items: { type: 'string' } },
+			scope: { type: 'string', enum: ['global', 'project'], description: '可选：技能作用域（原 memory-function-org 纪律：自有技能必须带 scope）。缺省 global=跨项目通用；project=只适用于某一项目，此时应同时给 scopeProject。' },
+			scopeProject: { type: 'string', description: 'scope=project 时必填：项目目录名/key（如 toolbox-login），召回与路由据此判适用性。' },
+			scopeNotes: { type: 'string', description: '可选：一句话说明适用条件（何时在哪些项目用）。' },
+			hostName: { type: 'string', description: '可选：本技能在宿主 skill 体系里的注册名（kebab-case，如 detached-restart）。给了就随 active 进宿主 ctx.skills 目录、被 skill 工具直接调用；不给则只走本插件召回。' },
 			note: { type: 'string', description: 'activate/retire 可选：一句话依据（哪次成功验证 / 环境怎么变了）。' },
 		},
 		output: {
@@ -1429,6 +1475,9 @@ function memorySkillTool(opts) {
 				const row = `| [${item.name}](${SKILL_DIR}/${item.name}.md) | ${item.summary} | ${item.status} |`;
 				indexText = upsertIndexRow(indexText, SKILL_TABLE_HEADING, SKILL_TABLE_HEADER, item.name, row);
 				await writeText(indexPath, indexText);
+				// Every write that lands (crystallize/activate/retire all funnel here)
+				// refreshes the host catalog — one choke point, no per-action miss.
+				publish();
 			};
 			if (args.action === 'candidates') {
 				const items = summarizeUsage(await readUsage(root));
@@ -1480,8 +1529,23 @@ function memorySkillTool(opts) {
 				const date = localDateStr();
 				const existing = await readIfExists(p);
 				const created = existing === undefined;
-				if (existing !== undefined) {
-					warnings.push('技能已存在：本次为整体重结晶（覆盖正文与程序），使用记录已并入新文件头部，旧版演进靠 git/人工留存');
+				// Scope defaults to global; a project-bound skill must SAY so (the
+				// origin-skill audit WARNs on owned skills without scope — R20 mirrors
+				// it, so defaults must be written down, never left implied).
+				const scope = args.scope === 'project' ? 'project' : 'global';
+				const scopeProject = oneLine(args.scopeProject ?? '');
+				if (scope === 'project' && !scopeProject) {
+					warnings.push('scope=project 但没给 scopeProject：项目归属未知，路由/审计会按未知作用域处理（补 scopeProject=<项目目录名>）');
+				}
+				const scopeNotes = oneLine(args.scopeNotes ?? '');
+				const hostName = oneLine(args.hostName ?? '').toLowerCase();
+				if (hostName && !isSkillName(hostName)) throw new Error(`hostName 必须是 kebab-case（宿主 isSkillName 语法 ^[a-z0-9]+(-[a-z0-9]+)*$），收到：${hostName}`);
+				// Re-crystallization KEEPS the lifecycle: activating then improving a
+				// skill must not silently demote it to candidate (the status line and
+				// the ⭐ recall gate both read it).
+				const priorStatus = created ? 'candidate' : ((existing.match(/^status:\s*([a-z]+)/m) ?? existing.match(/^> 状态：([a-z]+)/m) ?? [])[1] ?? 'candidate');
+				if (!created) {
+					warnings.push(`技能已存在：本次为整体重结晶（覆盖正文与程序），使用记录已并入新文件头部，生命周期保留为 ${priorStatus}，旧版演进靠 git/人工留存`);
 				}
 				// Router field (the skill-creator lesson): the frontmatter description
 				// decides WHEN the skill fires, so it embeds the trigger, third-person.
@@ -1503,12 +1567,16 @@ function memorySkillTool(opts) {
 					priorUse = (rec ?? '').split('\n').map((l) => l.trim()).filter((l) => l.startsWith('- '));
 				}
 				const body = skillTemplate(name, {
-					status: 'candidate',
+					status: priorStatus,
 					date,
 					srcs,
 					description,
 					summary,
 					when,
+					scope,
+					scopeProject,
+					scopeNotes,
+					hostName,
 					steps,
 					pitfalls: oneLine(args.pitfalls ?? ''),
 					verification,
@@ -1518,9 +1586,9 @@ function memorySkillTool(opts) {
 				await mkdir(dir, { recursive: true });
 				await writeText(p, body);
 				const st = await stat(p);
-				const item = { name, status: 'candidate', summary, updated: st.mtime.toISOString() };
+				const item = { name, status: priorStatus, summary, updated: st.mtime.toISOString() };
 				await syncIndexRow(item);
-				return { action: 'crystallize', file: p, created, status: 'candidate', items: [item], warnings };
+				return { action: 'crystallize', file: p, created, status: priorStatus, items: [item], warnings };
 			}
 			if (args.action === 'activate' || args.action === 'retire') {
 				const text = await readIfExists(p);
@@ -2483,7 +2551,7 @@ const DISCIPLINE_TEXT = [
 	'- **第 1 层 · 功能域（memory_write）**：从每日原始记录中**归纳汲取**功能划分——一次实质工作 = 一个 functions/<功能域>.md 迭代块（蒸馏结论：动因/改动/判据/待观察 各一句）。`summary` 是本块的一句话概括；功能域该新建还是并入既有的，判断依据就是每日记录里反复出现的主题。',
 	'- **第 2 层 · 创新思想（memory_insight）**：从功能划分中**再提取**可迁移原则（会重套的、不绑定单一功能机制的），回链来源功能域；取代旧思想传 `supersedes`。',
 	'- **第 3 层 · 索引与总览（memory_index）**：**整合层**——功能域稳定后（有 ≥2 个迭代块，或用户可感知为独立主题时）用 memory_index 把它收进 MEMORY.md 索引；索引行摘要 = 从各迭代块的概括中提炼的"这个功能是什么"。索引是展示与检索的派生物，不与单次写入强绑。',
-	'- **第 4 层 · 技能（memory_skill）**：**使用环收口**——一个被反复重跑且被确认的操作，应结晶为 skills/<技能>.md 的可调用程序（何时使用/步骤/坑/验证），下次命中直接照做，不再现场推导。何时结晶：`memory_skill(candidates)` 给出机械提名（≥6 次使用 + ≥1 次确认 + 纠正率<20%，来自 .usage.jsonl），**提名≠结晶**——是否成文由你判断证据是否连贯；生命周期 candidate→active（真实任务照做成功过才转正）→retired（环境变了留档）。召回只放行 active 技能并标注 ⭐；技能=怎么做（程序），capability=有什么工具，insight=什么原则——三者别混。',
+	'- **第 4 层 · 技能（memory_skill）**：**使用环收口**——一个被反复重跑且被确认的操作，应结晶为 skills/<技能>.md 的可调用程序（何时使用/步骤/坑/验证），下次命中直接照做，不再现场推导。何时结晶：`memory_skill(candidates)` 给出机械提名（≥6 次使用 + ≥1 次确认 + 纠正率<20%，来自 .usage.jsonl），**提名≠结晶**——是否成文由你判断证据是否连贯；生命周期 candidate→active（真实任务照做成功过才转正）→retired（环境变了留档）。召回只放行 active 技能并标注 ⭐；技能=怎么做（程序），capability=有什么工具，insight=什么原则——三者别混。结晶时标 `scope`（global=跨项目通用 / project=须带 scopeProject=<项目名>），跨项目复用前先核对作用域；想让宿主 `skill` 工具直接调用，给一个 kebab-case 的 `hostName`（active 后自动发布进宿主目录，中文 slug 宿主不认）。',
 	'- **层级定义（道/法/术/器，按普适程度分）**：**器**=指向内容的指针与检索面（MEMORY.md 双表+面板）；**术**=一个功能域"怎么做"的完整迭代史（functions/，判据"我会不会再跑一次这个操作"）；**法**=从具体操作提炼的可套原则（insights/，判据"换个项目/领域还成立吗"）；**道**=跨域都必须遵守的约束（MEMORY.md 共识区，判据"违反了会不会出事故"）。**放错层的三个信号**：① 在功能域里翻到普适断言 → 该升到 insights；② 同一句话想写进两个功能域 → 该升到 insights；③ 一条"原则"每次都要附带操作步骤才能用 → 该降回 functions。**反例**：索引行里写推导过程；迭代块里写"以后所有项目都应该……"；原则写成"1. 先运行 X；2. 再执行 Y"；把某次技术选型记成共识。',
 	'- **先查后写**：涉及"项目里怎么做 / 为什么这么做 / 环境常量"时，先 `memory_read kind=index`（行内摘要判断相关性，再打开对应文件）；只记得片段、说不清在哪个域或哪天时用 `memory_search`（全库排序检索，返回命中的分区/文件/行号/小节/片段）。**动手前先查 `memory_capability`**：外部 CLI / MCP / 已装软件都在 `capabilities/` 台账里，能省下一整轮摸索。不要凭空重推已有结论。',
 	'- **用到的外部工具要登记**：只有**项目外部**的工具才进台账——第三方 CLI / MCP / 已装软件，且调用它需要摸索（确切命令、前提、踩过的坑）。不登记：harness 自带工具（shell/文件/网络等，模型本来就会）、本项目自己的脚本与 API（那是 functions/ 迭代块）。台账按工具一文件、就地更新——**不是流水账，是索引**。下次同类任务先 `action=list`，不要重新摸索同一个工具。',
@@ -2719,8 +2787,16 @@ export function apply(ctx, config) {
 		ctx.tools.register(memoryCheckTool(opts)),
 		ctx.tools.register(memoryUsageTool(opts)),
 		ctx.tools.register(memoryFederationTool(opts)),
-		ctx.tools.register(memorySkillTool(opts)),
 	];
+	// Host skill bridge (5.17.0): publish active+hostName skills into ctx.skills
+	// so the host `skill` tool can load them. OPTIONAL — a host without the
+	// skill registry (ctx.get returns nothing usable) skips the bridge entirely
+	// and our own pre-step recall keeps serving all skills. inject deliberately
+	// does NOT list 'skills': waiting on it would break hosts that never mount
+	// dsh-skill, and the bridge needs no startup guarantee (it reads disk on
+	// every list()).
+	const skillBridge = registerMemorySkillBridge(ctx, { skillsDir: path.join(resolveRoot(opts), SKILL_DIR) });
+	disposers.push(ctx.tools.register(memorySkillTool(opts, skillBridge ? { onSkillChange: skillBridge.invalidate } : {})));
 
 	// Proactive recall: on every proposed step, match the batch's user text
 	// against the memory index and prepend one recall message when the overlap
