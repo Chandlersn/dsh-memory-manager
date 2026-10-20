@@ -313,6 +313,23 @@ ok(mdView.includes('const x = 1;'), 'the code body renders');
 ok(count(mdView, 'dmo-table-wrap') === 1, 'a table renders inside its own scroll box');
 ok(count(mdView, 'class="dmo-table"') === 1 && mdView.includes('列一') && mdView.includes('列二'), 'the table keeps its header cells');
 ok(mdView.includes('odd'), 'zebra striping marks alternate rows');
+// Heading levels 1-4 must ALL render as elements, never as literal hashes: a
+// body whose sections are `## `-style printed raw markdown until this level
+// range was covered (found on the real page, hence the `## ` body here).
+const hFixture = {
+	'/api/memory-org/file?zone=functions&name=alpha.md': {
+		data: { name: 'alpha.md', text: '## 程序体（唯一来源）\n\n正文行。\n\n### 三级\n\n#### 四级\n' },
+		loading: false,
+		error: null,
+	},
+};
+const hView = serialize(FakeReact.createElement(MemoryPanel, {
+	__apiFixtures: { ...fixtures, ...hFixture },
+	initialView: { kind: 'file', zone: 'functions', name: 'alpha.md' },
+}));
+ok(hView.includes('程序体（唯一来源）') && !hView.includes('## 程序体'), 'a ## heading renders as an element, not literal hashes');
+ok(hView.includes('三级') && !hView.includes('### 三级'), 'a ### heading renders as an element');
+ok(hView.includes('四级') && !hView.includes('#### 四级'), 'a #### heading renders as an element');
 
 // --- reader: long function file folds to the newest block -------------------
 // Sections render newest-first (the file is append-only oldest-first; the

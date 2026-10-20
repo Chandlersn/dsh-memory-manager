@@ -139,7 +139,7 @@ window.__ModuleLoader__.load({
 .dmo-md p{margin:6px 0}
 .dmo-md ul{margin:6px 0;padding-left:20px}
 .dmo-md li{margin:2px 0}
-.dmo-md h3,.dmo-md h4{margin:10px 0 4px;font-size:14px;font-weight:600}
+.dmo-md h3,.dmo-md h4,.dmo-md h5{margin:10px 0 4px;font-size:14px;font-weight:600}
 .dmo-md blockquote{margin:6px 0;padding:2px 0 2px 10px;border-left:2px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary)}
 .dmo-md pre{background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm);padding:8px;overflow-x:auto;font-family:var(--ds-font-family-code,ui-monospace,monospace);font-size:12px;line-height:18px}
 .dmo-md code{background:var(--dsw-alias-bg-layer-2);border-radius:var(--dsw-radius-sm);padding:0 3px;font-family:var(--ds-font-family-code,ui-monospace,monospace);font-size:12px}
@@ -508,9 +508,14 @@ window.__ModuleLoader__.load({
 					blocks.push(h('ul', { key: `b${k++}` }, items.map((t, x) => h('li', { key: x }, inline(t, `i${x}`, zone, onNavigate)))));
 					continue;
 				}
-				if (/^#{3,4}\s/.test(line)) {
-					const level = line.match(/^#+/)[0].length >= 4 ? 'h4' : 'h3';
-					blocks.push(h(level, { key: `b${k++}` }, inline(line.replace(/^#+\s*/, ''), `h${k}`, zone, onNavigate)));
+				// Headings at EVERY level (1-4). The 3/4-only pattern left `##`
+				// falling through to the paragraph branch, where the hashes print
+				// as literal text — a whole class of stored bodies (skills whose
+				// sections are `## 程序体`-style) rendered as raw markdown.
+				if (/^#{1,4}\s/.test(line)) {
+					const level = line.match(/^#+/)[0].length;
+					const tag = level <= 2 ? 'h3' : level === 3 ? 'h4' : 'h5';
+					blocks.push(h(tag, { key: `b${k++}` }, inline(line.replace(/^#+\s*/, ''), `h${k}`, zone, onNavigate)));
 					i++;
 					continue;
 				}
@@ -526,7 +531,7 @@ window.__ModuleLoader__.load({
 					continue;
 				}
 				const buf = [];
-				while (i < lines.length && lines[i].trim() !== '' && !/^(\||\s*[-*]\s|#{3,4}\s|>|```|-{3,}$)/.test(lines[i])) buf.push(lines[i++]);
+				while (i < lines.length && lines[i].trim() !== '' && !/^(\||\s*[-*]\s|#{1,4}\s|>|```|-{3,}$)/.test(lines[i])) buf.push(lines[i++]);
 				blocks.push(h('p', { key: `b${k++}` }, inline(buf.join(' '), `p${k}`, zone, onNavigate)));
 			}
 			return h('div', { className: 'dmo-md' }, blocks);
