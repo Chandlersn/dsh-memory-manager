@@ -11,6 +11,15 @@ export const DEFAULTS = {
 	maxIndexHardBytes: 15 * 1024, // 索引硬上限（达到即拒绝写入）
 	maxFunctionBytes: 30 * 1024, // 单个功能文件上限
 	newFeatureGraceDays: 3, // TEMP 冷记忆宽限期：最近改动过的不报冷
+	// Foreground recall budget (MemOS borrow ⑤): config may shorten it, never
+	// extend past this ceiling; a timeout injects nothing rather than a stale or
+	// partial recall.
+	recallTimeoutMs: 3000,
+	// Passive capture of user turns into the RAW daily layer (MemOS borrow ⑥).
+	// OFF by default: the raw layer belongs to the model, and logging every turn
+	// is noise (and a privacy question). Captured lines are truncated.
+	captureUserTurns: false,
+	captureMaxChars: 160,
 };
 
 export const FUNC_TABLE_HEADING = '## 功能模块索引';

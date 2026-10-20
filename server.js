@@ -44,6 +44,15 @@ import {
 	upsertIndexRow, appendUnderHeading, resolveOpenItems, refreshSummarySection, replaceSection,
 } from './src/markdown.js';
 import { tokensOf, matchIndexRows, buildRecallMessage } from './src/recall.js';
+import { resolveDshRoot, setHostRoot, loadHost, defineTool, createUserMessage } from './src/host.js';
+import {
+	name, inject, DEFAULTS, FUNC_TABLE_HEADING, INSIGHT_TABLE_HEADING, CAP_TABLE_HEADING,
+	CAP_TABLE_HEADER, FUNC_TABLE_HEADER, INSIGHT_TABLE_HEADER, SKILL_DIR, SKILL_STATUSES,
+	SKILL_TABLE_HEADING, SKILL_TABLE_HEADER, SKILL_NOMINATE, CAP_DIR, FED_TABLE_HEADING,
+	FED_TABLE_HEADER, FED_CONSENSUS_HEADING, DAILY_SECTION, DAILY_OPEN_SECTION, RESULT_LABEL,
+	GUARD_MARK, GUARD_LINE, MAX_BLOCK_CHARS, MAX_ROW_SUMMARY_CHARS, MAX_PRINCIPLE_CHARS,
+	MAX_CONSENSUS_CHARS, CONSENSUS_HEADING,
+} from './src/constants.js';
 
 // ---------------------------------------------------------------------------
 // locating the Host installation
@@ -70,105 +79,12 @@ import { tokensOf, matchIndexRows, buildRecallMessage } from './src/recall.js';
  *   6. resolving the Host package from this file's own tree (regular installs)
  * A candidate counts only when it really contains the Host package.
  */
-const HOST_MARKER = path.join('node_modules', '@deepseek-ai', 'dsh-tools', 'lib', 'index.js');
+// Host discovery + lazy Host binding now live in src/host.js (imported at the
+// top of this file).
 
-function looksLikeDshRoot(dir) {
-	return Boolean(dir) && existsSync(path.join(dir, HOST_MARKER));
-}
 
-function walkUpForDshRoot(seed) {
-	if (!seed) return undefined;
-	let dir = path.resolve(seed);
-	if (!existsSync(dir)) dir = path.dirname(dir);
-	for (;;) {
-		if (looksLikeDshRoot(dir)) return dir;
-		const parent = path.dirname(dir);
-		if (parent === dir) return undefined;
-		dir = parent;
-	}
-}
-
-function resolveFromOwnTree() {
-	try {
-		const resolved = createRequire(import.meta.url).resolve('@deepseek-ai/dsh-tools/lib/index.js');
-		return walkUpForDshRoot(resolved);
-	} catch {
-		return undefined;
-	}
-}
-
-function resolveDshRoot(configured) {
-	const candidates = [
-		typeof configured === 'string' && configured.trim() ? configured.trim() : undefined,
-		process.env.DSH_INSTALL_DIR,
-		process.env.DSH_ROOT,
-		walkUpForDshRoot(process.argv[1]),
-		walkUpForDshRoot(process.cwd()),
-		walkUpForDshRoot(process.env.DSH_PROFILE_DIR),
-		resolveFromOwnTree(),
-	];
-	for (const c of candidates) if (looksLikeDshRoot(c)) return path.resolve(c);
-	throw new Error(
-		'cannot locate the DSH installation (no node_modules/@deepseek-ai/dsh-tools found): ' +
-			'set DSH_INSTALL_DIR to the harness install directory, or pass `dshRoot` in the plugin config',
-	);
-}
-
-let hostRootOverride;
-let hostModules;
-/** Load (and memoize) the Host packages from the resolved install root. */
-function loadHost() {
-	if (!hostModules) {
-		const root = resolveDshRoot(hostRootOverride);
-		const req = (pkg, sub) => {
-			const file = path.join(root, 'node_modules', pkg, sub);
-			try {
-				return createRequire(file)(file);
-			} catch (err) {
-				throw new Error(`cannot load ${pkg} from the DSH installation (${root}): ${err?.message ?? err}`);
-			}
-		};
-		hostModules = {
-			root,
-			defineTool: req('@deepseek-ai/dsh-tools', 'lib/index.js').defineTool,
-			createUserMessage: req('@deepseek-ai/dsh-llm', 'lib/index.js').createUserMessage,
-		};
-	}
-	return hostModules;
-}
-
-// Host helpers, bound lazily so resolution happens at apply() time (when the
-// plugin config is known) and never at module-import time (so tests can import
-// this file without a host installation on the machine).
-function defineTool(...args) {
-	return loadHost().defineTool(...args);
-}
-function createUserMessage(...args) {
-	return loadHost().createUserMessage(...args);
-}
-
-const name = 'memory-manager';
-const inject = ['tools', 'systemPrompt', 'webServer'];
-
-const DEFAULTS = {
-	maxIndexBytes: 10 * 1024, // 索引舒适线
-	maxIndexHardBytes: 15 * 1024, // 索引硬上限（达到即拒绝写入）
-	maxFunctionBytes: 30 * 1024, // 单个功能文件上限
-	newFeatureGraceDays: 3, // TEMP 冷记忆宽限期：最近改动过的不报冷
-	// MemOS borrow ⑤: every non-empty user turn does one recall under an
-	// ABSOLUTE foreground budget. Local files are fast, but the budget is a
-	// discipline — recall must never become the reason a step feels slow, and
-	// on timeout it degrades to no recall (never a partial/stale injection).
-	recallTimeoutMs: 3000,
-	// MemOS borrow ⑥: passive capture of the user's own words into the RAW daily
-	// layer. OFF by default — the raw layer is the model's to write, and blind
-	// logging of every turn is noise (and a privacy question). Opt in with
-	// `captureUserTurns: true`; each turn is truncated and de-duplicated.
-	captureUserTurns: false,
-	// Hard ceiling per captured line: a raw-layer note is a breadcrumb, not a
-	// transcript. Long prompts are cut so the daily file stays readable.
-	captureMaxChars: 160,
-};
+// Tool identity + every shared constant (table headings, size caps, lifecycle
+// vocabularies, DEFAULTS) live in src/constants.js — imported at the top.
 
 /**
  * Build the passive-capture line for one user turn, or null when it should not
@@ -186,33 +102,6 @@ function captureLineFor(userText, todayLogText, { enabled = false, maxChars = DE
 	return stamp;
 }
 
-const FUNC_TABLE_HEADING = '## 功能模块索引';
-const INSIGHT_TABLE_HEADING = '## 创新优化思想索引';
-const CAP_TABLE_HEADING = '## 能力台账（可用工具 / MCP / CLI）';
-const CAP_TABLE_HEADER = '| 能力 | 一句话用途 | 台账 | 类型 |';
-const FUNC_TABLE_HEADER = '| 功能域摘要 | 一句话状态 / 待验证 | 过程链接 | 摘要 |';
-const INSIGHT_TABLE_HEADER = '| 思想主题 | 一句话内涵 / 解决的权衡 | 思想内容 | 相关（来源功能） |';
-// Daily-log structure is no longer imposed: the raw layer is free-form, so the
-// plugin cannot assume a fixed '今日功能线索' heading. resolveOpenItems scans the
-// whole file for still-open (non-✅) lines referencing the feature instead.
-const DAILY_SECTION = '## 今日功能线索'; // legacy template heading, kept for old logs
-const DAILY_OPEN_SECTION = '## 今日待观察'; // legacy template heading
-const RESULT_LABEL = { done: '完成', reverted: '已回滚', pending: '进行中' };
-// Guard marker: a low-frequency, high-value memory that must never be judged
-// cold just because it is not written to often (the "守护型" channel).
-const GUARD_MARK = '🛡 守护型';
-const GUARD_LINE = `> ${GUARD_MARK}：低频高价值，不做冷记忆判定（memory_write guard=true 写入，删除该行即恢复判定）。`;
-
-// ---------------------------------------------------------------------------
-// usage signals — the data that lets the memory sort itself
-// ---------------------------------------------------------------------------
-//
-// The index/insight layer is written by the model; which rows are actually USED
-// is a different signal, and the plugin never captured it. Every recall
-// injection, explicit file read, correction and positive confirmation appends
-// one line here, and memory_check / memory_usage turn those lines into layer
-// suggestions. Kept as a dot-file so no zone listing, search or lint sees it.
-
 // (usage signals now live in src/usage.js — imported above)
 
 // ---------------------------------------------------------------------------
@@ -221,20 +110,6 @@ const GUARD_LINE = `> ${GUARD_MARK}：低频高价值，不做冷记忆判定（
 
 const pad2 = (n) => String(n).padStart(2, '0');
 const byteLen = (s) => Buffer.byteLength(s, 'utf8');
-/**
- * Distillation limits. 原 skill 的数据流是"过程 → 蒸馏结论"：`functions/` 存
- * 具体环节精髓（动因 / 根因 / 改动结论 / 判据 / 待观察，各一句），逐条实现清单、
- * 代码级枚举、调试经过都不属于记忆。超过这个长度的块在写入时告警，并由体检
- * R14 复查——机制上保证系统会收缩，而不只是增长。
- */
-const MAX_BLOCK_CHARS = 900;
-/** 索引行摘要必须是一句话；超过即视为把迭代细节塞进了索引（R14）。 */
-const MAX_ROW_SUMMARY_CHARS = 110;
-/** 思想原则是一句判断；超过就要压（法层「不可降级」闸门的机械化近似）。 */
-const MAX_PRINCIPLE_CHARS = 200;
-/** 共识条目是约束，不是论述：一条说清一条。 */
-const MAX_CONSENSUS_CHARS = 150;
-const CONSENSUS_HEADING = '## 决策共识 / 规范';
 
 // ---------------------------------------------------------------------------
 // canonical file templates — now in src/markdown.js
@@ -779,10 +654,7 @@ function memorySearchTool(opts) {
 // ---------------------------------------------------------------------------
 // federation (three-tier mode): project truth sources -> federation layer -> global
 // ---------------------------------------------------------------------------
-
-const FED_TABLE_HEADING = '## 项目索引（联邦层）';
-const FED_TABLE_HEADER = '| 项目 | 记忆规模 | 来源副本 |';
-const FED_CONSENSUS_HEADING = '## 跨项目共识';
+// (FED_* table constants live in src/constants.js)
 
 /** Read + validate the federation config; throws with an explicit fix-it message. */
 function federationConfig(opts) {
@@ -1100,29 +972,20 @@ async function listMdDir(dir) {
 // MCP server or local tool exists for this job, and how do I call it" — so every
 // session rediscovers it. This zone is a ledger of capability: one file per
 // tool/server, with the exact invocation, the prerequisites, and what it solved.
-
-const CAP_DIR = 'capabilities';
+// (CAP_DIR lives in src/constants.js)
 
 // ---------------------------------------------------------------------------
 // skills — the crystallization layer (borrowed from MemOS's skill tier, adapted)
 // ---------------------------------------------------------------------------
 //
-// The four-layer data flow records / distills / promotes / displays, but never
-// CLOSED the loop into "use": an operation that keeps being re-run and keeps
-// being confirmed should become a directly callable procedure. MemOS does this
-// with an async LLM pipeline (L1→L2→L3→Skill with V/α/gain math); we keep the
-// file discipline instead — MECHANICAL NOMINATION (pure aggregation of the
-// usage signals we already collect) + A JUDGEMENT CRYSTALLIZES (only the model
-// in context knows whether the evidence is coherent enough to write a real
-// procedure). Statuses mirror MemOS's lifecycle: candidate → active → retired.
-const SKILL_DIR = 'skills';
-const SKILL_STATUSES = ['candidate', 'active', 'retired'];
-const SKILL_TABLE_HEADING = '## 技能台账（可复用操作程序）';
-const SKILL_TABLE_HEADER = '| 技能 | 一句话用途 | 台账 | 状态 |';
-// Nomination thresholds (the mechanical half of MemOS's support/gain floors,
-// fed by .usage.jsonl): an area earns a look when it has been USED repeatedly,
-// CONFIRMED at least once, and is not mostly corrections.
-const SKILL_NOMINATE = { minUses: 6, minPositives: 1, maxBadRate: 0.2 };
+// The data flow records / distills / promotes / displays, but never CLOSED the
+// loop into "use": an operation that keeps being re-run and keeps being confirmed
+// should become a directly callable procedure. MemOS does this with an async LLM
+// pipeline (L1→L2→L3→Skill with V/α/gain math); we keep the file discipline —
+// MECHANICAL NOMINATION (pure aggregation of the usage signals we already
+// collect) + A JUDGEMENT CRYSTALLIZES (only the model in context knows whether
+// the evidence is coherent enough to write a real procedure).
+// (SKILL_* constants live in src/constants.js)
 
 /**
  * Skill file format — the frontmatter idea is borrowed from Anthropic/lantern
@@ -2661,7 +2524,7 @@ export function apply(ctx, config) {
 	// The Host install may be pointed at explicitly; otherwise it is discovered
 	// (env / CLI entry / cwd / profile). Loading eagerly fails fast with an
 	// actionable message instead of breaking the first tool call.
-	hostRootOverride = typeof config?.dshRoot === 'string' && config.dshRoot.trim() ? config.dshRoot.trim() : undefined;
+	setHostRoot(typeof config?.dshRoot === 'string' && config.dshRoot.trim() ? config.dshRoot.trim() : undefined);
 	loadHost();
 
 	const opts = {

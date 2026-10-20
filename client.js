@@ -38,10 +38,11 @@ window.__ModuleLoader__.load({
 			{ key: 'functions', label: '功能', icon: '⬡' },
 			{ key: 'insights', label: '思想', icon: '✦' },
 			{ key: 'capabilities', label: '能力', icon: '⚒' },
+			{ key: 'skills', label: '技能', icon: '⌘' },
 			{ key: 'daily', label: '每日', icon: '🕘' },
 		];
-		const ZONE_LABEL = { functions: '功能', insights: '思想', capabilities: '能力', daily: '每日', '': '索引' };
-		const ZONE_DIR = { functions: 'functions', insights: 'insights', capabilities: 'capabilities', daily: '' };
+		const ZONE_LABEL = { functions: '功能', insights: '思想', capabilities: '能力', skills: '技能', daily: '每日', '': '索引' };
+		const ZONE_DIR = { functions: 'functions', insights: 'insights', capabilities: 'capabilities', skills: 'skills', daily: '' };
 
 		const css = `
 /* Host-aligned visuals: metrics and tokens are copied from the shipped primitives
@@ -184,17 +185,26 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
-		 * Read the two navigation tables out of MEMORY.md: slug -> one-line
-		 * summary. This is what makes a zone list readable without opening every
-		 * file, and it works from the index the panel already fetches.
+		 * Read the navigation tables out of MEMORY.md: slug -> one-line summary.
+		 * This is what makes a zone list readable without opening every file, and
+		 * it works from the index the panel already fetches. Tables: functions /
+		 * insights / capabilities / skills.
 		 */
 		function parseIndexTables(text) {
-			const out = { functions: {}, insights: {}, capabilities: {} };
+			const out = { functions: {}, insights: {}, capabilities: {}, skills: {} };
 			let zone = null;
 			for (const raw of String(text ?? '').split('\n')) {
 				const line = raw.trim();
 				if (line.startsWith('## ')) {
-					zone = line.includes('功能模块') ? 'functions' : line.includes('思想') ? 'insights' : line.includes('能力') ? 'capabilities' : null;
+					zone = line.includes('功能模块')
+						? 'functions'
+						: line.includes('思想')
+							? 'insights'
+							: line.includes('技能')
+								? 'skills'
+								: line.includes('能力')
+									? 'capabilities'
+									: null;
 					continue;
 				}
 				if (!zone || !line.startsWith('|')) continue;
@@ -202,7 +212,7 @@ window.__ModuleLoader__.load({
 				if (cells.length < 3) continue;
 				if (cells.every((c) => /^[-: ]*$/.test(c))) continue;
 				const slug = plain(cells[0]);
-				if (!slug || /^(功能域|思想主题|主题|功能域摘要|能力)/.test(slug)) continue;
+				if (!slug || /^(功能域|思想主题|主题|功能域摘要|能力|技能)/.test(slug)) continue;
 				const href = cells.map((c) => /\]\(([^)]+\.md)\)/.exec(c)?.[1]).find(Boolean) ?? '';
 				out[zone][slug] = { summary: plain(cells[1] ?? ''), href };
 			}
@@ -251,7 +261,7 @@ window.__ModuleLoader__.load({
 			const small = String(text ?? '').length < 4000;
 			sections.forEach((s, i) => {
 				if (kind === 'functions') open[i] = small || i === 0; // reversed: index 0 is the newest
-				else if (kind === 'index') open[i] = /功能模块|思想|能力/.test(s.heading);
+				else if (kind === 'index') open[i] = /功能模块|思想|能力|技能/.test(s.heading);
 				else open[i] = true;
 			});
 			return open;
@@ -463,7 +473,7 @@ window.__ModuleLoader__.load({
 		/** MEMORY.md navigation tables: each row opens its target file. */
 		function IndexTables({ text, onNavigate }) {
 			const { sections } = splitSections(text);
-			const wanted = sections.filter((s) => /功能模块|思想|能力/.test(s.heading));
+			const wanted = sections.filter((s) => /功能模块|思想|能力|技能/.test(s.heading));
 			if (!wanted.length) return null;
 			return h(
 				'div',
@@ -636,7 +646,7 @@ window.__ModuleLoader__.load({
 							'div',
 							{ style: { display: 'flex', flexDirection: 'column', gap: 6 } },
 							sections
-								.filter((s) => !/功能模块|思想|能力/.test(s.heading))
+								.filter((s) => !/功能模块|思想|能力|技能/.test(s.heading))
 								.map((s, i) => h(Card, { key: `x${i}`, tight: true }, h('h3', { className: 'dmo-h2' }, s.heading), h(MarkdownBody, { text: s.body, zone: '', onNavigate }))),
 						)
 					: h(
@@ -822,6 +832,7 @@ window.__ModuleLoader__.load({
 				{ key: 'functions', label: '功能' },
 				{ key: 'insights', label: '思想' },
 				{ key: 'capabilities', label: '能力' },
+				{ key: 'skills', label: '技能' },
 				{ key: 'daily', label: '每日' },
 			];
 			return h(
@@ -902,6 +913,7 @@ window.__ModuleLoader__.load({
 			const funcs = useApi(`${API}/list?zone=functions&v=${tick}`, fixtures);
 			const insights = useApi(`${API}/list?zone=insights&v=${tick}`, fixtures);
 			const caps = useApi(`${API}/list?zone=capabilities&v=${tick}`, fixtures);
+			const skills = useApi(`${API}/list?zone=skills&v=${tick}`, fixtures);
 			const dailies = useApi(`${API}/list?zone=daily&v=${tick}`, fixtures);
 			const indexFile = useApi(`${API}/file?name=MEMORY.md&v=${tick}`, fixtures);
 			const search = useApi(live.length >= 2 ? `${API}/search?q=${enc(live)}${searchZone !== 'all' ? `&zone=${searchZone}` : ''}` : null, fixtures);
@@ -914,7 +926,7 @@ window.__ModuleLoader__.load({
 			const health = ws ? { initialized: ws.initialized, failCount: ws.failCount, warnCount: ws.warnCount, results: ws.results ?? ws.problems ?? [] } : null;
 			const indexText = indexFile.data?.text ?? '';
 			const tables = parseIndexTables(indexText);
-			const lists = { functions: funcs.data?.files ?? [], insights: insights.data?.files ?? [], capabilities: caps.data?.files ?? [], daily: dailies.data?.files ?? [] };
+			const lists = { functions: funcs.data?.files ?? [], insights: insights.data?.files ?? [], capabilities: caps.data?.files ?? [], skills: skills.data?.files ?? [], daily: dailies.data?.files ?? [] };
 
 			useEffect(() => {
 				const t = setTimeout(() => setLive(query.trim()), 350);
@@ -927,7 +939,7 @@ window.__ModuleLoader__.load({
 
 			const summaryOf = (zone, name) => {
 				const slug = String(name ?? '').replace(/\.md$/, '');
-				const table = zone === 'functions' ? tables.functions : zone === 'insights' ? tables.insights : zone === 'capabilities' ? tables.capabilities : null;
+				const table = zone === 'functions' ? tables.functions : zone === 'insights' ? tables.insights : zone === 'capabilities' ? tables.capabilities : zone === 'skills' ? tables.skills : null;
 				return table?.[slug]?.summary ?? '';
 			};
 			const rowsOf = (zone) => {
@@ -940,7 +952,7 @@ window.__ModuleLoader__.load({
 			};
 
 			let timeline = [];
-			for (const zone of ['functions', 'insights', 'capabilities', 'daily'])
+			for (const zone of ['functions', 'insights', 'capabilities', 'skills', 'daily'])
 				for (const f of lists[zone]) timeline.push({ zone, name: f.name, bytes: f.bytes, mtime: f.mtime, summary: summaryOf(zone, f.name) });
 			timeline.sort((a, b) => String(b.mtime).localeCompare(String(a.mtime)));
 			timeline = timeline.slice(0, 12);
@@ -961,7 +973,7 @@ window.__ModuleLoader__.load({
 			const fileRes = useApi(fileUrl, fixtures);
 			const fileMeta = !opened ? null : opened.zone === '' ? null : (lists[opened.zone] ?? []).find((f) => f.name === opened.name) ?? null;
 			const fileText = opened ? (opened.zone === '' ? indexText : fileRes.data?.text ?? null) : null;
-			const kind = !opened ? null : opened.zone === '' ? 'index' : opened.zone === 'functions' ? 'functions' : opened.zone === 'insights' ? 'insights' : 'daily';
+			const kind = !opened ? null : opened.zone === '' ? 'index' : opened.zone === 'functions' ? 'functions' : opened.zone === 'insights' ? 'insights' : opened.zone === 'capabilities' ? 'capabilities' : opened.zone === 'skills' ? 'skills' : 'daily';
 
 			const activeKey = view.kind === 'overview' ? 'overview' : view.kind === 'zone' ? view.zone : view.zone === '' ? 'index' : view.zone;
 

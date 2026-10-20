@@ -105,6 +105,12 @@ const indexText = [
 	'| gamma | gamma 的思想内涵。 | [insights/gamma.md](insights/gamma.md) | [functions/alpha.md](functions/alpha.md) |',
 	'| 可观测性先于修 bug | 带空格的主题名也必须渲染成链接。 | [insights/可观测性先于修 bug.md](insights/可观测性先于修 bug.md) | [functions/alpha.md](functions/alpha.md) |',
 	'',
+	'## 技能台账（可复用操作程序）（skills/）',
+	'',
+	'| 技能 | 一句话用途 | 台账 | 状态 |',
+	'|---|---|---|---|',
+	'| 分离延迟重启 | 会话跑在宿主内时用分离进程延迟杀旧起新 | [skills/分离延迟重启.md](skills/分离延迟重启.md) | active |',
+	'',
 	'## 环境常量（易忘）',
 	'',
 	'- 记忆根：`C:/x/memory`',
@@ -114,9 +120,10 @@ const indexText = [
 	'- ',
 ].join('\n');
 const fixtures = {
-	'/api/memory-org/overview?v=0': { data: [{ root: 'C:/x/memory', initialized: true, failCount: 0, warnCount: 1, results: [{ level: 'WARN', rule: 'TEMP', message: 'functions/beta.md 冷记忆' }], title: '全局记忆', path: 'C:/x/.dsh', counts: { functions: 2, insights: 1, daily: 2 } }], loading: false, error: null },
+	'/api/memory-org/overview?v=0': { data: [{ root: 'C:/x/memory', initialized: true, failCount: 0, warnCount: 1, results: [{ level: 'WARN', rule: 'TEMP', message: 'functions/beta.md 冷记忆' }], title: '全局记忆', path: 'C:/x/.dsh', counts: { functions: 2, insights: 1, capabilities: 0, skills: 1, daily: 2 } }], loading: false, error: null },
 	'/api/memory-org/list?zone=functions&v=0': { data: { files: [{ name: 'alpha.md', bytes: fnText.length, mtime: iso(30) }, { name: 'beta.md', bytes: 900, mtime: iso(2000) }] }, loading: false, error: null },
 	'/api/memory-org/list?zone=insights&v=0': { data: { files: [{ name: 'gamma.md', bytes: 500, mtime: iso(120) }] }, loading: false, error: null },
+	'/api/memory-org/list?zone=skills&v=0': { data: { files: [{ name: '分离延迟重启.md', bytes: 700, mtime: iso(60) }] }, loading: false, error: null },
 	'/api/memory-org/list?zone=daily&v=0': { data: { files: [{ name: '2026-10-18.md', bytes: 400, mtime: iso(5) }, { name: '2026-09-30.md', bytes: 800, mtime: iso(18_000) }] }, loading: false, error: null },
 	'/api/memory-org/file?name=MEMORY.md&v=0': { data: { name: 'MEMORY.md', text: indexText }, loading: false, error: null },
 	'/api/memory-org/file?zone=functions&name=alpha.md': { data: { name: 'alpha.md', text: fnText }, loading: false, error: null },
@@ -157,13 +164,13 @@ const count = (s, needle) => s.split(needle).length - 1;
 
 // --- overview ---------------------------------------------------------------
 const overview = render({ kind: 'overview' });
-ok(count(overview, 'data-dmo="nav-item"') === 6, `rail has 6 destinations (${count(overview, 'data-dmo="nav-item"')})`);
-ok(overview.includes('功能') && overview.includes('思想') && overview.includes('每日') && overview.includes('索引') && overview.includes('能力'), 'rail labels for every zone');
+ok(count(overview, 'data-dmo="nav-item"') === 7, `rail has 7 destinations (${count(overview, 'data-dmo="nav-item"')})`);
+ok(overview.includes('功能') && overview.includes('思想') && overview.includes('每日') && overview.includes('索引') && overview.includes('能力') && overview.includes('技能'), 'rail labels for every zone');
 ok(count(overview, 'data-dmo="growth-card"') === 3, 'overview shows three zone count cards');
 ok(overview.includes('WARN 1') && overview.includes('冷记忆 1'), 'health chips carry the warning and the cold count');
 ok(overview.includes('[WARN] TEMP: functions/beta.md 冷记忆'), 'the health list renders every problem from overview.results');
 ok(overview.includes('2 功能 · 1 思想 · 2 日线索'), 'header summarises the memory size');
-ok(count(overview, 'data-dmo="timeline-row"') === 5, `timeline merges all zones (${count(overview, 'data-dmo="timeline-row"')})`);
+ok(count(overview, 'data-dmo="timeline-row"') === 6, `timeline merges all zones (${count(overview, 'data-dmo="timeline-row"')})`);
 const tl = overview.slice(overview.indexOf('data-dmo="timeline-row"'));
 ok(tl.indexOf('2026-10-18') < tl.indexOf('beta'), 'timeline is newest-first');
 ok(overview.includes('alpha 已稳定'), 'timeline rows carry the index one-line summary');
@@ -177,7 +184,7 @@ const overviewWithUsage = serialize(
 	FakeReact.createElement(MemoryPanel, {
 		__apiFixtures: {
 			...fixtures,
-			'/api/memory-org/overview?v=0': { data: [{ root: 'C:/x/memory', initialized: true, failCount: 0, warnCount: 1, results: [{ level: 'WARN', rule: 'TEMP', message: 'functions/beta.md 冷记忆' }], counts: { functions: 2, insights: 1, daily: 2 }, usage: { signalCount: 12, layers: { 实验: 2, 专项: 1, 通用: 0 }, hotspots: [{ href: 'functions/beta.md', flips: 2, badRate: 0.5, uses: 3 }] } }], loading: false, error: null },
+			'/api/memory-org/overview?v=0': { data: [{ root: 'C:/x/memory', initialized: true, failCount: 0, warnCount: 1, results: [{ level: 'WARN', rule: 'TEMP', message: 'functions/beta.md 冷记忆' }], counts: { functions: 2, insights: 1, capabilities: 0, skills: 1, daily: 2 }, usage: { signalCount: 12, layers: { 实验: 2, 专项: 1, 通用: 0 }, hotspots: [{ href: 'functions/beta.md', flips: 2, badRate: 0.5, uses: 3 }] } }], loading: false, error: null },
 		},
 		initialView: { kind: 'overview' },
 	}),
@@ -264,7 +271,8 @@ ok(searchView.includes('相关命中'), 'search hits render the API snippet text
 ok(searchView.includes('dmo-mark') && searchView.includes('冷记忆'), 'the query is highlighted inside the snippet');
 ok(searchView.includes('今日待观察'), 'search hits show their section heading');
 ok(searchView.includes('第 3 行'), 'search hits show the line number');
-ok(count(searchView, 'data-dmo="search-zone"') === 6, `search offers a zone filter (${count(searchView, 'data-dmo="search-zone"')} chips)`);
+ok(count(searchView, 'data-dmo="search-zone"') === 7, `search offers a zone filter (${count(searchView, 'data-dmo="search-zone"')} chips)`);
+ok(searchView.includes('技能'), 'the search zone chips include the skills zone');
 ok(searchView.includes('dmo-chip btn active'), 'the active zone chip is marked');
 // a filtered empty result explains itself instead of looking broken
 const emptyFiltered = serialize(
@@ -293,7 +301,10 @@ ok(split.preamble.includes('当前状态摘要'), 'splitSections keeps the head 
 ok(T.defaultOpen('functions', split.sections, fnText)[0] === true && T.defaultOpen('functions', split.sections, fnText)[3] === false, 'fold policy opens the newest block only (reversed order: index 0 is newest)');
 ok(T.defaultOpen('insights', split.sections, 'short')[0] === true, 'fold policy opens everything in short files');
 const idxSections = T.splitSections(indexText).sections;
-ok(T.defaultOpen('index', idxSections, indexText)[0] === true && T.defaultOpen('index', idxSections, indexText)[2] === false, 'index opens the tables and folds the rest');
+// With the skills table added, sections are: 功能 / 思想 / 技能 / 环境常量 / 细节指针 —
+// the three tables open, the prose sections fold.
+const idxOpen = T.defaultOpen('index', idxSections, indexText);
+ok(idxOpen[0] === true && idxOpen[2] === true && idxOpen[3] === false, 'index opens the tables and folds the rest');
 ok(T.resolveHref('../functions/alpha.md', 'insights')?.zone === 'functions', 'insight backlinks resolve to functions');
 ok(T.resolveHref('insights/gamma.md', 'functions')?.zone === 'insights', 'insights hrefs resolve');
 ok(T.resolveHref('2026-10-18.md', 'daily')?.zone === 'daily', 'daily hrefs resolve');

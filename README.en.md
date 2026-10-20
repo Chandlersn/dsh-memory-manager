@@ -8,14 +8,18 @@ long-term memory that is **built around function areas and shared across session
 
 The one-line difference: it is not "notes per project" but an **iteration history per function area**
 (login, build, deploy, UI panel, …). Whatever you will **re-run** settles into `functions/`, whatever you
-will **re-apply** is distilled into `insights/`, the index keeps a single line per row, and every session
-starts with that discipline injected into its system prompt.
+will **re-apply** is distilled into `insights/`, whatever is **re-run and verified** crystallizes into a
+callable procedure in `skills/`, the index keeps a single line per row, and every session starts with that
+discipline injected into its system prompt.
 
-- Eleven memory tools + an injected system-prompt discipline + an `agent/pre-step` recall hook + a read-only Web panel
+- Twelve memory tools + an injected system-prompt discipline + a budgeted `agent/pre-step` recall hook + a read-only Web panel
 - Writing is filing: `summary` and `currentState` are required parameters, so the index row never drifts
-- Eleven mechanical lint rules, so rot gets detected instead of remembered
+- Twelve mechanical lint rules, so rot gets detected instead of remembered
 - **Capability ledger**: every EXTERNAL CLI / MCP / local tool you used is filed in `capabilities/` — look before
   you rediscover it (harness built-ins and the project's own scripts/APIs are NOT capabilities)
+- **Skill crystallization**: operations that keep being re-run and confirmed become callable procedures in
+  `skills/` (mechanical nomination from usage signals; the model decides to crystallize; candidate → active →
+  retired, and only active skills enter recall)
 - **Granularity gate**: iteration blocks hold distilled conclusions only; a block over 900 chars or an index
   row over 110 chars warns at write time and is named by lint rule R14
 - Panel colors and sizes ride on the Host design tokens (`--dsw-alias-*` / `--dsw-radius-*`)
@@ -27,19 +31,21 @@ The root defaults to `~/.dsh/memory/` (override it with the `DSH_HOME` environme
 
 ```
 memory/
-├── MEMORY.md              # index: function table + insight table + capability ledger table (one-line summary per row) + consensus + environment constants
+├── MEMORY.md              # index: function + insight + capability + skill tables (one-line summary per row) + consensus + environment constants
 ├── functions/<area>.md    # one file per area, append-only iteration blocks (the date is just a tag)
 ├── insights/<theme>.md    # transferable principles, distilled upward from concrete areas, backlinked to their source
 ├── capabilities/<tool>.md # capability ledger: how to invoke an EXTERNAL CLI/MCP/local tool, prerequisites, what it solved (the project's own scripts/APIs belong in functions/)
+├── skills/<skill>.md      # crystallized procedures: frontmatter router + numbered steps + verification (candidate → active → retired)
 ├── YYYY-MM-DD.md          # daily log: the raw layer — content & format unconstrained (first-hand task data)
 └── legacy/                # prototype-era logs (must carry a "historical form" header)
 ```
 
-Rule of thumb: an operation I will **re-run** → `functions/`; a principle I will **re-apply** → `insights/`.
+Rule of thumb: an operation I will **re-run** → `functions/`; a principle I will **re-apply** → `insights/`;
+a procedure I will **follow step by step again** → `skills/`.
 Detail always stays in the function file; `MEMORY.md` carries only consensus, environment constants and
 one-line summaries.
 
-## Data flow: one direction, four layers — each layer consumes only the layer above
+## Data flow: one direction, five layers — each layer consumes only the layer above
 
 The core is not "one file per function" but **raw material first, refinement after** — data flows one
 way, and every layer is grounded in the one above it:
@@ -53,6 +59,8 @@ Layer 1 · functions/<area>.md iteration blocks: motivation / what changed / evi
 Layer 2 · insights/<theme>.md: re-appliable principles (backlinked to their source areas, gated on cross-domain + non-procedure)
         │ integrated for display (memory_index, once an area stabilizes)
 Layer 3 · MEMORY.md index + panel overview: one-line summaries + counts — a derived retrieval surface
+        │ crystallized into a procedure (memory_skill, once an operation is re-run and confirmed)
+Layer 4 · skills/<skill>.md: callable procedures — the "use" step closes the flow (only active skills enter recall)
 ```
 
 - **Principles have a verification gate** (the mechanically checkable half of a "four-gate" model):
@@ -137,7 +145,7 @@ records *why* we believed it then.
 
 | Tool | What it does |
 |---|---|
-| `memory_read` | read the index / a function file / an insight file / a capability entry / a daily log (`kind=index` first, to judge relevance) |
+| `memory_read` | read the index / a function file / an insight file / a capability entry / a skill / a daily log (`kind=index` first, to judge relevance) |
 | `memory_search` | **ranked full-text search** across the whole root: scans bodies, not just one-line summaries, and returns zone/file/line/section/snippet. Use it when you remember a fragment but not the area or the day |
 | `memory_capability` | **the capability ledger**: `record` files an EXTERNAL CLI/MCP/local tool you used (invocation, prerequisites, what it solved — one file per tool, updated in place; never the harness's own tools or the project's own scripts); `list` before a task to see what is available; `read` for a tool's full entry |
 | `memory_write` | **append one iteration block** (a conclusion distilled from the raw daily record) and refresh the head stable-state summary; `summary` is the block's one-line takeaway. **Writes no index row, never touches the daily log** |
@@ -145,14 +153,29 @@ records *why* we believed it then.
 | `memory_insight` | distil a transferable principle from the function division into `insights/`, backlink its source areas, `supersedes` to replace an older idea; three soft gates at write time (≥2 source areas / not a procedure / ≤200 chars) |
 | `memory_fold` | past 30KB, fold the oldest iteration blocks into an "early evolution" paragraph (conclusions and every date tag preserved) |
 | `memory_rename` | rename / merge a function area, rewrite every reference and verify zero dangling links |
-| `memory_check` | lint: index size, missing summaries, orphan files, backlinks, date ordering, dangling links, cold memory, head-summary guardrail, env-path liveness, over-long blocks/rows (R14), duplicated rows/sections (R15), correction-rate circuit breaker (R18), consensus entries without evidence / too long / fake cross-domain (R19) |
+| `memory_check` | lint: index size, missing summaries, orphan files, backlinks, date ordering, dangling links, cold memory, head-summary guardrail, env-path liveness, over-long blocks/rows (R14), duplicated rows/sections (R15), correction-rate circuit breaker (R18), consensus entries without evidence / too long / fake cross-domain (R19), skill executability and lifecycle (R20/R20e) |
 | `memory_usage` | **usage signals**: `record` logs one correction/confirmation (recalls and reads are logged automatically); `report` aggregates a window and suggests a layer (experiment / specialist / general) — advice only, it never moves files |
 | `memory_federation` | **federation mode** (optional): `sync` copies each project's `MEMORY.md` into `sources/` and rebuilds the project index table; `check` lints F1–F5 (index present, links resolve, rows/copies complete, no orphans, absolute paths alive) |
+| `memory_skill` | **the crystallization layer** (the "use" step the data flow was missing): `candidates` nominates mechanically from usage signals (≥6 uses, ≥1 confirmation, correction rate <20%, not yet crystallized); `crystallize` writes a callable procedure to `skills/<name>.md` (when-to-use / numbered steps / pitfalls / verification + frontmatter router); `activate`/`retire` drive the lifecycle (candidate → active → retired, only active enters recall); `list`/`read` inspect |
 
 A discipline section is injected into the system prompt; the `agent/pre-step` hook scores the user's input
-against index rows and injects the matching rows as a single `recall` message. Scoring is **IDF-weighted**:
-tokens nearly every row carries (「功能」「记忆」) weigh little, rare tokens (「逐帧」「懒加载」) dominate;
-name/filename hits are doubled, rows under 40% of the best score are dropped, and one file is injected once.
+against index rows and injects the matching rows as a single `recall` message. Ranking is **RRF fusion** of
+two independent rankings:
+
+- **Lexical (IDF-weighted)**: tokens nearly every row carries (「功能」「记忆」) weigh little, rare tokens
+  (「逐帧」「懒加载」) dominate; name/filename hits are doubled; rows under 40% of the best score are dropped
+  and one file is injected once.
+- **Usage (`.usage.jsonl`)**: uses + confirmations form a heat score, demoted by the correction rate — a row
+  that keeps being corrected sinks. The two rankings are fused by RRF (`Σ 1/(60+rank)`), which needs no
+  normalization.
+
+Three more behaviours: **decision repair** — an area corrected repeatedly in the last 7 days (≥2 corrections,
+bad rate ≥30%) is forced into the NEXT step's recall even without a lexical hit, marked "read this before
+acting"; **3s foreground budget** — the whole attempt has an absolute deadline, and a timeout injects
+*nothing* (no partial recall, no added latency); config may shorten but never extend it; **recall preview** —
+`GET /api/memory-org/recall-preview?q=…` runs the same pipeline and explains each row (name hits / lexical
+score / usage signals) with its fused score, so recall quality is debuggable instead of guessed at.
+
 Once per batch per session, a failure there never affects the step, and files the user already cited are not
 re-injected. The panel's `/search` and `memory_search` share the same ranker.
 
