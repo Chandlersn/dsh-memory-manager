@@ -807,6 +807,115 @@ window.__ModuleLoader__.load({
 			);
 		}
 
+		// ---------------------------------------------------------------------
+		// skill library (memory-crystallized vs host-installed)
+		// ---------------------------------------------------------------------
+
+		/**
+		 * The skills destination, upgraded from "list my folder" to a two-sided
+		 * library with ONE toggle. 系统技能 = everything the host `skill` tool can
+		 * load (bundled presets, office, project/user dirs, including our published
+		 * skills); 结晶技能 = our skills/ memory root in every lifecycle state. The
+		 * server folds our published rows into the memory half so a skill never
+		 * appears on both tabs. `tab` is navigation state owned by the parent (not
+		 * local useState) so the panel renders either side deterministically — in
+		 * the browser via setView, in the UI test via initialView.
+		 */
+		function SkillLibrary({ data, loading, error, tab, onTab, onOpenMemory, onOpenHost, filter, setFilter }) {
+			const mem = data?.memory ?? [];
+			const host = data?.host ?? [];
+			const q = filter.trim().toLowerCase();
+			const match = (s) => !q || String(s.name).toLowerCase().includes(q) || String(s.description ?? '').toLowerCase().includes(q);
+			const shown = tab === 'host' ? host.filter(match) : mem.filter(match);
+			const STATUS_TONE = { active: 'ok', candidate: 'warn', retired: undefined };
+			return h(
+				'div',
+				{ style: { display: 'flex', flexDirection: 'column', gap: 8 } },
+				h(
+					'div',
+					{ className: 'dmo-toolbar' },
+					h('span', { style: { fontSize: 14, fontWeight: 600 } }, '技能库'),
+					h(
+						'div',
+						{ className: 'dmo-chips' },
+						h('button', { type: 'button', className: `dmo-chip btn${tab === 'memory' ? ' active' : ''}`, 'data-dmo': 'skill-tab', onClick: () => onTab('memory') }, `结晶技能 ${mem.length}`),
+						h('button', { type: 'button', className: `dmo-chip btn${tab === 'host' ? ' active' : ''}`, 'data-dmo': 'skill-tab', onClick: () => onTab('host') }, `系统技能 ${host.length}`),
+					),
+					h('span', { className: 'grow' }),
+					h('input', { className: 'dmo-filter', style: { width: 180 }, placeholder: '按名称或描述过滤…', value: filter, onChange: (e) => setFilter(e.target.value), 'data-dmo': 'skill-filter' }),
+				),
+				data?.hostDegraded && tab === 'host'
+					? h('div', { className: 'dmo-empty' }, '宿主未暴露技能注册表（或读取失败），系统技能暂不可列；结晶技能不受影响。')
+					: null,
+				error
+					? h('div', { className: 'dmo-empty' }, `读取技能库失败：${error}`)
+					: loading && !data
+						? h('div', { className: 'dmo-empty' }, '读取技能库…')
+						: shown.length
+					? h(
+							'div',
+							{ className: 'dmo-rows' },
+							shown.map((s) =>
+								h(
+									'button',
+									{
+										key: `${tab}:${s.name}`, type: 'button', className: 'dmo-row', 'data-dmo': 'skill-row',
+										onClick: () => (tab === 'host' ? onOpenHost(s.name) : onOpenMemory(s.name)),
+										title: s.name,
+									},
+									h(
+										'div',
+										{ className: 'dmo-row-top' },
+										h('span', { className: 'dmo-row-name' }, tab === 'host' ? s.name : `${s.name}`),
+										h(
+											'span',
+											{ className: 'dmo-row-meta' },
+											tab === 'host'
+												? h(Chip, {}, s.source || 'host')
+												: h(
+														'span',
+														{},
+														h(Chip, { tone: STATUS_TONE[s.status] }, s.status),
+														s.published ? h(Chip, { tone: 'ok' }, '已发布宿主') : null,
+														s.scope ? h(Chip, {}, s.scope === 'project' && s.scopeProject ? `${s.scope}:${s.scopeProject}` : s.scope) : null,
+													),
+										),
+									),
+									s.description ? h('div', { className: 'dmo-row-sum' }, s.description) : null,
+								),
+							),
+						)
+					: h('div', { className: 'dmo-empty' }, filter ? '没有匹配的技能。' : tab === 'host' ? '宿主目录没有可列的系统技能。' : '还没有结晶技能——memory_skill(candidates) 看提名，反复跑通的操作可结晶成程序。'),
+			);
+		}
+
+		/** A host skill's body, loaded through the registry (read-only view). */
+		function HostSkillView({ res, name, onBack }) {
+			const d = res.data;
+			return h(
+				'div',
+				{ style: { display: 'flex', flexDirection: 'column', gap: 8 } },
+				h(
+					'div',
+					{ className: 'dmo-toolbar' },
+					h(Btn, { sm: true, onClick: onBack, title: '返回技能库', 'data-dmo': 'back' }, '← 返回技能库'),
+					h('span', { className: 'grow' }),
+					h('span', { className: 'dmo-meta' }, '系统技能 · 只读'),
+				),
+				res.loading
+					? h('div', { className: 'dmo-empty' }, '读取技能正文…')
+					: res.error
+						? h('div', { className: 'dmo-empty' }, `读取失败：${res.error}`)
+						: h(
+								'div',
+								{ className: 'dmo-card' },
+								h('h3', { className: 'dmo-h2', style: { margin: '0 0 6px' } }, name),
+								d?.description ? h('div', { className: 'dmo-row-sum', style: { marginBottom: 6 } }, d.description) : null,
+								h(MarkdownBody, { text: d?.content ?? '', zone: undefined, onNavigate: () => {} }),
+							),
+			);
+		}
+
 		/** Mark every occurrence of the query inside a snippet (case-insensitive). */
 		function highlight(text, q) {
 			const src = String(text ?? '');
@@ -920,6 +1029,12 @@ window.__ModuleLoader__.load({
 			const skills = useApi(`${API}/list?zone=skills&v=${tick}`, fixtures);
 			const dailies = useApi(`${API}/list?zone=daily&v=${tick}`, fixtures);
 			const indexFile = useApi(`${API}/file?name=MEMORY.md&v=${tick}`, fixtures);
+			// Skill library + one host skill's body: fetched ONLY when their view is
+			// active, so opening other zones never hits the host registry (a heavier
+			// read). A null url returns an idle state — the hooks stay unconditional.
+			const onSkills = view.kind === 'zone' && view.zone === 'skills';
+			const skillLib = useApi(onSkills ? `${API}/skills?v=${tick}` : null, fixtures);
+			const hostSkill = useApi(view.kind === 'hostskill' ? `${API}/skill?name=${enc(view.name)}` : null, fixtures);
 			const search = useApi(live.length >= 2 ? `${API}/search?q=${enc(live)}${searchZone !== 'all' ? `&zone=${searchZone}` : ''}` : null, fixtures);
 
 			const ws = overview.data?.[0];
@@ -969,6 +1084,7 @@ window.__ModuleLoader__.load({
 			const navigate = (target) => openFile(target.zone, target.name);
 			const back = () => {
 				if (view.kind === 'file' && view.zone) setView({ kind: 'zone', zone: view.zone });
+				else if (view.kind === 'hostskill') setView({ kind: 'zone', zone: 'skills', tab: 'host' });
 				else setView({ kind: 'overview' });
 			};
 
@@ -979,7 +1095,7 @@ window.__ModuleLoader__.load({
 			const fileText = opened ? (opened.zone === '' ? indexText : fileRes.data?.text ?? null) : null;
 			const kind = !opened ? null : opened.zone === '' ? 'index' : opened.zone === 'functions' ? 'functions' : opened.zone === 'insights' ? 'insights' : opened.zone === 'capabilities' ? 'capabilities' : opened.zone === 'skills' ? 'skills' : 'daily';
 
-			const activeKey = view.kind === 'overview' ? 'overview' : view.kind === 'zone' ? view.zone : view.zone === '' ? 'index' : view.zone;
+			const activeKey = view.kind === 'overview' ? 'overview' : view.kind === 'zone' ? view.zone : view.kind === 'hostskill' ? 'skills' : view.zone === '' ? 'index' : view.zone;
 
 			const onKeyDown = (e) => {
 				const tag = e.target?.tagName;
@@ -1013,6 +1129,18 @@ window.__ModuleLoader__.load({
 			else if (!ws) main = h('div', { className: 'dmo-empty' }, '没有已注册的 workspace。');
 			else if (!health?.initialized) main = h('div', { className: 'dmo-empty' }, '记忆还没有建立（`~/.dsh/memory/` 尚未创建）。让 Agent 做一次实质工作，它就会用 memory_write 写下第一份迭代。');
 			else if (view.kind === 'overview') main = h(Overview, { health, counts, timeline, usage: overview.data?.[0]?.usage, onOpen: openFile, onZone: (z) => setView({ kind: 'zone', zone: z }) });
+			else if (view.kind === 'zone' && view.zone === 'skills')
+				main = h(SkillLibrary, {
+					data: skillLib.data, loading: skillLib.loading, error: skillLib.error,
+					tab: view.tab === 'host' ? 'host' : 'memory',
+					// The toggle is navigation: switching sides is a setView, not a
+					// local useState — so both halves are reachable in a render test.
+					onTab: (t) => setView({ kind: 'zone', zone: 'skills', tab: t }),
+					onOpenMemory: (name) => openFile('skills', `${name}.md`),
+					onOpenHost: (name) => setView({ kind: 'hostskill', name }),
+					filter, setFilter,
+				});
+			else if (view.kind === 'hostskill') main = h(HostSkillView, { res: hostSkill, name: view.name, onBack: back });
 			else if (view.kind === 'zone') main = h(ZoneList, { zone: view.zone, rows: rowsOf(view.zone), sort, setSort, filter, setFilter, onOpen: openFile });
 			else if (fileText) main = h(Reader, { view, text: fileText, meta: fileMeta, kind, root: ws.root, onBack: back, onNavigate: navigate });
 			else main = h('div', { className: 'dmo-empty' }, fileRes.loading ? '读取文件…' : fileRes.error ? `读取失败：${fileRes.error}` : '文件为空。');

@@ -28,7 +28,9 @@ export const isSkillName = (name) => typeof name === 'string' && SKILL_NAME_RE.t
  * wins over a memory export — the bridge never overrides the user.
  */
 const MEMORY_SKILL_RANK = 700;
-const PROVIDER_NAME = 'dsh-memory-manager';
+// Exported: the panel uses it to tell OUR published rows (fold them into the
+// memory group) apart from foreign providers (bundled/project/user skills).
+export const PROVIDER_NAME = 'dsh-memory-manager';
 
 /** Minimal frontmatter split: `---` block at the very top, then the body. */
 export function parseSkillText(text) {
@@ -160,6 +162,10 @@ export function registerMemorySkillBridge(ctx, { skillsDir }) {
 		return provider;
 	});
 	return {
+		// The registry itself, borrowed for READS (the panel's skill library
+		// lists the WHOLE host catalog, not just our rows). Same instance the
+		// host `skill` tool resolves against — one catalog, one truth.
+		registry,
 		invalidate: () => {
 			try {
 				control?.invalidate?.();

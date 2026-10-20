@@ -45,7 +45,7 @@ import {
 } from './src/markdown.js';
 import { tokensOf, matchIndexRows, buildRecallMessage } from './src/recall.js';
 import { redactSecrets, scanSecrets } from './src/secrets.js';
-import { isSkillName, registerMemorySkillBridge, parseSkillText, isPublishable, skillAppliesToProject } from './src/host-skill.js';
+import { isSkillName, registerMemorySkillBridge, parseSkillText, isPublishable, skillAppliesToProject, PROVIDER_NAME } from './src/host-skill.js';
 import { resolveDshRoot, setHostRoot, loadHost, defineTool, createUserMessage } from './src/host.js';
 import {
 	name, inject, DEFAULTS, FUNC_TABLE_HEADING, INSIGHT_TABLE_HEADING, CAP_TABLE_HEADING,
@@ -2717,6 +2717,86 @@ function memoryPanelApi(opts) {
 					message: rows.length ? '' : '（无命中：该输入不会注入任何召回）',
 				});
 			}
+			// Skill library (5.18.0): the panel shows BOTH halves of "skills" —
+			// host-native (bundled/project/user: the presets, office, anything the
+			// host `skill` tool can load) and memory-crystallized (our skills/, in
+			// every lifecycle state). The two sources meet at one identity: a host
+			// row whose `path` is inside our skills/ dir is OUR published skill, so
+			// it folds into the memory half and the host half never double-counts
+			// it. Reads go through the bridge's borrowed registry — the same
+			// catalog the host tool resolves, one source of truth.
+			if (seg === 'skills') {
+				const ourDir = path.join(root, SKILL_DIR);
+				const memory = [];
+				const seenPaths = new Set();
+				let ourNames = [];
+				try {
+					ourNames = (await readdir(ourDir)).filter((n) => n.endsWith('.md'));
+				} catch {
+					/* no crystallized skills yet */
+				}
+				for (const n of ourNames.sort()) {
+					const fp = path.join(ourDir, n);
+					const text = (await readIfExists(fp)) ?? '';
+					const { fields } = parseSkillText(text);
+					const status = fields.status ?? 'candidate';
+					memory.push({
+						name: n.replace(/\.md$/, ''),
+						hostName: fields.hostName || '',
+						description: fields.description || fields.whenToUse || '',
+						whenToUse: fields.whenToUse || '',
+						status,
+						scope: fields.scope || '',
+						scopeProject: fields.scope_project || '',
+						published: isPublishable(fields),
+						path: fp,
+						mtime: (await stat(fp)).mtime.toISOString(),
+					});
+					seenPaths.add(path.resolve(fp));
+				}
+				let host = [];
+				// No bridge (a host without the skill service) is DEGRADED, not an
+				// empty list — silently-empty would read as "no skills installed".
+				let degraded = !opts.bridge;
+				try {
+					const rows = (await opts.bridge?.registry?.list({})) ?? [];
+					host = rows
+						// Our published rows already live in `memory` (folded via
+						// seenPaths below); listing them again under 系统技能 would
+						// show one skill twice across the two tabs.
+						.filter((r) => !(r.provider === PROVIDER_NAME || (r.path && seenPaths.has(path.resolve(r.path)))))
+						.map((r) => ({
+							name: r.name,
+							description: r.description || '',
+							whenToUse: r.whenToUse || '',
+							source: r.source || 'custom',
+							provider: r.provider || '',
+							modelInvocable: r.invocation?.modelInvocable !== false,
+							userInvocable: r.invocation?.userInvocable !== false,
+							path: r.path || '',
+						}))
+						.sort((a, b) => a.name.localeCompare(b.name));
+				} catch {
+					degraded = true;
+				}
+				return json(res, 200, { memory, host, hostDegraded: degraded });
+			}
+			// One host skill's full body, loaded through the registry (never the
+			// request path): `name` is validated against the host grammar first, so
+			// there is no traversal surface — the registry resolves the winning
+			// candidate and its provider owns the read.
+			if (seg === 'skill') {
+				const nameParam = (url.searchParams.get('name') ?? '').trim();
+				if (!isSkillName(nameParam)) return json(res, 400, { error: 'invalid skill name' });
+				let def;
+				try {
+					def = await opts.bridge?.registry?.get(nameParam, {});
+				} catch {
+					def = undefined;
+				}
+				if (!def) return json(res, 404, { error: 'skill not found in the host catalog' });
+				return json(res, 200, { name: def.name, description: def.description || '', content: def.content || '' });
+			}
 			if (seg === 'list') {
 				const zone = url.searchParams.get('zone');
 				if (!['functions', 'insights', 'capabilities', 'skills', 'daily'].includes(zone)) return json(res, 400, { error: 'invalid zone' });
@@ -2766,6 +2846,8 @@ function memoryPanelApi(opts) {
 					'<li><code>GET /api/memory-org/check</code> — 体检</li>' +
 					'<li><code>GET /api/memory-org/list?zone=functions|insights|daily</code> — 分区文件列表</li>' +
 					'<li><code>GET /api/memory-org/file?zone=functions&amp;name=&lt;file&gt;.md</code> — 读记忆文件（省略 zone 即索引）</li>' +
+					'<li><code>GET /api/memory-org/skills</code> — 技能库（结晶 + 宿主已装，两组）</li>' +
+					'<li><code>GET /api/memory-org/skill?name=&lt;kebab&gt;</code> — 宿主技能正文（经注册表，非路径）</li>' +
 					'<li><code>GET /api/memory-org/search?q=&lt;关键词&gt;</code> — 全库搜索</li></ul>',
 			);
 		} catch (err) {
@@ -2817,6 +2899,10 @@ export function apply(ctx, config) {
 	// dsh-skill, and the bridge needs no startup guarantee (it reads disk on
 	// every list()).
 	const skillBridge = registerMemorySkillBridge(ctx, { skillsDir: path.join(resolveRoot(opts), SKILL_DIR) });
+	// The panel's skill library reads the SAME registry the host tool resolves
+	// against (bridge.registry); on a host without the skill service it stays
+	// undefined and /skills answers hostDegraded rather than erroring.
+	opts.bridge = skillBridge;
 	disposers.push(ctx.tools.register(memorySkillTool(opts, skillBridge ? { onSkillChange: skillBridge.invalidate } : {})));
 
 	// Proactive recall: on every proposed step, match the batch's user text

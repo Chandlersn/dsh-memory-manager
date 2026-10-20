@@ -303,6 +303,12 @@ accumulation (dozens of function areas, hundreds of daily threads) rather than a
 - **Functions / Insights / Daily**: one row per file, showing the index summary directly (no need to open it
   to know what it is), relative time and size; sort by time or name, filter by name or summary; the daily zone
   groups by month, so it never turns into a wall
+- **Skill library**: the skills page is a two-sided library behind ONE toggle — "crystallized / system":
+  the crystallized side shows the memory-root `skills/` in every lifecycle state (candidate/active/retired +
+  a published-to-host badge + scope); the system side reads the host skill registry through the bridge
+  (bundled presets, office, project/user dirs — everything the host `skill` tool can load), and clicking one
+  loads its body read-only. A skill never appears on both sides (published crystallized skills fold into the
+  crystallized side); without a registry the system side says degraded, not silently empty
 - **Reader**: function files fold per iteration block — only the newest is expanded by default (short files
   open fully) — with a date jump strip and "expand all"; insights and daily files open per section; the index
   page renders the function-module and innovation-insight index tables as **clickable navigation tables** and folds the rest
