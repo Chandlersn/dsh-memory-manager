@@ -29,7 +29,17 @@ export const DEFAULTS = {
 // RECALL trusts that cell (only active skills are injected).
 export const FUNC_TABLE_HEADING = '## 功能模块索引';
 export const INSIGHT_TABLE_HEADING = '## 创新优化思想索引';
-export const CAP_TABLE_HEADING = '## 能力台账（可用工具 / MCP / CLI）';
+// The capability heading: base `## 能力台账 细节子目录` is the upsert anchor
+// (matched by startsWith, like the other zones) and the template appends
+// `（可用工具 / MCP / CLI）`. Before 5.15.2 the tool list sat INSIDE the anchor
+// and the fallback path stacked a second paren after it, reading as a
+// duplicated qualifier: `…（可用工具 / MCP / CLI）（细节在子目录）`.
+export const CAP_TABLE_HEADING = '## 能力台账 细节子目录';
+// The tool-list suffix the template and the heading migration both append.
+export const CAP_TABLE_SUFFIX = '（可用工具 / MCP / CLI）';
+// Pre-5.15.2 capability heading anchor, kept only so upsertIndexRow can find
+// and rename an old-generation heading in place instead of twin-ing it.
+export const LEGACY_CAP_TABLE_HEADING = '## 能力台账（可用工具 / MCP / CLI）';
 export const CAP_TABLE_HEADER = '| 能力 | 一句话用途 |';
 export const FUNC_TABLE_HEADER = '| 功能域 | 一句话状态 / 待验证 |';
 export const INSIGHT_TABLE_HEADER = '| 思想主题 | 一句话内涵 / 解决的权衡 |';

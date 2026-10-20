@@ -746,6 +746,23 @@ ok(capText2.includes('-pix_fmt yuv420p'), 'invocation refreshed to the newer com
 ok(capText2.split('OpenMontage 出片').length === 2 && capText2.includes('批印坊 v2 成片 96s'), 'solved entries accumulate (ledger, not journal)');
 const idxCap = await T.memory_read.execute({ kind: 'index' }, exec);
 ok(rowsFor(idxCap.content, 'ffmpeg').length === 1 && idxCap.content.includes('capabilities/ffmpeg.md'), 'capability row lands in the index table');
+// 5.15.2 heading: one bracket pair, meaning first — and an old-generation
+// heading is renamed IN PLACE by the next upsert (no twin table).
+ok(idxCap.content.includes('## 能力台账 细节子目录（可用工具 / MCP / CLI）'), 'capability heading is the new single-paren form');
+ok(!idxCap.content.includes('（可用工具 / MCP / CLI）（'), 'no doubled paren after the rename');
+{
+	const idxP = path.join(root, 'MEMORY.md');
+	const pre = await readFile(idxP, 'utf8');
+	await writeFile(idxP, pre.replace('## 能力台账 细节子目录（可用工具 / MCP / CLI）', '## 能力台账（可用工具 / MCP / CLI）'), 'utf8');
+	// Re-record the SAME slug with its invocation kept verbatim: upsertIndexRow
+	// runs (heading must be migrated) yet the ledger body still contains the
+	// image2pipe string a later search assertion depends on.
+	await T.memory_capability.execute({ action: 'record', name: 'ffmpeg', kind: 'cli', invocation: 'ffmpeg -f image2pipe -i pipe.png -c:v libx264 -pix_fmt yuv420p out.mp4', solved: '迁移断言用的再记一次' }, exec);
+	const post = await readFile(idxP, 'utf8');
+	ok(post.includes('## 能力台账 细节子目录（可用工具 / MCP / CLI）'), 'legacy capability heading is migrated in place');
+	ok((post.match(/^## 能力台账/gm) ?? []).length === 1, 'migration leaves exactly one capability table');
+	ok(rowsFor(post, 'ffmpeg').length === 1, 'row count survives the heading migration');
+}
 const capList = await T.memory_capability.execute({ action: 'list' }, exec);
 ok(capList.items.length === 1 && capList.items[0].name === 'ffmpeg' && capList.items[0].kind === 'cli', `list returns ledger entries (${capList.items.length})`);
 const capRead = await T.memory_capability.execute({ action: 'read', name: 'ffmpeg' }, exec);

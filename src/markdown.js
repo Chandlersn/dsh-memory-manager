@@ -9,6 +9,8 @@ import {
 	FUNC_TABLE_HEADING,
 	INSIGHT_TABLE_HEADING,
 	CAP_TABLE_HEADING,
+	CAP_TABLE_SUFFIX,
+	LEGACY_CAP_TABLE_HEADING,
 	SKILL_TABLE_HEADING,
 	FUNC_TABLE_HEADER,
 	INSIGHT_TABLE_HEADER,
@@ -43,7 +45,7 @@ export function memoryIndexTemplate() {
 		INSIGHT_TABLE_HEADER,
 		'|---|---|',
 		'',
-		`${CAP_TABLE_HEADING}（capabilities/）`,
+		`${CAP_TABLE_HEADING}${CAP_TABLE_SUFFIX}`,
 		'',
 		CAP_TABLE_HEADER,
 		'|---|---|',
@@ -170,13 +172,26 @@ export function upsertIndexRow(indexText, headingPrefix, headerRow, firstCell, n
 			secStart = i;
 			break;
 		}
+		// 5.15.2 renamed the capability heading (`## 能力台账（可用工具 / MCP /
+		// CLI）` → `## 能力台账 细节子目录（…）`). Migrate the old anchor IN
+		// PLACE: a pre-rename root must hit the same table here, not fall
+		// through to the create path and twin it.
+		if (headingPrefix === CAP_TABLE_HEADING && lines[i].startsWith(LEGACY_CAP_TABLE_HEADING)) {
+			lines[i] = `${CAP_TABLE_HEADING}（可用工具 / MCP / CLI）`;
+			secStart = i;
+			break;
+		}
 	}
 	if (secStart === -1) {
 		const t = indexText.replace(/\n*$/, '\n');
+		// A self-describing anchor (it already carries the 细节 note) gets no
+		// suffix — stacking `（细节在子目录）` after it produced the doubled
+		// paren this rename set out to remove.
+		const heading = /细节/.test(headingPrefix) ? headingPrefix : `${headingPrefix}（细节在子目录）`;
 		if (group) {
-			return `${t}\n${headingPrefix}（细节在子目录）\n\n### 索引·${group}\n\n${headerRow}\n${sepOf(headerRow)}\n${newRow}\n`;
+			return `${t}\n${heading}\n\n### 索引·${group}\n\n${headerRow}\n${sepOf(headerRow)}\n${newRow}\n`;
 		}
-		return `${t}\n${headingPrefix}（细节在子目录）\n\n${headerRow}\n${sepOf(headerRow)}\n${newRow}\n`;
+		return `${t}\n${heading}\n\n${headerRow}\n${sepOf(headerRow)}\n${newRow}\n`;
 	}
 	// Self-heal: a heading that only STARTS WITH the anchor prefix (an older
 	// template generation, e.g. `## 功能域（细节在子目录，本表只留指针）` under a
