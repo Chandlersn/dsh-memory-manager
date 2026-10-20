@@ -187,8 +187,11 @@ async function runHealthCheck(root, opts) {
 		if (cells.length < 2) continue;
 		if (cells.every((c) => /^[-: ]*$/.test(c))) continue;
 		// Strip the link syntax so the check measures the words, not the href.
+		// BOTH cells need it: the name cell is a whole link since 5.15.0, and an
+		// insight row folds its source areas INTO the summary cell — counting
+		// `[x.md](functions/x.md)` as words flags a 34-char sentence as 129.
 		const name = cells[0].replace(/^\[([^\]]+)\]\([^)]*\)$/, '$1');
-		const summary = cells[1];
+		const summary = cells[1].replace(/\[([^\]]*)\]\([^)]*\)/g, '$1');
 		if (!summary) emptySummary++;
 		else if (charLen(summary) > MAX_ROW_SUMMARY_CHARS) longRows.push(`${name}（${charLen(summary)} 字）`);
 	}

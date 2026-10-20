@@ -431,7 +431,23 @@ const c4 = await T.memory_check.execute({}, exec);
 const r14 = c4.results.filter((r) => r.rule === 'R14');
 ok(r14.some((r) => r.message.includes('冗长功能')), `R14 flags the un-distilled block (${r14.length} R14)`);
 ok(r14.some((r) => r.message.includes('摘要过长功能')), 'R14 flags the over-long index row');
-ok(c4.failCount === 0, 'R14 is advisory (WARN), never a FAIL');
+// R14 measures the SENTENCE, not the markdown: a folded source-link tail
+// (`（来源：[x.md](functions/x.md)）`) is href noise — since 5.15.0 insight
+// rows carry it, and counting it flagged a 34-char principle as 129.
+const shortPrinciple = '跨功能写入接口必须成对实现进退两方向，否则副本与主行并存。'; // 35 chars
+await T.memory_insight.execute(
+	{ theme: '带长来源的主题', principle: shortPrinciple, summary: shortPrinciple, sources: ['测试功能', '冗长功能'] },
+	exec,
+);
+await T.memory_index.execute(
+	{ zone: 'insights', name: '带长来源的主题', summary: shortPrinciple, sources: ['测试功能', '冗长功能', '摘要过长功能', '无引用功能'] },
+	exec,
+);
+const c4b = await T.memory_check.execute({}, exec);
+const r14b = c4b.results.filter((r) => r.rule === 'R14');
+ok(!r14b.some((r) => r.message.includes('带长来源的主题')), 'R14 strips source links before measuring the summary');
+ok(r14b.some((r) => r.message.includes('摘要过长功能')), 'a genuinely over-long plain-text summary is STILL flagged');
+ok(c4b.failCount === 0, 'R14 is advisory (WARN), never a FAIL');
 
 // 14b) related: "x.md" is accepted as the slug (no `x.md.md（未建档）`)
 const w9 = await T.memory_write.execute(
