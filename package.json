@@ -1,6 +1,6 @@
 {
   "name": "dsh-memory-manager",
-  "version": "5.12.0",
+  "version": "5.14.0",
   "type": "module",
   "repository": {
     "type": "git",
@@ -40,6 +40,7 @@
   },
   "files": [
     "server.js",
+    "src/",
     "client.js",
     "icon.svg",
     "README.md",
@@ -47,7 +48,9 @@
     "LICENSE"
   ],
   "dsh": {
-    "bundle": { "patch": "./cordis.patch.yml" },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "platform": "web",
       "immediately": true,

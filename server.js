@@ -1,16 +1,21 @@
 /**
- * dsh-memory-manager — project memory for the DeepSeek Harness.
+ * dsh-memory-manager — long-term memory for the DeepSeek Harness.
  *
  * Adapted from lantern's `memory-function-org` skill. The memory root holds:
  *   functions/    = per-feature iteration history (date as tag, append-only blocks)
  *   insights/     = transferable principles distilled UP from features (backlinked)
- *   MEMORY.md     = dual-table index with one-line summaries + consensus + env constants
- *   YYYY-MM-DD.md = lightweight daily decision threads (one line + link)
+ *   capabilities/ = external tool ledger (what can I call, and how)
+ *   skills/       = crystallized procedures (candidate → active → retired)
+ *   MEMORY.md     = the index: four one-line-summary tables + consensus + env constants
+ *   YYYY-MM-DD.md = the RAW daily layer (free-form, model-maintained)
  *
- * Six tools — memory_read / memory_write / memory_insight / memory_fold /
- * memory_rename / memory_check — plus a system-prompt discipline section, a
- * pre-step recall hook that injects matching index rows, and a read-only HTTP
- * API (`/api/memory-org/*`) consumed by the bundled Web panel (./client).
+ * Twelve tools (read / search / capability / write / index / insight / fold /
+ * rename / check / usage / federation / skill), an injected discipline section,
+ * a budgeted pre-step recall hook (RRF-fused ranking + decision repair), and a
+ * read-only HTTP API (`/api/memory-org/*`) consumed by the bundled Web panel.
+ *
+ * This file is the plugin ENTRY (apply + tool registration + hooks). The pure
+ * layers live in ./src — see the import block below for the map.
  *
  * @module dsh-memory-manager
  */
@@ -20,6 +25,25 @@ import * as path from 'node:path';
 import { homedir } from 'node:os';
 import { Buffer } from 'node:buffer';
 import { createRequire } from 'node:module';
+// ---------------------------------------------------------------------------
+// shared layers — the plugin is a folder, not one 3.5k-line file
+// ---------------------------------------------------------------------------
+//   constants.js — table headings, size caps, lifecycle vocabularies
+//   util.js      — dates, atomic write, slugs, block parsing, root resolution
+//   usage.js     — the .usage.jsonl usage-signal ledger
+//   markdown.js  — file templates + index/section surgery
+//   recall.js    — pre-step ranking + full-text search
+//   host.js      — DSH install discovery and lazy Host binding
+import {
+	localDateStr, normDate, oneLine, charLen, readIfExists, writeText, statExists, safeSlug,
+	splitIterationBlocks, dshHome, joinDshHome, resolveRoot, appendBlock, countHeadingDate,
+} from './src/util.js';
+import { usagePath, appendUsage, readUsage, summarizeUsage } from './src/usage.js';
+import {
+	memoryIndexTemplate, functionFileTemplate, dailyTemplate, insightTemplate, sepOf,
+	upsertIndexRow, appendUnderHeading, resolveOpenItems, refreshSummarySection, replaceSection,
+} from './src/markdown.js';
+import { tokensOf, matchIndexRows, buildRecallMessage } from './src/recall.js';
 
 // ---------------------------------------------------------------------------
 // locating the Host installation
@@ -189,160 +213,14 @@ const GUARD_LINE = `> ${GUARD_MARK}：低频高价值，不做冷记忆判定（
 // one line here, and memory_check / memory_usage turn those lines into layer
 // suggestions. Kept as a dot-file so no zone listing, search or lint sees it.
 
-function usagePath(root) {
-	return path.join(root, '.usage.jsonl');
-}
-
-async function appendUsage(root, entry) {
-	try {
-		await mkdir(root, { recursive: true });
-		await appendFile(usagePath(root), `${JSON.stringify({ t: new Date().toISOString(), ...entry })}\n`, 'utf8');
-	} catch {
-		/* usage logging must never break a step or a tool call */
-	}
-}
-
-/** Usage entries newer than `days`, newest last. Bad lines are skipped. */
-async function readUsage(root, days = 30) {
-	const text = await readIfExists(usagePath(root));
-	if (text === undefined) return [];
-	const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
-	const out = [];
-	for (const line of text.split('\n')) {
-		const s = line.trim();
-		if (!s) continue;
-		try {
-			const e = JSON.parse(s);
-			const t = Date.parse(e.t);
-			if (!Number.isFinite(t) || t < cutoff) continue;
-			out.push({ ...e, ms: t });
-		} catch {
-			/* skip corrupt line */
-		}
-	}
-	return out;
-}
-
-/** Aggregate usage per target and suggest a layer (实验 / 专项 / 通用). */
-function summarizeUsage(entries) {
-	const map = new Map();
-	// Keep the correction/positive order per href so a flip (positive -> correction
-	// or the other way round) can be counted: a memory that keeps being confirmed
-	// and then overturned is not the same as one that is simply used.
-	const verdicts = new Map();
-	for (const e of entries) {
-		const href = String(e.href ?? '').trim();
-		if (!href) continue;
-		const cur = map.get(href) ?? { href, recalls: 0, reads: 0, corrections: 0, positives: 0, last: 0 };
-		if (e.kind === 'recall') cur.recalls++;
-		else if (e.kind === 'read') cur.reads++;
-		else if (e.kind === 'correction') cur.corrections++;
-		else if (e.kind === 'positive') cur.positives++;
-		if (e.kind === 'correction' || e.kind === 'positive') {
-			const seq = verdicts.get(href) ?? [];
-			seq.push({ kind: e.kind, ms: e.ms });
-			verdicts.set(href, seq);
-		}
-		cur.last = Math.max(cur.last, e.ms);
-		map.set(href, cur);
-	}
-	const items = [...map.values()];
-	for (const it of items) {
-		const uses = it.recalls + it.reads;
-		const badRate = uses ? it.corrections / uses : it.corrections ? 1 : 0;
-		// Layer suggestion mirrors the article's data-driven promotion: usage wins,
-		// confirmation gates promotion, correction rate gates generality.
-		if (uses >= 10 && it.positives >= 2 && badRate < 0.2) it.layer = '通用';
-		else if (uses >= 3 && it.positives >= 1) it.layer = '专项';
-		else it.layer = '实验';
-		it.uses = uses;
-		it.badRate = Number(badRate.toFixed(2));
-		const seq = (verdicts.get(it.href) ?? []).sort((a, b) => a.ms - b.ms);
-		let flips = 0;
-		for (let i = 1; i < seq.length; i++) if (seq[i].kind !== seq[i - 1].kind) flips++;
-		it.flips = flips;
-	}
-	items.sort((a, b) => b.uses - a.uses || b.last - a.last);
-	return items;
-}
-
+// (usage signals now live in src/usage.js — imported above)
 
 // ---------------------------------------------------------------------------
 // small helpers
 // ---------------------------------------------------------------------------
 
 const pad2 = (n) => String(n).padStart(2, '0');
-function localDateStr(d = new Date()) {
-	return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
-}
-function normDate(s) {
-	return typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s.trim()) ? s.trim() : localDateStr();
-}
 const byteLen = (s) => Buffer.byteLength(s, 'utf8');
-/** One-line, table-safe cell text. */
-function oneLine(s) {
-	return String(s ?? '').replace(/\|/g, '／').replace(/\r?\n/g, ' ').trim();
-}
-async function readIfExists(p) {
-	try {
-		return await readFile(p, 'utf8');
-	} catch {
-		return undefined;
-	}
-}
-/**
- * Write text atomically: a crash or a reader can never observe a partial file.
- * `rename` replaces the destination in one step (Node uses MOVEFILE_REPLACE_
- * EXISTING on Windows); a short retry covers transient locks from readers or
- * antivirus scanning the destination.
- */
-async function writeText(p, content) {
-	await mkdir(path.dirname(p), { recursive: true });
-	const tmp = `${p}.tmp-${process.pid.toString(36)}-${Date.now().toString(36)}`;
-	try {
-		await writeFile(tmp, content, 'utf8');
-		for (let attempt = 0; ; attempt++) {
-			try {
-				await rename(tmp, p);
-				return;
-			} catch (err) {
-				if (attempt >= 3) throw err;
-				await new Promise((r) => setTimeout(r, 20 * (attempt + 1)));
-			}
-		}
-	} catch (err) {
-		try {
-			await unlink(tmp);
-		} catch {
-			/* tmp already gone */
-		}
-		throw err;
-	}
-}
-async function statExists(p) {
-	try {
-		await stat(p);
-		return true;
-	} catch {
-		return false;
-	}
-}
-
-/** Validate a feature/theme slug used as a markdown filename. */
-function safeSlug(raw) {
-	// Tolerate the filename spelling callers reach for by habit ("x.md"); without
-	// this, related: ["x.md"] renders as `x.md.md（未建档）` instead of a link.
-	const s = String(raw ?? '').trim().replace(/\.md$/i, '');
-	if (!s) throw new Error('slug must be a non-empty string');
-	if (s.length > 60) throw new Error(`slug too long (max 60 chars): ${s}`);
-	if (/[\\/:*?"<>|]/.test(s) || s.includes('..') || s.startsWith('.')) {
-		throw new Error(`invalid slug (no path separators or dots at start): ${s}`);
-	}
-	if (/^memory$/i.test(s)) throw new Error('slug "MEMORY" is reserved for MEMORY.md');
-	if (/^\d{4}-\d{2}-\d{2}$/.test(s)) throw new Error('slug must not look like a daily-log date (YYYY-MM-DD)');
-	return s;
-}
-
 /**
  * Distillation limits. 原 skill 的数据流是"过程 → 蒸馏结论"：`functions/` 存
  * 具体环节精髓（动因 / 根因 / 改动结论 / 判据 / 待观察，各一句），逐条实现清单、
@@ -357,480 +235,15 @@ const MAX_PRINCIPLE_CHARS = 200;
 /** 共识条目是约束，不是论述：一条说清一条。 */
 const MAX_CONSENSUS_CHARS = 150;
 const CONSENSUS_HEADING = '## 决策共识 / 规范';
-/** Code-point length: CJK counts as 1, unlike byteLen. */
-function charLen(s) {
-	return [...String(s ?? '')].length;
-}
-
-/** Iteration blocks (`## [date…] title`) with their bodies, for R14 length checks. */
-function splitIterationBlocks(text) {
-	const out = [];
-	let cur = null;
-	for (const line of String(text ?? '').split('\n')) {
-		if (/^##\s/.test(line)) {
-			if (cur) out.push(cur);
-			cur = null;
-			const m = /^##\s*\[(\d{4}-\d{2}-\d{2}[^\]]*)\]\s*(.*)$/.exec(line);
-			if (m) cur = { title: m[2].trim() || m[1], body: '' };
-			continue;
-		}
-		if (cur) cur.body += `${line}\n`;
-	}
-	if (cur) out.push(cur);
-	return out.map((b) => ({ title: b.title, body: b.body.trim() }));
-}
-
-/**
- * Resolve the harness home (same precedence as @deepseek-ai/dsh-home-paths:
- * $DSH_HOME, then ~/.dsh) without importing the package — the plugin keeps a
- * zero bare-import surface.
- */
-function dshHome() {
-	const env = process.env.DSH_HOME;
-	if (typeof env === 'string' && env.trim()) return path.resolve(env.trim());
-	return path.join(homedir(), '.dsh');
-}
-function joinDshHome(...segments) {
-	return path.join(dshHome(), ...segments);
-}
-
-function resolveRoot(opts) {
-	if (opts.memoryRoot) return path.resolve(opts.memoryRoot);
-	// Global memory root: the harness home's memory/ directory, shared across
-	// every workspace, profile, and session (~/.dsh/memory by default).
-	return joinDshHome('memory');
-}
-
-function appendBlock(text, block) {
-	return text.replace(/\n*$/, '\n') + block;
-}
-
-/**
- * Next same-day iteration index. Counts every `[YYYY-MM-DD]` / `[YYYY-MM-DD补N]`
- * tag in the file — not just the `## [..]` headings — because memory_fold removes
- * headings and lists the folded tags inside 「早期演化」: counting headings alone
- * would reuse an existing tag after a fold (补4 colliding with a folded 补4, which
- * also trips the R3 ordering check). Tag index: '' → 0, '补' → 1, '补N' → N;
- * returns max+1 (0 when the date has never been used).
- */
-function countHeadingDate(text, date) {
-	let max = -1;
-	const re = new RegExp(`\\[${date}(补(\\d*))?\\]`, 'g');
-	for (const m of String(text ?? '').matchAll(re)) {
-		const n = m[2] === undefined ? 0 : m[2] === '' ? 1 : Number(m[2]);
-		if (Number.isFinite(n) && n > max) max = n;
-	}
-	return max + 1;
-}
 
 // ---------------------------------------------------------------------------
-// canonical file templates
+// canonical file templates — now in src/markdown.js
 // ---------------------------------------------------------------------------
-
-function memoryIndexTemplate() {
-	return [
-		'# 记忆管理（索引 + 纪律）',
-		'',
-		'> 读取纪律：先查本索引（行内摘要足以判断相关性），再打开对应 functions/ 文件；日期不是骨架，只做迭代标签。',
-		'> 数据流：每日记录（原始层，自由格式）→ memory_write 蒸馏出 functions/ 迭代块 → memory_insight 提取 insights/ 思想 → memory_index 收进本索引（整合展示层）→ memory_skill 把反复验证的操作结晶为 skills/ 程序（使用环收口）。本文件是派生物，不与单次写入强绑。',
-		'> 性质三分：可复跑的操作进 functions/，可重套的原则进 insights/（回链来源），反复执行且被验证的操作程序进 skills/（candidate→active→retired）；共识/规范与环境常量只留在本文件。',
-		'',
-		`${FUNC_TABLE_HEADING}（functions/）`,
-		'',
-		FUNC_TABLE_HEADER,
-		'|---|---|---|---|',
-		'',
-		`${INSIGHT_TABLE_HEADING}（insights/）`,
-		'',
-		INSIGHT_TABLE_HEADER,
-		'|---|---|---|---|',
-		'',
-		`${CAP_TABLE_HEADING}（capabilities/）`,
-		'',
-		CAP_TABLE_HEADER,
-		'|---|---|---|---|',
-		'',
-		`${SKILL_TABLE_HEADING}（skills/）`,
-		'',
-		SKILL_TABLE_HEADER,
-		'|---|---|---|---|',
-		'',
-		'## 决策共识 / 规范（跨功能、约束级）',
-		'',
-		'- ',
-		'',
-		'## 环境常量（易忘）',
-		'',
-		'- ',
-		'',
-		'## 细节指针（跨功能的详细论证存放处）',
-		'',
-		'- ',
-		'',
-	].join('\n');
-}
-
-function functionFileTemplate(feature, date, guard = false) {
-	return [
-		`# ${feature}迭代历程`,
-		'',
-		`> 范围：${feature} 的代码路径、约束与迭代决策；本文件自包含，细节不回指 MEMORY.md。`,
-		...(guard ? [GUARD_LINE] : []),
-		'',
-		`## 当前状态摘要（截至 ${date}）`,
-		'',
-		'- （当前稳定行为 / 关键约束 / 隐患）',
-		'',
-		'---',
-		'',
-		'<!-- 迭代块按时间顺序追加在文件末尾：最早在上，最新在下；每块只写蒸馏结论（动因/改动/判据/待观察 各一句），过程流水留在会话与代码里 -->',
-		'',
-	].join('\n');
-}
-
-function dailyTemplate(date) {
-	return [
-		`# ${date} 记录`,
-		'',
-		'> 本文件是原始层：任务与对话过程的第一手数据，内容与格式由你（模型/harness）自主决策，插件不做任何约束。蒸馏时插件从这里归纳功能划分——记录得越真实，功能域的依据越扎实。',
-		'',
-	].join('\n');
-}
-
-function insightTemplate(theme, principle, srcLine, evolution, applicability, open, date) {
-	const parts = [
-		`# 创新优化思想：${theme}`,
-		'',
-		'> 性质：可重套的原则（不是可重跑的操作）；操作细节留在来源 functions/ 文件。',
-		`> 来源：${srcLine}`,
-		'',
-		'## 核心原则',
-		'',
-		`- ${principle}`,
-		'',
-		'## 思想演进',
-		'',
-		`- ${date} 首次沉淀`,
-	];
-	if (evolution) parts.push(`- ${oneLine(evolution)}`);
-	parts.push('', '## 适用面（超出来源功能的部分）', '');
-	if (applicability) parts.push(`- ${oneLine(applicability)}`, '');
-	parts.push('## 待观察', '');
-	if (open) parts.push(`- ${oneLine(open)}`, '');
-	return parts.join('\n');
-}
 
 // ---------------------------------------------------------------------------
 // markdown surgery (index rows / sections)
 // ---------------------------------------------------------------------------
 
-function sepOf(headerRow) {
-	const cols = headerRow.split('|').length - 2;
-	return '|' + Array.from({ length: cols }, () => '---').join('|') + '|';
-}
-
-/**
- * Upsert one index row into the table under `headingPrefix` (first cell match).
- * Creates the section at the end when the table is missing.
- *
- * `group` (optional) writes the row into a `### 索引·<group>` sub-section — the
- * scale escape hatch: past ~40 function rows the single table is split by
- * domain, and the index must still upsert into the RIGHT sub-table instead of
- * appending to whichever table happens to come first.
- */
-function upsertIndexRow(indexText, headingPrefix, headerRow, firstCell, newRow, group) {
-	const lines = indexText.split('\n');
-	let secStart = -1;
-	for (let i = 0; i < lines.length; i++) {
-		if (lines[i].startsWith(headingPrefix)) {
-			secStart = i;
-			break;
-		}
-	}
-	if (secStart === -1) {
-		const t = indexText.replace(/\n*$/, '\n');
-		if (group) {
-			return `${t}\n${headingPrefix}（细节在子目录）\n\n### 索引·${group}\n\n${headerRow}\n${sepOf(headerRow)}\n${newRow}\n`;
-		}
-		return `${t}\n${headingPrefix}（细节在子目录）\n\n${headerRow}\n${sepOf(headerRow)}\n${newRow}\n`;
-	}
-	// Self-heal: a heading that only STARTS WITH the anchor prefix (an older
-	// template generation, e.g. `## 功能域（细节在子目录，本表只留指针）` under a
-	// `## 功能域` anchor) is the same table duplicated by the fallback path.
-	// Keep the first occurrence; drop every later one including its data rows,
-	// so the next upsert edits the real table instead of appending a twin.
-	// Generation-rename twins (heading no longer shares the prefix but carries
-	// the same table header row, e.g. `## 功能域（…）` vs `## 功能模块索引…`)
-	// are recognized by that header row instead of the heading text.
-	for (let i = lines.length - 1; i > secStart; i--) {
-		if (!lines[i].startsWith('## ')) continue;
-		if (!lines[i].startsWith(headingPrefix) && lines[i + 2] !== headerRow) continue;
-		let end = i + 1;
-		while (end < lines.length && !lines[end].startsWith('## ')) end++;
-		lines.splice(i, end - i);
-	}
-	// Section bounds: the next `## ` heading ends this section (a `### ` sub
-	// heading does not, it belongs to the same zone).
-	let secEnd = lines.length;
-	for (let i = secStart + 1; i < lines.length; i++) {
-		if (lines[i].startsWith('## ')) {
-			secEnd = i;
-			break;
-		}
-	}
-	// Upsert into the first table inside [from, to): replace the row whose first
-	// cell matches, else append after the last row. Returns false when the range
-	// holds no table at all.
-	const upsertIn = (from, to) => {
-		let headIdx = -1;
-		for (let i = from; i < to; i++) {
-			if (lines[i].startsWith('|')) {
-				headIdx = i;
-				break;
-			}
-		}
-		if (headIdx === -1) return false;
-		let end = headIdx + 1;
-		while (end < to && lines[end].startsWith('|')) end++;
-		for (let i = headIdx + 1; i < end; i++) {
-			const cells = lines[i].split('|');
-			if (cells.length >= 2 && cells[1].trim() === firstCell) {
-				lines[i] = newRow;
-				return true;
-			}
-		}
-		lines.splice(end, 0, newRow);
-		return true;
-	};
-	if (group) {
-		const subHead = `### 索引·${group}`;
-		// Grouping is a MIGRATION: if the row already exists in another table of
-		// this zone (typically the flat top-level table it is moving out of),
-		// drop those copies first — otherwise splitting the table duplicates the
-		// row and trips R15 on the very next check.
-		for (let i = lines.length - 1; i > secStart; i--) {
-			if (i >= secEnd) continue;
-			if (!lines[i].startsWith('|')) continue;
-			const cells = lines[i].split('|');
-			if (cells.length >= 2 && cells[1].trim() === firstCell) lines.splice(i, 1);
-		}
-		// Bounds may have shifted after the purge; re-derive them.
-		secEnd = lines.length;
-		for (let i = secStart + 1; i < lines.length; i++) {
-			if (lines[i].startsWith('## ')) {
-				secEnd = i;
-				break;
-			}
-		}
-		let subStart = -1;
-		for (let i = secStart + 1; i < secEnd; i++) {
-			if (lines[i].startsWith(subHead)) {
-				subStart = i;
-				break;
-			}
-		}
-		if (subStart === -1) {
-			// New sub-section at the end of the zone (trailing blanks trimmed).
-			let at = secEnd;
-			while (at > secStart + 1 && lines[at - 1].trim() === '') at--;
-			lines.splice(at, 0, '', subHead, '', headerRow, sepOf(headerRow), newRow);
-			return lines.join('\n');
-		}
-		let subEnd = secEnd;
-		for (let i = subStart + 1; i < secEnd; i++) {
-			if (lines[i].startsWith('### ')) {
-				subEnd = i;
-				break;
-			}
-		}
-		if (!upsertIn(subStart + 1, subEnd)) lines.splice(subStart + 1, 0, '', headerRow, sepOf(headerRow), newRow);
-		return lines.join('\n');
-	}
-	let headIdx = -1;
-	// UNGROUPED upsert is a migration OUT of any `### 索引·<group>` sub-table:
-	// the row must not survive in a sub-section while landing in the flat table
-	// (that duplication is exactly what R15 catches on the next check). Purge
-	// matching rows inside sub-sections ONLY (the flat table keeps its in-place
-	// replace), then drop sub-sections left with no data row.
-	{
-		let inSub = false;
-		for (let i = secStart + 1; i < secEnd; i++) {
-			if (lines[i].startsWith('## ')) break;
-			if (lines[i].startsWith('### ')) {
-				inSub = lines[i].startsWith('### 索引·');
-				continue;
-			}
-			if (!inSub || !lines[i].startsWith('|')) continue;
-			const cells = lines[i].split('|');
-			if (cells.length >= 2 && cells[1].trim() === firstCell) lines.splice(i, 1);
-		}
-	}
-	for (let i = lines.length - 1; i > secStart; i--) {
-		if (i >= secEnd || !lines[i].startsWith('### 索引·')) continue;
-		let j = i + 1;
-		while (j < secEnd && !lines[j].startsWith('#')) j++;
-		const hasData = lines
-			.slice(i, j)
-			.some((l) => l.startsWith('|') && l !== headerRow && !/^[-: |]+$/.test(l));
-		if (!hasData) {
-			let from = i;
-			while (from > secStart && lines[from - 1].trim() === '') from--;
-			let to = j;
-			while (to < secEnd && lines[to].trim() === '') to++;
-			lines.splice(from, to - from);
-		}
-	}
-	secEnd = lines.length;
-	for (let i = secStart + 1; i < lines.length; i++) {
-		if (lines[i].startsWith('## ')) {
-			secEnd = i;
-			break;
-		}
-	}
-	for (let i = secStart + 1; i < secEnd; i++) {
-		if (lines[i].startsWith('|')) {
-			headIdx = i;
-			break;
-		}
-	}
-	if (headIdx === -1) {
-		lines.splice(secStart + 1, 0, '', headerRow, sepOf(headerRow), newRow);
-		return lines.join('\n');
-	}
-	let end = headIdx + 1;
-	while (end < lines.length && lines[end].startsWith('|')) end++;
-	for (let i = headIdx + 1; i < end; i++) {
-		const cells = lines[i].split('|');
-		if (cells.length >= 2 && cells[1].trim() === firstCell) {
-			lines[i] = newRow;
-			return lines.join('\n');
-		}
-	}
-	lines.splice(end, 0, newRow);
-	return lines.join('\n');
-}
-
-/**
- * Append one bullet under `sectionHeading` (section created at end when
- * missing). An exact duplicate of an existing bullet in the same section is
- * detected and reported instead of appended — the daily thread is an audit
- * trail, so a repeated line is a data bug, not content.
- */
-function appendUnderHeading(text, sectionHeading, line) {
-	const lines = text.split('\n');
-	let secStart = -1;
-	for (let i = 0; i < lines.length; i++) {
-		if (lines[i].startsWith(sectionHeading)) {
-			secStart = i;
-			break;
-		}
-	}
-	if (secStart === -1) {
-		const t = text.replace(/\n*$/, '\n');
-		return { text: `${t}\n${sectionHeading}\n\n${line}\n`, duplicate: false };
-	}
-	let end = secStart + 1;
-	while (end < lines.length && !lines[end].startsWith('## ')) end++;
-	const body = lines.slice(secStart + 1, end);
-	if (body.some((l) => l.trim() === line.trim())) {
-		return { text: lines.join('\n'), duplicate: true };
-	}
-	let at = end;
-	while (at > secStart + 1 && lines[at - 1].trim() === '') at--;
-	lines.splice(at, 0, line);
-	return { text: lines.join('\n'), duplicate: false };
-}
-
-/**
- * Mark still-open daily-log entries that reference `feature` with a ✅ resolved
- * stamp (the R2 "勾掉" move): the thread stays in the day it was raised, gains
- * a bare ✅ (no second pointer), and is never re-copied forward. The raw layer
- * is free-form, so this scans every bullet that links the feature file — no
- * fixed section heading is required. Applies to every daily log from
- * `sinceDate` to today. Returns files touched.
- */
-async function resolveOpenItems(root, feature, sinceDate, today) {
-	const touched = [];
-	try {
-		for (const f of await readdir(root)) {
-			if (!/^\d{4}-\d{2}-\d{2}\.md$/.test(f)) continue;
-			if (f.slice(0, 10) < sinceDate) continue;
-			if (f.slice(0, 10) > today) continue;
-			const p = path.join(root, f);
-			const text = await readFile(p, 'utf8');
-			const lines = text.split('\n');
-			let changed = false;
-			for (let i = 0; i < lines.length; i++) {
-				if (lines[i].includes('✅')) continue;
-				if (!lines[i].includes(`functions/${feature}.md`)) continue;
-				// Only thread lines (raise site): a bullet that links the feature
-				// file. Resolution notes are added inline at the raise site.
-				if (!/^- .+→/.test(lines[i])) continue;
-				// The raise-site line already ends with a link to the same file —
-				// appending the full resolution pointer would duplicate the target
-				// twice in one row. Stamp a bare marker instead.
-				lines[i] = `${lines[i]}（✅ ${today} 已解决）`;
-				changed = true;
-			}
-			if (changed) {
-				await writeText(p, lines.join('\n'));
-				touched.push(f);
-			}
-		}
-	} catch {
-		/* root absent */
-	}
-	return touched;
-}
-
-/** Replace the `## 当前状态摘要` heading date + bullets with fresh content. */
-function refreshSummarySection(fnText, date, currentState) {
-	const lines = fnText.split('\n');
-	let start = -1;
-	for (let i = 0; i < lines.length; i++) {
-		if (lines[i].startsWith('## 当前状态摘要')) {
-			start = i;
-			break;
-		}
-	}
-	const newHeading = `## 当前状态摘要（截至 ${date}）`;
-	const body = currentState
-		.split('\n')
-		.map((s) => `- ${oneLine(s)}`)
-		.filter((s) => s !== '- ');
-	if (start === -1) {
-		let at = lines.length;
-		for (let i = 0; i < lines.length; i++) {
-			if (lines[i].startsWith('## ')) {
-				at = i;
-				break;
-			}
-		}
-		lines.splice(at, 0, newHeading, '', ...body, '');
-		return lines.join('\n');
-	}
-	let end = start + 1;
-	while (end < lines.length && !lines[end].startsWith('## ') && lines[end].trim() !== '---') end++;
-	lines.splice(start, end - start, newHeading, '', ...body, '');
-	return lines.join('\n');
-}
-
-/** Replace one section's body (up to the next `## ` heading) with `body`. */
-function replaceSection(text, heading, body) {
-	const lines = text.split('\n');
-	let start = -1;
-	for (let i = 0; i < lines.length; i++) {
-		if (lines[i].startsWith(heading)) {
-			start = i;
-			break;
-		}
-	}
-	if (start === -1) return text;
-	let end = start + 1;
-	while (end < lines.length && !lines[end].startsWith('## ')) end++;
-	lines.splice(start + 1, end - start - 1, '', body, '');
-	return lines.join('\n');
-}
 
 // ---------------------------------------------------------------------------
 // shared checker pieces (ported from lantern's check_memory.py)
@@ -2779,136 +2192,6 @@ function memoryRenameTool(opts) {
 // proactive recall: pre-step index matching (agent/pre-step waterfall)
 // ---------------------------------------------------------------------------
 
-/** Extract meaningful tokens: CJK bigrams + latin words, minus stopwords. */
-function tokensOf(text) {
-	const t = String(text ?? '').toLowerCase();
-	const out = new Set();
-	for (const w of t.matchAll(/[a-z0-9_\-]{2,}/g)) out.add(w[0]);
-	for (let i = 0; i < t.length - 1; i++) {
-		const a = t[i];
-		const b = t[i + 1];
-		if (/[\u4e00-\u9fff]/.test(a) && /[\u4e00-\u9fff]/.test(b)) out.add(a + b);
-	}
-	for (const stop of ['这个', '那个', '什么', '怎么', '如何', '可以', '我们', '你们', '他们', '一个', '一下', '没有', '不是', '就是', '还有', '或者', '以及', '然后', '但是', '所以', '如果', '因为', 'the', 'and', 'for', 'with', 'this', 'that', 'have', 'not', '但', '的', '了', '吗', '呢', '吧']) {
-		out.delete(stop);
-	}
-	return out;
-}
-
-/**
- * Score index rows against the user's tokens and return the top rows whose
- * overlap clears a small threshold. Pure and synchronous: runs in pre-step.
- *
- * v2 ranking (same cost class, much better precision):
- *  - IDF weighting: tokens shared by every row (e.g. 「功能」「记忆」) count for
- *    little; a rare token (「逐帧」「懒加载」) dominates. Without this, a query
- *    mentioning a common word outranks the row that is actually about it.
- *  - Name/slug hits are boosted: the row's own identity matching beats a
- *    passing mention inside its summary.
- *  - Relative threshold: rows scoring under 40% of the best match are dropped,
- *    so one strong hit does not drag three weak ones into the injection.
- *  - Dedupe by href (a table split into ### sub-sections can repeat a row).
- */
-/**
- * @param {Map<string, {uses:number,positives:number,badRate:number}>} [usage]
- *   Per-href usage signals (from .usage.jsonl). When present, the lexical IDF
- *   rank is FUSED with a usage rank via RRF (borrowed from MemOS's hybrid
- *   retrieval: FTS5 + vector → RRF), so a row that is both topically relevant
- *   AND repeatedly used wins, and a heavily-corrected row is demoted.
- */
-function matchIndexRows(indexText, userTokens, limit = 3, usage) {
-	const candidates = [];
-	for (const raw of indexText.split('\n')) {
-		const s = raw.trim();
-		if (!s.startsWith('|') || s.includes('---')) continue;
-		const cells = s.replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
-		if (cells.length < 3 || !cells[1]) continue;
-		// rows: [name, summary, link, (extra summary)] — link cell carries zone.
-		const link = cells[2] || '';
-		const zm = link.match(/\(([^)]+\.md)\)/);
-		if (!zm) continue;
-		const href = zm[1];
-		const zone = href.startsWith('skills/') ? 'skill' : href.startsWith('insights/') ? 'insight' : href.startsWith('functions/') ? 'function' : null;
-		if (!zone) continue;
-		// A skill row carries its lifecycle in the 4th cell (status). Only ACTIVE
-		// skills are recallable — a candidate is an unverified procedure and must
-		// not shadow the reasoning it was distilled from.
-		if (zone === 'skill' && cells[3] && cells[3] !== 'active') continue;
-		const name = href.split('/').pop().replace(/\.md$/, '');
-		candidates.push({
-			name,
-			summary: cells[1],
-			href,
-			zone,
-			nameTokens: tokensOf(name),
-			bodyTokens: tokensOf(`${cells[1]} ${cells[3] ?? ''}`),
-		});
-	}
-	if (!candidates.length) return [];
-	// Document frequency per token across rows → IDF weights.
-	const df = new Map();
-	for (const c of candidates) {
-		for (const tk of new Set([...c.nameTokens, ...c.bodyTokens])) df.set(tk, (df.get(tk) ?? 0) + 1);
-	}
-	const n = candidates.length;
-	const idf = (tk) => 1 + Math.log(n / Math.max(1, df.get(tk) ?? n));
-	const scored = [];
-	for (const c of candidates) {
-		let score = 0;
-		for (const tk of userTokens) {
-			if (c.nameTokens.has(tk)) score += 2 * idf(tk);
-			else if (c.bodyTokens.has(tk)) score += idf(tk);
-		}
-		if (score > 0) scored.push({ name: c.name, summary: c.summary, href: c.href, zone: c.zone, score });
-	}
-	scored.sort((a, b) => b.score - a.score);
-	// ---- RRF fusion with the usage rank -------------------------------------
-	// Two independent rankings (lexical IDF, usage heat) are combined by
-	// Reciprocal Rank Fusion: a row's score is SUM(1/(k + rank_i)) over the
-	// rankings it appears in. RRF is scale-free, so the two signals need no
-	// normalization — the thing MemOS gets from blending FTS5 + vectors.
-	let ranked = scored;
-	if (usage && usage.size) {
-		const k = 60; // standard RRF constant
-		const lexicalRank = new Map();
-		scored.forEach((r, i) => lexicalRank.set(r.href, i));
-		// Usage rank: heat = uses + 2*positives, demoted by correction rate.
-		const heat = new Map();
-		for (const [href, u] of usage) {
-			const penalty = 1 - Math.min(0.9, u.badRate ?? 0);
-			heat.set(href, (u.uses + 2 * (u.positives ?? 0)) * penalty);
-		}
-		const usageRank = new Map();
-		[...heat.entries()]
-			.sort((a, b) => b[1] - a[1])
-			.forEach(([href], i) => usageRank.set(href, i));
-		const fused = scored.map((r) => {
-			let s = 1 / (k + (lexicalRank.get(r.href) ?? scored.length));
-			if (usageRank.has(r.href)) s += 1 / (k + usageRank.get(r.href));
-			return { ...r, score: s, lexical: r.score };
-		});
-		fused.sort((a, b) => b.score - a.score);
-		ranked = fused;
-	}
-	const best = ranked[0]?.score ?? 0;
-	const seen = new Set();
-	const out = [];
-	for (const r of ranked) {
-		// Relative cutoff: under 40% of the best fused score.
-		if (r.score < best * 0.4) break;
-		if (seen.has(r.href)) continue;
-		seen.add(r.href);
-		out.push(r);
-		if (out.length >= limit) break;
-	}
-	return out;
-}
-
-/**
- * Rows of the index tables, as { name, summary, href, zone } — the same shape
- * matchIndexRows builds, but without scoring. Used to materialize a
- * decision-repair target into a recallable row.
- */
 function indexRowsOf(indexText) {
 	const out = [];
 	for (const raw of indexText.split('\n')) {
@@ -3017,29 +2300,6 @@ async function searchMemory(root, rawQuery, { zone = 'all', limit = 20 } = {}) {
 	return hits.slice(0, limit).map(({ zone: z, name, line, heading, snippet }) => ({ zone: z, name, line, heading, snippet }));
 }
 
-/** Build one recall UserMessage (form 'recall', plugin producer kind). */
-function buildRecallMessage(lines) {
-	const hasSkill = lines.some((l) => l.zone === 'skill');
-	const hasRepair = lines.some((l) => l.repair);
-	const text = [
-		'### 记忆召回（memory-manager）',
-		'',
-		'本轮用户输入与以下已有记忆的索引行相关。**先查后写**：涉及这些主题时先读对应文件再行动，不要凭空重推已有结论；如确属新工作，正常进行即可：',
-		'',
-		...lines.map((l) => `- ${l.zone === 'skill' ? '⭐ 已结晶技能：' : ''}${l.repair ? `⚠️ 决策修复（近 7 天纠正 ${l.repair.corrections} 次、纠正率 ${l.repair.badRate}）：` : ''}${l.summary} → [${l.href}](${l.href})${l.zone === 'skill' ? '（先读程序按步骤走，不要再现场推导）' : ''}`),
-		'',
-		hasSkill ? 'ℹ 命中 active 技能：这是过去反复验证过的操作程序，优先直接执行其步骤；执行结果与预期不符时，回到来源功能域重新推导。' : '',
-		hasRepair ? '⚠️ 决策修复命中：上面标 ⚠️ 的记忆近期被反复纠正——先读它再动手，别在同一个判断上再错一次（当前这一步未被打断）。' : '',
-	].filter((s) => s !== '').join('\n');
-	return {
-		role: 'user',
-		content: [{ type: 'text', text }],
-		source: {
-			kind: 'memory-manager/recall',
-			form: 'recall',
-		},
-	};
-}
 
 // ---------------------------------------------------------------------------
 // tools

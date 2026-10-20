@@ -1,15 +1,8 @@
 /**
- * Proactive recall: pre-step index matching + the ranked full-text search
- * shared by memory_search and the panel's /search route.
+ * Proactive recall: pre-step index matching (tokensOf + matchIndexRows) and the
+ * recall message builder. Ranking fuses lexical IDF with usage heat via RRF;
+ * decision-repair rows are forced in and visibly marked.
  */
-import { readdir } from 'node:fs/promises';
-import * as path from 'node:path';
-import { readIfExists } from './util.js';
-import { CAP_DIR, SKILL_DIR } from './constants.js';
-
-// ---------------------------------------------------------------------------
-// proactive recall: pre-step index matching (agent/pre-step waterfall)
-// ---------------------------------------------------------------------------
 
 /** Extract meaningful tokens: CJK bigrams + latin words, minus stopwords. */
 export function tokensOf(text) {
@@ -41,7 +34,36 @@ export function tokensOf(text) {
  *    so one strong hit does not drag three weak ones into the injection.
  *  - Dedupe by href (a table split into ### sub-sections can repeat a row).
  */
-export function matchIndexRows(indexText, userTokens, limit = 3) {
+/**
+ * @param {Map<string, {uses:number,positives:number,badRate:number}>} [usage]
+ *   Per-href usage signals (from .usage.jsonl). When present, the lexical IDF
+ *   rank is FUSED with a usage rank via RRF (borrowed from MemOS's hybrid
+ *   retrieval: FTS5 + vector → RRF), so a row that is both topically relevant
+ *   AND repeatedly used wins, and a heavily-corrected row is demoted.
+ */
+
+/**
+ * Score index rows against the user's tokens and return the top rows whose
+ * overlap clears a small threshold. Pure and synchronous: runs in pre-step.
+ *
+ * v2 ranking (same cost class, much better precision):
+ *  - IDF weighting: tokens shared by every row (e.g. 「功能」「记忆」) count for
+ *    little; a rare token (「逐帧」「懒加载」) dominates. Without this, a query
+ *    mentioning a common word outranks the row that is actually about it.
+ *  - Name/slug hits are boosted: the row's own identity matching beats a
+ *    passing mention inside its summary.
+ *  - Relative threshold: rows scoring under 40% of the best match are dropped,
+ *    so one strong hit does not drag three weak ones into the injection.
+ *  - Dedupe by href (a table split into ### sub-sections can repeat a row).
+ */
+/**
+ * @param {Map<string, {uses:number,positives:number,badRate:number}>} [usage]
+ *   Per-href usage signals (from .usage.jsonl). When present, the lexical IDF
+ *   rank is FUSED with a usage rank via RRF (borrowed from MemOS's hybrid
+ *   retrieval: FTS5 + vector → RRF), so a row that is both topically relevant
+ *   AND repeatedly used wins, and a heavily-corrected row is demoted.
+ */
+export function matchIndexRows(indexText, userTokens, limit = 3, usage) {
 	const candidates = [];
 	for (const raw of indexText.split('\n')) {
 		const s = raw.trim();
@@ -87,10 +109,39 @@ export function matchIndexRows(indexText, userTokens, limit = 3) {
 		if (score > 0) scored.push({ name: c.name, summary: c.summary, href: c.href, zone: c.zone, score });
 	}
 	scored.sort((a, b) => b.score - a.score);
-	const best = scored[0]?.score ?? 0;
+	// ---- RRF fusion with the usage rank -------------------------------------
+	// Two independent rankings (lexical IDF, usage heat) are combined by
+	// Reciprocal Rank Fusion: a row's score is SUM(1/(k + rank_i)) over the
+	// rankings it appears in. RRF is scale-free, so the two signals need no
+	// normalization — the thing MemOS gets from blending FTS5 + vectors.
+	let ranked = scored;
+	if (usage && usage.size) {
+		const k = 60; // standard RRF constant
+		const lexicalRank = new Map();
+		scored.forEach((r, i) => lexicalRank.set(r.href, i));
+		// Usage rank: heat = uses + 2*positives, demoted by correction rate.
+		const heat = new Map();
+		for (const [href, u] of usage) {
+			const penalty = 1 - Math.min(0.9, u.badRate ?? 0);
+			heat.set(href, (u.uses + 2 * (u.positives ?? 0)) * penalty);
+		}
+		const usageRank = new Map();
+		[...heat.entries()]
+			.sort((a, b) => b[1] - a[1])
+			.forEach(([href], i) => usageRank.set(href, i));
+		const fused = scored.map((r) => {
+			let s = 1 / (k + (lexicalRank.get(r.href) ?? scored.length));
+			if (usageRank.has(r.href)) s += 1 / (k + usageRank.get(r.href));
+			return { ...r, score: s, lexical: r.score };
+		});
+		fused.sort((a, b) => b.score - a.score);
+		ranked = fused;
+	}
+	const best = ranked[0]?.score ?? 0;
 	const seen = new Set();
 	const out = [];
-	for (const r of scored) {
+	for (const r of ranked) {
+		// Relative cutoff: under 40% of the best fused score.
 		if (r.score < best * 0.4) break;
 		if (seen.has(r.href)) continue;
 		seen.add(r.href);
@@ -101,87 +152,24 @@ export function matchIndexRows(indexText, userTokens, limit = 3) {
 }
 
 /**
- * Ranked full-text search over the whole memory root. Shared by the
- * `memory_search` tool and the panel's /search route so both rank identically
- * (the panel used to do a naive indexOf, whose order was file order).
+ * Rows of the index tables, as { name, summary, href, zone } — the same shape
+ * matchIndexRows builds, but without scoring. Used to materialize a
+ * decision-repair target into a recallable row.
  */
-export async function searchMemory(root, rawQuery, { zone = 'all', limit = 20 } = {}) {
-	const q = String(rawQuery ?? '').trim().toLowerCase();
-	if (q.length < 2) return [];
-	const tokens = tokensOf(q);
-	const zones = zone === 'all' ? ['index', 'functions', 'insights', 'capabilities', 'skills', 'daily'] : [zone];
-	const files = [];
-	if (zones.includes('index')) files.push({ zone: 'index', name: 'MEMORY.md', file: path.join(root, 'MEMORY.md') });
-	for (const z of ['functions', 'insights', 'capabilities', 'skills']) {
-		if (!zones.includes(z)) continue;
-		let names = [];
-		try {
-			names = (await readdir(path.join(root, z))).filter((n) => n.endsWith('.md')).sort();
-		} catch {
-			/* zone absent */
-		}
-		for (const n of names) files.push({ zone: z, name: n, file: path.join(root, z, n) });
-	}
-	if (zones.includes('daily')) {
-		let names = [];
-		try {
-			names = (await readdir(root)).filter((n) => /^\d{4}-\d{2}-\d{2}\.md$/.test(n)).sort().reverse();
-		} catch {
-			/* root absent */
-		}
-		for (const n of names) files.push({ zone: 'daily', name: n, file: path.join(root, n) });
-	}
-	const hits = [];
-	for (const f of files) {
-		const text = await readIfExists(f.file);
-		if (text === undefined) continue;
-		// Split on CRLF too: files written by other tools (or on Windows) carry
-		// \r, and `.` never matches \r — a `^#{1,3}\s+(.+)$` test on a raw CRLF
-		// line silently fails, which left every daily hit without its heading.
-		const lines = text.split(/\r?\n/);
-		const nameHit = f.name.toLowerCase().includes(q) || tokensOf(f.name).size && [...tokens].some((t) => tokensOf(f.name).has(t));
-		let heading = '';
-		const fileHits = [];
-		for (let i = 0; i < lines.length; i++) {
-			const line = lines[i];
-			const lower = line.toLowerCase();
-			const hm = lower.match(/^#{1,3}\s+(.+)$/);
-			if (hm) heading = hm[1].trim();
-			let score = 0;
-			if (lower.includes(q)) score += 3;
-			if (heading && heading.toLowerCase().includes(q)) score += 2;
-			let tokenHits = 0;
-			for (const tk of tokens) if (lower.includes(tk)) tokenHits++;
-			score += tokenHits;
-			if (score === 0) continue;
-			fileHits.push({
-				zone: f.zone,
-				name: f.name,
-				line: i + 1,
-				heading: heading.slice(0, 60),
-				snippet: line.trim().slice(0, 160),
-				score: score + (nameHit ? 2 : 0),
-			});
-		}
-		// At most 3 lines per file: one file should not monopolise the ranking.
-		fileHits.sort((a, b) => b.score - a.score);
-		hits.push(...fileHits.slice(0, 3));
-	}
-	hits.sort((a, b) => b.score - a.score);
-	return hits.slice(0, limit).map(({ zone: z, name, line, heading, snippet }) => ({ zone: z, name, line, heading, snippet }));
-}
 
 /** Build one recall UserMessage (form 'recall', plugin producer kind). */
 export function buildRecallMessage(lines) {
 	const hasSkill = lines.some((l) => l.zone === 'skill');
+	const hasRepair = lines.some((l) => l.repair);
 	const text = [
 		'### 记忆召回（memory-manager）',
 		'',
 		'本轮用户输入与以下已有记忆的索引行相关。**先查后写**：涉及这些主题时先读对应文件再行动，不要凭空重推已有结论；如确属新工作，正常进行即可：',
 		'',
-		...lines.map((l) => `- ${l.zone === 'skill' ? '⭐ 已结晶技能：' : ''}${l.summary} → [${l.href}](${l.href})${l.zone === 'skill' ? '（先读程序按步骤走，不要再现场推导）' : ''}`),
+		...lines.map((l) => `- ${l.zone === 'skill' ? '⭐ 已结晶技能：' : ''}${l.repair ? `⚠️ 决策修复（近 7 天纠正 ${l.repair.corrections} 次、纠正率 ${l.repair.badRate}）：` : ''}${l.summary} → [${l.href}](${l.href})${l.zone === 'skill' ? '（先读程序按步骤走，不要再现场推导）' : ''}`),
 		'',
 		hasSkill ? 'ℹ 命中 active 技能：这是过去反复验证过的操作程序，优先直接执行其步骤；执行结果与预期不符时，回到来源功能域重新推导。' : '',
+		hasRepair ? '⚠️ 决策修复命中：上面标 ⚠️ 的记忆近期被反复纠正——先读它再动手，别在同一个判断上再错一次（当前这一步未被打断）。' : '',
 	].filter((s) => s !== '').join('\n');
 	return {
 		role: 'user',

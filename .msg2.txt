@@ -1,0 +1,23 @@
+refactor(5.14.0): 整个插件封装成 src/ 模块目录，server.js 收为入口
+
+server.js 已膨胀到 3591 行、client.js 1000+ 行，"一个文件装下整个插件"到了
+该拆的时候。按职责切成模块，server.js 只留入口（apply + 工具注册 + 钩子）。
+
+- src/constants.js：全部表头/表头行、尺寸上限、生命周期词表（skills 三态等）
+- src/util.js：日期、原子写、slug 校验、迭代块解析、记忆根解析
+- src/usage.js：.usage.jsonl 信号账本（append/read/聚合分层）
+- src/markdown.js：文件模板 + 索引行/小节的手术（upsert/append/self-heal）
+- src/recall.js：tokensOf + matchIndexRows（含 RRF 融合）+ 召回消息构造
+- src/host.js：DSH 安装目录探测 + 懒加载宿主包（createRequire 契约不变）
+
+server.js 3591 → 2854 行；公共 API 保持不变（测试依赖的导出全部保留）。
+package.json files 增补 src/，否则 npm 安装后相对导入会断。
+
+途中发现并修掉两个真 bug（都是"抽取早于功能演进"造成的版本漂移）：
+1) src/recall.js 抽自 5.13.0 之前 → 导入后 RRF 融合与决策修复标注静默消失
+   （3 条断言抓到），已从 HEAD 重新生成该模块；
+2) src/usage.js 漏了 mkdir 导入 + 依赖未导入的 helper → appendUsage 被
+   try/catch 静默吞掉，召回信号不再落盘（1 条断言抓到）。
+
+三套测试全绿：harness 175 + api 33 + ui 76 = 284（与重构前完全一致，
+证明是纯结构调整，行为零变化）。

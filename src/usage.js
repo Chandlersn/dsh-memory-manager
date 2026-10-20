@@ -7,9 +7,9 @@
  * so no zone listing, search or lint sees it), and memory_check / memory_usage
  * turn those lines into layer suggestions.
  */
-import { appendFile, readFile } from 'node:fs/promises';
+import { appendFile, mkdir } from 'node:fs/promises';
 import * as path from 'node:path';
-import { localDateStr, statExists } from './util.js';
+import { readIfExists } from './util.js';
 
 export function usagePath(root) {
 	return path.join(root, '.usage.jsonl');
@@ -87,5 +87,3 @@ export function summarizeUsage(entries) {
 	items.sort((a, b) => b.uses - a.uses || b.last - a.last);
 	return items;
 }
-
-
