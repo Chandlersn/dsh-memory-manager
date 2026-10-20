@@ -143,12 +143,26 @@ window.__ModuleLoader__.load({
 .dmo-md blockquote{margin:6px 0;padding:2px 0 2px 10px;border-left:2px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary)}
 .dmo-md pre{background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm);padding:8px;overflow-x:auto;font-family:var(--ds-font-family-code,ui-monospace,monospace);font-size:12px;line-height:18px}
 .dmo-md code{background:var(--dsw-alias-bg-layer-2);border-radius:var(--dsw-radius-sm);padding:0 3px;font-family:var(--ds-font-family-code,ui-monospace,monospace);font-size:12px}
+/* fenced code block: outer frame carries the language badge + copy button, the
+   pre itself keeps its own scroll so a long line never stretches the panel. */
+.dmo-code{border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm);overflow:hidden;margin:8px 0;background:var(--dsw-alias-bg-layer-2)}
+.dmo-code-bar{display:flex;align-items:center;gap:8px;padding:4px 8px;border-bottom:.5px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1)}
+.dmo-code-lang{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary);font-family:var(--ds-font-family-code,ui-monospace,monospace);text-transform:lowercase}
+.dmo-code-copy{margin-left:auto;border:none;background:transparent;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:16px;cursor:pointer;padding:2px 6px;border-radius:var(--dsw-radius-sm)}
+.dmo-code-copy:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}
+.dmo-code .dmo-pre{margin:0;border:none;border-radius:0;background:transparent}
+.dmo-md blockquote{margin:6px 0;padding:2px 0 2px 10px;border-left:2px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary)}
 .dmo-md hr{border:none;border-top:.5px solid var(--dsw-alias-border-l2);margin:10px 0}
 .dmo-link{color:var(--dsw-alias-link);cursor:pointer;text-decoration:none;border:none;background:transparent;font:inherit;padding:0;font-weight:500}
 .dmo-link:hover{text-decoration:underline dotted var(--dsw-alias-link);text-underline-offset:3px}
-.dmo-table{width:100%;border-collapse:collapse;font-size:14px;margin:6px 0}
+/* tables: zebra rows + horizontal scroll in their own box (wide comparison
+   tables scroll instead of stretching the whole panel). */
+.dmo-table-wrap{overflow-x:auto;margin:8px 0;border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm)}
+.dmo-table{width:100%;border-collapse:collapse;font-size:14px;margin:0}
 .dmo-table th,.dmo-table td{border-bottom:.5px solid var(--dsw-alias-border-l2);padding:6px 8px;text-align:left;vertical-align:top}
-.dmo-table th{font-weight:600;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}
+.dmo-table th{font-weight:600;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px;white-space:nowrap;background:var(--dsw-alias-bg-layer-1)}
+.dmo-table tbody tr:last-child td{border-bottom:none}
+.dmo-table tbody tr.odd{background:var(--dsw-alias-bg-layer-1)}
 .dmo-idx-row{cursor:pointer}
 .dmo-idx-row:hover{background:var(--dsw-alias-interactive-bg-hover)}
 .dmo-idx-name{font-family:var(--ds-font-family-code,ui-monospace,monospace);white-space:nowrap}
@@ -425,11 +439,40 @@ window.__ModuleLoader__.load({
 					continue;
 				}
 				if (/^```/.test(line.trim())) {
+					// Language tag rides the fence (```js → badge "js"), and a copy
+					// button turns a stored script into something usable without
+					// selecting 40 lines by hand — the panel is read-only, so copying
+					// is the one action a reader legitimately wants.
+					const lang = line.trim().slice(3).trim();
 					const buf = [];
 					i++;
 					while (i < lines.length && !/^```/.test(lines[i].trim())) buf.push(lines[i++]);
 					i++;
-					blocks.push(h('pre', { key: `b${k++}` }, buf.join('\n')));
+					const body = buf.join('\n');
+					blocks.push(
+						h(
+							'div',
+							{ key: `b${k++}`, className: 'dmo-code' },
+							h(
+								'div',
+								{ className: 'dmo-code-bar' },
+								h('span', { className: 'dmo-code-lang' }, lang || 'text'),
+								h(
+									'button',
+									{
+										type: 'button', className: 'dmo-code-copy', title: '复制代码', 'data-dmo': 'code-copy',
+										onClick: (e) => {
+											const done = () => { e.target.textContent = '已复制'; setTimeout(() => { e.target.textContent = '复制'; }, 1200); };
+											if (navigator.clipboard?.writeText) navigator.clipboard.writeText(body).then(done, done);
+											else done();
+										},
+									},
+									'复制',
+								),
+							),
+							h('pre', { className: 'dmo-pre' }, body),
+						),
+					);
 					continue;
 				}
 				if (/^\|/.test(line.trim())) {
@@ -441,16 +484,20 @@ window.__ModuleLoader__.load({
 					const head = parsed.shift();
 					blocks.push(
 						h(
-							'table',
-							{ key: `b${k++}`, className: 'dmo-table' },
-							[
-								head ? h('thead', { key: 'th' }, h('tr', null, head.map((c, x) => h('th', { key: x }, inline(c, `h${x}`, zone, onNavigate))))) : null,
-								h(
-									'tbody',
-									{ key: 'tb' },
-									parsed.map((cells, y) => h('tr', { key: y }, cells.map((c, x) => h('td', { key: x }, inline(c, `c${y}-${x}`, zone, onNavigate))))),
-								),
-							],
+							'div',
+							{ key: `b${k++}`, className: 'dmo-table-wrap' },
+							h(
+								'table',
+								{ className: 'dmo-table' },
+								[
+									head ? h('thead', { key: 'th' }, h('tr', null, head.map((c, x) => h('th', { key: x }, inline(c, `h${x}`, zone, onNavigate))))) : null,
+									h(
+										'tbody',
+										{ key: 'tb' },
+										parsed.map((cells, y) => h('tr', { key: y, className: y % 2 ? 'odd' : undefined }, cells.map((c, x) => h('td', { key: x }, inline(c, `c${y}-${x}`, zone, onNavigate))))),
+									),
+								],
+							),
 						),
 					);
 					continue;

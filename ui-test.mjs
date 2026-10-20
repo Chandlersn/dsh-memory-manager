@@ -268,6 +268,52 @@ ok(memRead.includes('程序体在宿主目录包。') && memRead.includes('存�
 ok(memRead.includes('文件 1') && memRead.includes('分离延迟重启.md'), 'the crystallized detail lists its own file');
 ok(hostRead.includes('返回技能库'), 'the detail view offers the way back');
 
+// --- markdown preview mode: code blocks and tables are READER-grade ----------
+// A fenced block renders as a framed unit: language badge, copy button, and a
+// pre that keeps its own scroll (a long line never stretches the panel). The
+// index fixture carries no fence, so build the view from a body that does.
+const mdProbe = serialize(FakeReact.createElement(T.SearchPane, {
+	res: { data: { hits: [] }, loading: false, error: null },
+	q: 'x', zone: 'all', setZone: () => {}, onOpen() {},
+}));
+ok(mdProbe.includes('这个分区没有命中') || mdProbe.includes('搜索'), 'search probe renders');
+const codeFixture = {
+	'/api/memory-org/file?zone=functions&name=alpha.md': {
+		data: {
+			name: 'alpha.md',
+			text: [
+				'# 功能域：alpha',
+				'',
+				'> 当前状态摘要：预览断言。',
+				'',
+				'## [2026-10-01] 带代码与表格的块',
+				'',
+				'```js',
+				'const x = 1;',
+				'```',
+				'',
+				'| 列一 | 列二 |',
+				'|---|---|',
+				'| a | b |',
+				'| c | d |',
+			].join('\n'),
+		},
+		loading: false,
+		error: null,
+	},
+};
+const mdView = serialize(FakeReact.createElement(MemoryPanel, {
+	__apiFixtures: { ...fixtures, ...codeFixture },
+	initialView: { kind: 'file', zone: 'functions', name: 'alpha.md' },
+}));
+ok(count(mdView, 'class="dmo-code"') === 1, 'a fenced block renders as one framed code unit');
+ok(mdView.includes('dmo-code-lang') && mdView.includes('js'), 'the language badge shows the fence tag');
+ok(count(mdView, 'data-dmo="code-copy"') === 1, 'the code block carries a copy button');
+ok(mdView.includes('const x = 1;'), 'the code body renders');
+ok(count(mdView, 'dmo-table-wrap') === 1, 'a table renders inside its own scroll box');
+ok(count(mdView, 'class="dmo-table"') === 1 && mdView.includes('列一') && mdView.includes('列二'), 'the table keeps its header cells');
+ok(mdView.includes('odd'), 'zebra striping marks alternate rows');
+
 // --- reader: long function file folds to the newest block -------------------
 // Sections render newest-first (the file is append-only oldest-first; the
 // reader flips the order so the top card is always the latest state).
