@@ -14,6 +14,10 @@ import {
 	INSIGHT_TABLE_HEADER,
 	CAP_TABLE_HEADER,
 	SKILL_TABLE_HEADER,
+	LEGACY_FUNC_TABLE_HEADER,
+	LEGACY_INSIGHT_TABLE_HEADER,
+	LEGACY_CAP_TABLE_HEADER,
+	LEGACY_SKILL_TABLE_HEADER,
 	GUARD_LINE,
 } from './constants.js';
 
@@ -32,22 +36,22 @@ export function memoryIndexTemplate() {
 		`${FUNC_TABLE_HEADING}（functions/）`,
 		'',
 		FUNC_TABLE_HEADER,
-		'|---|---|---|---|',
+		'|---|---|',
 		'',
 		`${INSIGHT_TABLE_HEADING}（insights/）`,
 		'',
 		INSIGHT_TABLE_HEADER,
-		'|---|---|---|---|',
+		'|---|---|',
 		'',
 		`${CAP_TABLE_HEADING}（capabilities/）`,
 		'',
 		CAP_TABLE_HEADER,
-		'|---|---|---|---|',
+		'|---|---|',
 		'',
 		`${SKILL_TABLE_HEADING}（skills/）`,
 		'',
 		SKILL_TABLE_HEADER,
-		'|---|---|---|---|',
+		'|---|---|---|',
 		'',
 		'## 决策共识 / 规范（跨功能、约束级）',
 		'',
@@ -124,6 +128,32 @@ export function sepOf(headerRow) {
 }
 
 /**
+ * A zone's current header row maps to the pre-5.15.0 four-column header it
+ * replaced. A root written by either generation must be recognized as the same
+ * table, or the twin/self-heal logic silently ignores the old half.
+ */
+const HEADER_LINEAGE = new Map([
+	[FUNC_TABLE_HEADER, LEGACY_FUNC_TABLE_HEADER],
+	[INSIGHT_TABLE_HEADER, LEGACY_INSIGHT_TABLE_HEADER],
+	[CAP_TABLE_HEADER, LEGACY_CAP_TABLE_HEADER],
+	[SKILL_TABLE_HEADER, LEGACY_SKILL_TABLE_HEADER],
+]);
+
+/**
+ * The slug a row's first CONTENT cell stands for. `'| a | b |'.split('|')`
+ * yields ['', ' a ', ' b ', ''], so the name lives at index 1 — and since 5.15.0
+ * that cell carries the link (`[name](functions/name.md)`) instead of plain
+ * text. Both shapes must map to the same key, or an upsert appends a row for a
+ * slug that is already there.
+ */
+function rowSlug(line) {
+	const cells = String(line ?? '').split('|');
+	const first = (cells.length >= 2 ? cells[1] : cells[0] ?? '').trim();
+	const m = /^\[([^\]]+)\]\([^)]*\)$/.exec(first);
+	return m ? m[1] : first;
+}
+
+/**
  * Upsert one index row into the table under `headingPrefix` (first cell match).
  * Creates the section at the end when the table is missing.
  *
@@ -158,7 +188,11 @@ export function upsertIndexRow(indexText, headingPrefix, headerRow, firstCell, n
 	// are recognized by that header row instead of the heading text.
 	for (let i = lines.length - 1; i > secStart; i--) {
 		if (!lines[i].startsWith('## ')) continue;
-		if (!lines[i].startsWith(headingPrefix) && lines[i + 2] !== headerRow) continue;
+		// Accept this zone's CURRENT header AND the legacy four-column one: a root
+		// written by either generation is the same table, not a twin.
+		const legacyHeader = HEADER_LINEAGE.get(headerRow);
+		const sameTable = lines[i].startsWith(headingPrefix) || lines[i + 2] === headerRow || (legacyHeader && lines[i + 2] === legacyHeader);
+		if (!sameTable) continue;
 		let end = i + 1;
 		while (end < lines.length && !lines[end].startsWith('## ')) end++;
 		lines.splice(i, end - i);
@@ -187,8 +221,7 @@ export function upsertIndexRow(indexText, headingPrefix, headerRow, firstCell, n
 		let end = headIdx + 1;
 		while (end < to && lines[end].startsWith('|')) end++;
 		for (let i = headIdx + 1; i < end; i++) {
-			const cells = lines[i].split('|');
-			if (cells.length >= 2 && cells[1].trim() === firstCell) {
+			if (rowSlug(lines[i]) === firstCell) {
 				lines[i] = newRow;
 				return true;
 			}
@@ -205,8 +238,7 @@ export function upsertIndexRow(indexText, headingPrefix, headerRow, firstCell, n
 		for (let i = lines.length - 1; i > secStart; i--) {
 			if (i >= secEnd) continue;
 			if (!lines[i].startsWith('|')) continue;
-			const cells = lines[i].split('|');
-			if (cells.length >= 2 && cells[1].trim() === firstCell) lines.splice(i, 1);
+			if (rowSlug(lines[i]) === firstCell) lines.splice(i, 1);
 		}
 		// Bounds may have shifted after the purge; re-derive them.
 		secEnd = lines.length;
@@ -255,8 +287,7 @@ export function upsertIndexRow(indexText, headingPrefix, headerRow, firstCell, n
 				continue;
 			}
 			if (!inSub || !lines[i].startsWith('|')) continue;
-			const cells = lines[i].split('|');
-			if (cells.length >= 2 && cells[1].trim() === firstCell) lines.splice(i, 1);
+			if (rowSlug(lines[i]) === firstCell) lines.splice(i, 1);
 		}
 	}
 	for (let i = lines.length - 1; i > secStart; i--) {
@@ -294,8 +325,7 @@ export function upsertIndexRow(indexText, headingPrefix, headerRow, firstCell, n
 	let end = headIdx + 1;
 	while (end < lines.length && lines[end].startsWith('|')) end++;
 	for (let i = headIdx + 1; i < end; i++) {
-		const cells = lines[i].split('|');
-		if (cells.length >= 2 && cells[1].trim() === firstCell) {
+		if (rowSlug(lines[i]) === firstCell) {
 			lines[i] = newRow;
 			return lines.join('\n');
 		}

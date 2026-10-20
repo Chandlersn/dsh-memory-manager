@@ -93,23 +93,23 @@ const indexText = [
 	'',
 	'## 功能模块索引（functions/）',
 	'',
-	'| 功能域摘要 | 一句话状态 / 待验证 | 过程链接 | 摘要 |',
-	'|---|---|---|---|',
-	'| alpha | alpha 已稳定，等待上线验证。 | [functions/alpha.md](functions/alpha.md) |',
-	'| beta | beta 的状态摘要。 | [functions/beta.md](functions/beta.md) |',
+	'| 功能域 | 一句话状态 / 待验证 |',
+	'|---|---|',
+	'| [alpha](functions/alpha.md) | alpha 已稳定，等待上线验证。 |',
+	'| [beta](functions/beta.md) | beta 的状态摘要。 |',
 	'',
 	'## 创新优化思想索引（insights/）',
 	'',
-	'| 思想主题 | 一句话内涵 / 解决的权衡 | 思想内容 | 相关（来源功能） |',
-	'|---|---|---|---|',
-	'| gamma | gamma 的思想内涵。 | [insights/gamma.md](insights/gamma.md) | [functions/alpha.md](functions/alpha.md) |',
-	'| 可观测性先于修 bug | 带空格的主题名也必须渲染成链接。 | [insights/可观测性先于修 bug.md](insights/可观测性先于修 bug.md) | [functions/alpha.md](functions/alpha.md) |',
+	'| 思想主题 | 一句话内涵 / 解决的权衡 |',
+	'|---|---|',
+	'| [gamma](insights/gamma.md) | gamma 的思想内涵。（来源：[alpha.md](functions/alpha.md)） |',
+	'| [可观测性先于修 bug](insights/可观测性先于修 bug.md) | 带空格的主题名也必须渲染成链接。 |',
 	'',
 	'## 技能台账（可复用操作程序）（skills/）',
 	'',
-	'| 技能 | 一句话用途 | 台账 | 状态 |',
-	'|---|---|---|---|',
-	'| 分离延迟重启 | 会话跑在宿主内时用分离进程延迟杀旧起新 | [skills/分离延迟重启.md](skills/分离延迟重启.md) | active |',
+	'| 技能 | 一句话用途 | 状态 |',
+	'|---|---|---|',
+	'| [分离延迟重启](skills/分离延迟重启.md) | 会话跑在宿主内时用分离进程延迟杀旧起新 | active |',
 	'',
 	'## 环境常量（易忘）',
 	'',
@@ -295,6 +295,20 @@ ok(noQ.length === 1 && noQ[0] === '纯文本', 'highlight is a no-op without a q
 const tables = T.parseIndexTables(indexText);
 ok(tables.functions.alpha?.summary === 'alpha 已稳定，等待上线验证。', 'parseIndexTables maps slug -> summary');
 ok(tables.insights.gamma?.href === 'insights/gamma.md', 'parseIndexTables keeps the target href');
+// 5.15.0 dropped the link column, so a row is now name+summary (2 cells) — the
+// nav panel must not skip those (the old 3-cell floor silently dropped them).
+const mixed = [
+	'## 功能模块索引（functions/）',
+	'',
+	'| 功能域 | 一句话状态 / 待验证 |',
+	'|---|---|',
+	'| [新版行](functions/新版行.md) | 两列的当前形态。 |',
+	'| 旧版行 | 四列的历史形态。 | [functions/旧版行.md](functions/旧版行.md) |',
+].join('\n');
+const mixedTables = T.parseIndexTables(mixed);
+ok(mixedTables.functions['新版行']?.summary === '两列的当前形态。' && mixedTables.functions['新版行']?.href === 'functions/新版行.md', 'parseIndexTables reads 2-column rows');
+ok(mixedTables.functions['旧版行']?.href === 'functions/旧版行.md', 'parseIndexTables still reads legacy 4-column rows');
+ok(T.parseIndexTables('| [孤儿](functions/孤儿.md) | 没有标题的行 |').functions['孤儿'] === undefined, 'rows outside a table heading are ignored');
 const split = T.splitSections(fnText);
 ok(split.sections.length === 4 && split.sections[3].date === '2026-10-18', 'splitSections extracts dated blocks');
 ok(split.preamble.includes('当前状态摘要'), 'splitSections keeps the head summary as preamble');

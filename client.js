@@ -209,12 +209,16 @@ window.__ModuleLoader__.load({
 				}
 				if (!zone || !line.startsWith('|')) continue;
 				const cells = line.replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
-				if (cells.length < 3) continue;
+				// 2 as the floor (name + summary): the index tables lost their link
+				// column in 5.15.0, so a 3-cell floor silently drops every row.
+				if (cells.length < 2) continue;
 				if (cells.every((c) => /^[-: ]*$/.test(c))) continue;
 				const slug = plain(cells[0]);
 				if (!slug || /^(功能域|思想主题|主题|功能域摘要|能力|技能)/.test(slug)) continue;
-				const href = cells.map((c) => /\]\(([^)]+\.md)\)/.exec(c)?.[1]).find(Boolean) ?? '';
-				out[zone][slug] = { summary: plain(cells[1] ?? ''), href };
+				// Column-agnostic, like the server: the pre-5.15.0 rows kept the link
+				// in cell 3, the current one bakes it into cell 1.
+				const href = cells.map((c) => /\]\(([^)\s]+\.md)\)/.exec(c)?.[1]).find(Boolean) ?? '';
+				out[zone][slug] = { summary: plain(cells.slice(1).join(' ')), href };
 			}
 			return out;
 		}

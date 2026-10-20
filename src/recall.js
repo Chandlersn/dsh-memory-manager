@@ -69,18 +69,23 @@ export function matchIndexRows(indexText, userTokens, limit = 3, usage) {
 		const s = raw.trim();
 		if (!s.startsWith('|') || s.includes('---')) continue;
 		const cells = s.replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
-		if (cells.length < 3 || !cells[1]) continue;
-		// rows: [name, summary, link, (extra summary)] — link cell carries zone.
-		const link = cells[2] || '';
-		const zm = link.match(/\(([^)]+\.md)\)/);
-		if (!zm) continue;
-		const href = zm[1];
+		if (cells.length < 2 || !cells[1]) continue;
+		// Row shape is column-agnostic: the 4-column generation kept the link in
+		// cell 3, the 2/3-column one bakes it into cell 1. Scan every cell so an
+		// index written by either generation recalls identically — a mixed root
+		// (new rows written by this version, old rows still in the 4-column
+		// shape) must not silently lose recall coverage.
+		const href = cells.map((c) => /\(([^)\s]+\.md)\)/.exec(c)?.[1]).find((h) => /^(functions|insights|skills|capabilities)\//.test(h ?? ''));
+		if (!href) continue;
 		const zone = href.startsWith('skills/') ? 'skill' : href.startsWith('insights/') ? 'insight' : href.startsWith('functions/') ? 'function' : null;
 		if (!zone) continue;
-		// A skill row carries its lifecycle in the 4th cell (status). Only ACTIVE
-		// skills are recallable — a candidate is an unverified procedure and must
-		// not shadow the reasoning it was distilled from.
-		if (zone === 'skill' && cells[3] && cells[3] !== 'active') continue;
+		// A skill row carries its lifecycle in a status cell. Only ACTIVE skills
+		// are recallable — a candidate is an unverified procedure and must not
+		// shadow the reasoning it was distilled from. The status cell is the one
+		// holding exactly one of the three lifecycle words (works for both the
+		// 4-column and the 3-column shape).
+		const statusCell = cells.find((c) => /^(candidate|active|retired)$/.test(c));
+		if (zone === 'skill' && statusCell && statusCell !== 'active') continue;
 		const name = href.split('/').pop().replace(/\.md$/, '');
 		candidates.push({
 			name,
@@ -88,7 +93,7 @@ export function matchIndexRows(indexText, userTokens, limit = 3, usage) {
 			href,
 			zone,
 			nameTokens: tokensOf(name),
-			bodyTokens: tokensOf(`${cells[1]} ${cells[3] ?? ''}`),
+			bodyTokens: tokensOf(cells.slice(1).join(' ')),
 		});
 	}
 	if (!candidates.length) return [];

@@ -51,7 +51,7 @@ import {
 	SKILL_TABLE_HEADING, SKILL_TABLE_HEADER, SKILL_NOMINATE, CAP_DIR, FED_TABLE_HEADING,
 	FED_TABLE_HEADER, FED_CONSENSUS_HEADING, DAILY_SECTION, DAILY_OPEN_SECTION, RESULT_LABEL,
 	GUARD_MARK, GUARD_LINE, MAX_BLOCK_CHARS, MAX_ROW_SUMMARY_CHARS, MAX_PRINCIPLE_CHARS,
-	MAX_CONSENSUS_CHARS, CONSENSUS_HEADING,
+	MAX_CONSENSUS_CHARS, CONSENSUS_HEADING, LEGACY_TABLE_HEADERS,
 } from './src/constants.js';
 
 // ---------------------------------------------------------------------------
@@ -180,13 +180,17 @@ async function runHealthCheck(root, opts) {
 		const s = raw.trim();
 		if (!s.startsWith('|')) continue;
 		const cells = s.replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
-		// Both tables put the one-line summary in column 2: 功能行是 3 列
-		// （名称/摘要/链接），思想行是 4 列（主题/内涵/思想内容/来源）。
-		if (cells.length < 3) continue;
+		// The one-line summary is always the SECOND content cell, in every
+		// generation (2-column rows: name/summary; legacy 4-column rows:
+		// name/summary/link/extra). A 3-column floor would skip 2-column rows
+		// entirely — exactly where an over-long summary would hide.
+		if (cells.length < 2) continue;
 		if (cells.every((c) => /^[-: ]*$/.test(c))) continue;
+		// Strip the link syntax so the check measures the words, not the href.
+		const name = cells[0].replace(/^\[([^\]]+)\]\([^)]*\)$/, '$1');
 		const summary = cells[1];
 		if (!summary) emptySummary++;
-		else if (charLen(summary) > MAX_ROW_SUMMARY_CHARS) longRows.push(`${cells[0]}（${charLen(summary)} 字）`);
+		else if (charLen(summary) > MAX_ROW_SUMMARY_CHARS) longRows.push(`${name}（${charLen(summary)} 字）`);
 	}
 	if (emptySummary) add('WARN', 'R5', `${emptySummary} 个索引行缺少一行摘要（摘要列是索引判断相关性的唯一依据）`);
 	if (longRows.length) {
@@ -222,10 +226,15 @@ async function runHealthCheck(root, opts) {
 	for (const raw of memText.split('\n')) {
 		const s = raw.trim();
 		if (!s.startsWith('|')) continue;
-		if (tableHeaders.has(s)) continue;
+		// The 4-column header generation is still exempt alongside the current
+		// 2/3-column one: a root mid-migration carries both, and neither header
+		// is evidence of a duplicate row.
+		if (tableHeaders.has(s) || LEGACY_TABLE_HEADERS.has(s)) continue;
 		const cells = s.replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
-		if (cells.length < 3 || cells.every((c) => /^[-: ]*$/.test(c))) continue;
-		const slug = cells[0];
+		// 2 as the floor (name + summary): the 3-column floor would silently skip
+		// every 2-column row, which is exactly where a duplicate would hide.
+		if (cells.length < 2 || cells.every((c) => /^[-: ]*$/.test(c))) continue;
+		const slug = cells[0].replace(/^\[([^\]]+)\]\([^)]*\)$/, '$1');
 		rowSlugCount.set(slug, (rowSlugCount.get(slug) ?? 0) + 1);
 	}
 	for (const [slug, n] of rowSlugCount) {
@@ -1209,7 +1218,7 @@ function memoryCapabilityTool(opts) {
 			// finds.
 			const indexPath = path.join(root, 'MEMORY.md');
 			let indexText = (await readIfExists(indexPath)) ?? memoryIndexTemplate();
-			const row = `| ${name} | ${summary} | [capabilities/${name}.md](capabilities/${name}.md) | ${kind} |`;
+			const row = `| [${name}](${CAP_DIR}/${name}.md) | ${summary} |`;
 			indexText = upsertIndexRow(indexText, CAP_TABLE_HEADING, CAP_TABLE_HEADER, name, row);
 			await writeText(indexPath, indexText);
 			const st = await stat(p);
@@ -1341,7 +1350,7 @@ function memorySkillTool(opts) {
 			const syncIndexRow = async (item) => {
 				const indexPath = path.join(root, 'MEMORY.md');
 				let indexText = (await readIfExists(indexPath)) ?? memoryIndexTemplate();
-				const row = `| ${item.name} | ${item.summary} | [skills/${item.name}.md](skills/${item.name}.md) | ${item.status} |`;
+				const row = `| [${item.name}](${SKILL_DIR}/${item.name}.md) | ${item.summary} | ${item.status} |`;
 				indexText = upsertIndexRow(indexText, SKILL_TABLE_HEADING, SKILL_TABLE_HEADER, item.name, row);
 				await writeText(indexPath, indexText);
 			};
@@ -1525,10 +1534,10 @@ function memoryWriteTool(opts) {
 					const s = raw.trim();
 					if (!s.startsWith('|') || s.includes('---')) continue;
 					const cells = s.replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
-					if (cells.length < 3 || !cells[1]) continue;
-					const rowName = cells[0];
+					if (cells.length < 2 || !cells[1]) continue;
+					const rowName = cells[0].replace(/^\[([^\]]+)\]\([^)]*\)$/, '$1');
 					if (rowName === feature) continue; // updating its own row is fine
-					const rowTokens = tokensOf(`${cells[1]} ${cells[3] ?? ''}`);
+					const rowTokens = tokensOf(cells.slice(1).join(' '));
 					let hit = 0;
 					for (const tk of sumTokens) if (rowTokens.has(tk)) hit++;
 					if (sumTokens.size > 0 && hit / sumTokens.size >= 0.6) {
@@ -2061,10 +2070,12 @@ function indexRowsOf(indexText) {
 		const s = raw.trim();
 		if (!s.startsWith('|') || s.includes('---')) continue;
 		const cells = s.replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
-		if (cells.length < 3 || !cells[1]) continue;
-		const zm = (cells[2] || '').match(/\(([^)]+\.md)\)/);
-		if (!zm) continue;
-		const href = zm[1];
+		if (cells.length < 2 || !cells[1]) continue;
+		// Column-agnostic, like matchIndexRows: the 4-column generation kept the
+		// link in cell 3, the current one bakes it into cell 1. Both must resolve
+		// so a mixed-shape root keeps working.
+		const href = cells.map((c) => /\(([^)\s]+\.md)\)/.exec(c)?.[1]).find((h) => /^(functions|insights|skills|capabilities)\//.test(h ?? ''));
+		if (!href) continue;
 		const zone = href.startsWith('skills/') ? 'skill' : href.startsWith('insights/') ? 'insight' : href.startsWith('functions/') ? 'function' : null;
 		if (!zone) continue;
 		out.push({ name: href.split('/').pop().replace(/\.md$/, ''), summary: cells[1], href, zone });
@@ -2264,19 +2275,25 @@ function memoryIndexTool(opts) {
 			}
 			const indexPath = path.join(root, 'MEMORY.md');
 			let indexText = (await readIfExists(indexPath)) ?? memoryIndexTemplate();
-			const created = !indexText.includes(`| ${name} |`);
+			// Row presence check is shape-agnostic: the name cell may be plain
+			// text (legacy 4-column rows) or a link (current rows).
+			const rowExists = indexText.split('\n').some((l) => {
+				if (!l.trim().startsWith('|')) return false;
+				const first = l.trim().replace(/^\|/, '').split('|')[0].trim();
+				return first === name || first === `[${name}](${zone === 'insights' ? 'insights' : 'functions'}/${name}.md)`;
+			});
+			const created = !rowExists;
 
 			let row;
 			if (zone === 'insights') {
 				const srcs = (Array.isArray(args.sources) ? args.sources : []).map((s) => safeSlug(s)).filter((s) => s !== name);
-				if (!srcs.length) throw new Error('zone=insights requires sources: the insights table carries a source-feature column');
-				const relatedCell = srcs.map((s) => `[${s}.md](functions/${s}.md)`).join('、');
-				row = `| ${name} | ${summary} | [insights/${name}.md](insights/${name}.md) | ${relatedCell} |`;
+				if (!srcs.length) throw new Error('zone=insights requires sources: the theme must name the areas it was distilled from');
+				row = `| [${name}](insights/${name}.md) | ${summary}（来源：${srcs.map((s) => `[${s}.md](functions/${s}.md)`).join('、')}） |`;
 				if (!(await statExists(path.join(root, 'insights', `${name}.md`)))) {
 					warnings.push(`insights/${name}.md 尚不存在——索引行先建了，记得用 memory_insight 沉淀文件本体`);
 				}
 			} else {
-				row = `| ${name} | ${summary} | [functions/${name}.md](functions/${name}.md) |`;
+				row = `| [${name}](functions/${name}.md) | ${summary} |`;
 				if (!(await statExists(path.join(root, 'functions', `${name}.md`)))) {
 					warnings.push(`functions/${name}.md 尚不存在——索引行先建了，记得用 memory_write 落第一个迭代块`);
 				}

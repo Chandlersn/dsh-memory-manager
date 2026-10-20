@@ -59,6 +59,16 @@ const ok = (cond, label) => {
 	if (!cond) failures++;
 };
 
+// Index rows carry their link in the NAME cell since 5.15.0, so these helpers
+// match either shape and the suite never has to know which generation wrote it.
+const rowOf = (name) => name; // first cell text, resolved by firstCellOf below
+const firstCellOf = (row) => {
+	const first = String(row).trim().replace(/^\|/, '').split('|')[0].trim();
+	const m = /^\[([^\]]+)\]\([^)]*\)$/.exec(first);
+	return m ? m[1] : first;
+};
+const rowsFor = (text, name) => String(text ?? '').split('\n').filter((l) => l.trim().startsWith('|') && firstCellOf(l) === name);
+
 // 1) empty root -> check reports FAIL R0
 const c0 = await T.memory_check.execute({}, exec);
 ok(c0.failCount === 1 && c0.results[0].rule === 'R0', `check on empty root: ${c0.results[0]?.rule}`);
@@ -78,14 +88,14 @@ ok(fn1.includes('- **概括**：验证插件写入闭环'), 'block carries the s
 
 // 3) index does NOT auto-sync; the file doesn't even exist until memory_index
 let idx = await T.memory_read.execute({ kind: 'index' }, exec);
-ok(!idx.found && !idx.content.includes('| 测试功能 |'), 'index row absent until memory_index');
+ok(!idx.found && rowsFor(idx.content, '测试功能').length === 0, 'index row absent until memory_index');
 const ix1 = await T.memory_index.execute(
 	{ zone: 'functions', name: '测试功能', summary: '验证插件写入闭环的测试功能' },
 	exec,
 );
 ok(ix1.created === true, 'memory_index creates the row');
 idx = await T.memory_read.execute({ kind: 'index' }, exec);
-ok(idx.found && idx.content.includes('| 测试功能 |'), 'index row present after memory_index');
+ok(idx.found && idx.content.includes('| [测试功能](functions/测试功能.md) |'), 'index row present with a clickable name cell');
 const ix2 = await T.memory_index.execute(
 	{ zone: 'functions', name: '测试功能', summary: '更新后的功能一句话' },
 	exec,
@@ -442,7 +452,7 @@ ok(!w10.warnings.some((x) => x.includes('本块正文')), 'a distilled block rai
 await T.memory_index.execute({ zone: 'functions', name: '测试功能', summary: '幂等索引' }, exec);
 const idxPath = path.join(root, 'MEMORY.md');
 const idxNow = await readFile(idxPath, 'utf8');
-ok((idxNow.match(/^\| 测试功能 \|/gm) ?? []).length === 1, 'memory_index is idempotent (one row)');
+ok(rowsFor(idxNow, '测试功能').length === 1, 'memory_index is idempotent (one row)');
 
 // 15a) grouping for scale: past ~40 rows the index splits into `### 索引·<域>`.
 // memory_index must land each row in its own sub-table, upsert within it, and
@@ -454,10 +464,10 @@ ok(grouped.includes('### 索引·基础设施') && grouped.includes('### 索引�
 const infraStart = grouped.indexOf('### 索引·基础设施');
 const bizStart = grouped.indexOf('### 索引·业务功能');
 const infraBlock = grouped.slice(infraStart, bizStart === -1 ? undefined : bizStart);
-ok(infraBlock.includes('| 测试功能 |') && !infraBlock.includes('| 检索目标 |'), 'each row lands in its own group block');
+ok(rowsFor(infraBlock, '测试功能').length === 1 && rowsFor(infraBlock, '检索目标').length === 0, 'each row lands in its own group block');
 await T.memory_index.execute({ zone: 'functions', name: '测试功能', summary: '基础设施域更新后的一行', group: '基础设施' }, exec);
 const grouped2 = await readFile(idxPath, 'utf8');
-ok((grouped2.match(/^\| 测试功能 \|/gm) ?? []).length === 1, 'grouped upsert is idempotent');
+ok(rowsFor(grouped2, '测试功能').length === 1, 'grouped upsert is idempotent');
 ok(grouped2.includes('基础设施域更新后的一行'), 'grouped upsert replaced the summary');
 // R15 must NOT flag the shared header row: every `### 索引·<域>` sub-table reuses
 // FUNC_TABLE_HEADER by design, so a repeated header is structure, not a stale row.
@@ -471,10 +481,10 @@ ok(
 // otherwise the row lives in two tables and R15 fires on the next check.
 await T.memory_index.execute({ zone: 'functions', name: '测试功能', summary: '回到总表的一行' }, exec);
 const ungrouped = await readFile(idxPath, 'utf8');
-ok((ungrouped.match(/^\| 测试功能 \|/gm) ?? []).length === 1, 'ungrouped upsert leaves exactly one row');
+ok(rowsFor(ungrouped, '测试功能').length === 1, 'ungrouped upsert leaves exactly one row');
 ok(ungrouped.includes('回到总表的一行'), 'ungrouped upsert wrote the new summary into the flat table');
 ok(!ungrouped.includes('### 索引·基础设施'), 'the emptied group section was removed');
-ok(ungrouped.includes('### 索引·业务功能') && ungrouped.includes('| 检索目标 |'), 'a sibling group that still has rows survives');
+ok(ungrouped.includes('### 索引·业务功能') && rowsFor(ungrouped, '检索目标').length === 1, 'a sibling group that still has rows survives');
 // R5 scaling hint: 41 flat rows and no ### 索引· -> WARN
 const flatRows = Array.from({ length: 41 }, (_, i) => `| 域${i} | 第 ${i} 个功能的一句话 | [functions/域${i}.md](functions/域${i}.md) |`).join('\n');
 const flatIndex = ['# 索引', '', '## 功能模块索引（functions/）', '', '| 功能域摘要 | 一句话状态 | 过程链接 | 摘要 |', '|---|---|---|---|', flatRows, '', '## 创新优化思想索引（insights/）', '', '| 思想主题 | 内涵 | 思想内容 | 相关 |', '|---|---|---|---|'].join('\n');
@@ -505,7 +515,7 @@ ok(r15.some((r) => r.message.includes('出现 2 次')), 'R15 flags the duplicate
 await T.memory_index.execute({ zone: 'functions', name: '测试功能', summary: 'upsert 后重复表消失' }, exec);
 const idxHealed = await readFile(idxPath, 'utf8');
 ok(!idxHealed.includes('## 功能域（细节在子目录'), 'twin table removed by upsert self-heal');
-const rows = (idxHealed.match(/^\| 测试功能 \|/gm) ?? []).length;
+const rows = rowsFor(idxHealed, '测试功能').length;
 ok(rows === 1, `index has exactly one 测试功能 row (rows=${rows})`);
 const c6 = await T.memory_check.execute({}, exec);
 ok(c6.results.every((r) => r.rule !== 'R15'), `R15 clean after self-heal (${c6.results.filter((r) => r.rule === 'R15').length})`);
@@ -719,7 +729,7 @@ const capText2 = await readFile(cap1.file, 'utf8');
 ok(capText2.includes('-pix_fmt yuv420p'), 'invocation refreshed to the newer command');
 ok(capText2.split('OpenMontage 出片').length === 2 && capText2.includes('批印坊 v2 成片 96s'), 'solved entries accumulate (ledger, not journal)');
 const idxCap = await T.memory_read.execute({ kind: 'index' }, exec);
-ok(idxCap.content.includes('| ffmpeg |') && idxCap.content.includes('capabilities/ffmpeg.md'), 'capability row lands in the index table');
+ok(rowsFor(idxCap.content, 'ffmpeg').length === 1 && idxCap.content.includes('capabilities/ffmpeg.md'), 'capability row lands in the index table');
 const capList = await T.memory_capability.execute({ action: 'list' }, exec);
 ok(capList.items.length === 1 && capList.items[0].name === 'ffmpeg' && capList.items[0].kind === 'cli', `list returns ledger entries (${capList.items.length})`);
 const capRead = await T.memory_capability.execute({ action: 'read', name: 'ffmpeg' }, exec);
@@ -786,7 +796,7 @@ ok(skText.includes('../functions/分离延迟重启.md'), 'skill backlinks its e
 ok(/^---\nname: 分离延迟重启\n/m.test(skText) && /^description: "当.*时使用本技能/m.test(skText), 'skill file is frontmatter-shaped with a router description');
 ok(skText.includes('agent_created: true') && skText.includes('status: candidate'), 'frontmatter carries agent_created + status');
 const skIdx = await T.memory_read.execute({ kind: 'index' }, exec);
-ok(skIdx.content.includes('| 分离延迟重启 |') && skIdx.content.includes('skills/分离延迟重启.md'), 'skill row lands in the index table');
+ok(rowsFor(skIdx.content, '分离延迟重启').length === 1 && skIdx.content.includes('skills/分离延迟重启.md'), 'skill row lands in the index table');
 // A crystallized area must drop out of nomination (support is now filed).
 const sk2 = await T.memory_skill.execute({ action: 'candidates' }, exec);
 ok(!sk2.candidates.some((c) => c.href === 'functions/分离延迟重启.md'), 'already-crystallized area is not re-nominated');

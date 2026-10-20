@@ -22,19 +22,33 @@ export const DEFAULTS = {
 	captureMaxChars: 160,
 };
 
+// Index tables — one row per entry with TWO columns: a clickable name and its
+// one-line summary. The old separate "过程链接 / 思想内容 / 台账" column was pure
+// noise (the name cell now carries the link) and 4 columns ate the horizontal
+// space the summaries needed. The skills table keeps a third column because
+// RECALL trusts that cell (only active skills are injected).
 export const FUNC_TABLE_HEADING = '## 功能模块索引';
 export const INSIGHT_TABLE_HEADING = '## 创新优化思想索引';
 export const CAP_TABLE_HEADING = '## 能力台账（可用工具 / MCP / CLI）';
-export const CAP_TABLE_HEADER = '| 能力 | 一句话用途 | 台账 | 类型 |';
-export const FUNC_TABLE_HEADER = '| 功能域摘要 | 一句话状态 / 待验证 | 过程链接 | 摘要 |';
-export const INSIGHT_TABLE_HEADER = '| 思想主题 | 一句话内涵 / 解决的权衡 | 思想内容 | 相关（来源功能） |';
+export const CAP_TABLE_HEADER = '| 能力 | 一句话用途 |';
+export const FUNC_TABLE_HEADER = '| 功能域 | 一句话状态 / 待验证 |';
+export const INSIGHT_TABLE_HEADER = '| 思想主题 | 一句话内涵 / 解决的权衡 |';
+
+// The pre-5.15.0 four-column headers, kept only so a half-migrated index is
+// recognized instead of counted as content (R15 exemption + lint skips). Never
+// written again — new rows always use the 2/3-column shape above.
+export const LEGACY_FUNC_TABLE_HEADER = '| 功能域摘要 | 一句话状态 / 待验证 | 过程链接 | 摘要 |';
+export const LEGACY_INSIGHT_TABLE_HEADER = '| 思想主题 | 一句话内涵 / 解决的权衡 | 思想内容 | 相关（来源功能） |';
+export const LEGACY_CAP_TABLE_HEADER = '| 能力 | 一句话用途 | 台账 | 类型 |';
+export const LEGACY_SKILL_TABLE_HEADER = '| 技能 | 一句话用途 | 台账 | 状态 |';
+export const LEGACY_TABLE_HEADERS = new Set([LEGACY_FUNC_TABLE_HEADER, LEGACY_INSIGHT_TABLE_HEADER, LEGACY_CAP_TABLE_HEADER, LEGACY_SKILL_TABLE_HEADER]);
 
 // skills — the crystallization layer. Statuses mirror MemOS's lifecycle:
 // candidate → active (verified) → retired (environment changed; kept as history).
 export const SKILL_DIR = 'skills';
 export const SKILL_STATUSES = ['candidate', 'active', 'retired'];
 export const SKILL_TABLE_HEADING = '## 技能台账（可复用操作程序）';
-export const SKILL_TABLE_HEADER = '| 技能 | 一句话用途 | 台账 | 状态 |';
+export const SKILL_TABLE_HEADER = '| 技能 | 一句话用途 | 状态 |';
 // Nomination thresholds (the mechanical half of MemOS's support/gain floors,
 // fed by .usage.jsonl): an area earns a look when it has been USED repeatedly,
 // CONFIRMED at least once, and is not mostly corrections.
