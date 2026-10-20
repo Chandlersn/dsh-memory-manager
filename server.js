@@ -1148,6 +1148,16 @@ function skillTemplate(name, f) {
 		'',
 		`- ${f.verification}`,
 		'',
+		// The procedure's AUTHORITATIVE body lives in the skill-creator bundle
+		// (host skills dir), never duplicated here: one program, one body. This
+		// section is the pointer — R20's pointer form (hostName + 程序体) reads
+		// it, and the discipline text names it the registration channel.
+		'## 程序体（唯一来源）',
+		'',
+		f.bundlePath
+			? `- 权威版：\`${f.bundlePath}\`（skill-creator 产物：SKILL.md + scripts/；用 skill-creator 的 quick_validate.py 校验、package_skill.py 打包）`
+			: '- 权威版：待按 skill-creator 流程产出（skill 工具加载 ~/.dsh/skills/skill-creator/ → init_skill.py 建目录包 → 祈使句编辑 → quick_validate.py/package_skill.py 校验打包 → 真实任务实战），产物路径回填本行',
+		'',
 		'## 证据来源',
 		'',
 		...f.srcLines,
@@ -1374,7 +1384,7 @@ function memorySkillTool(opts, hooks = {}) {
 	return defineTool({
 		name: 'memory_skill',
 		description:
-			'Crystallize a REPEATED, CONFIRMED operation into a callable procedure under skills/ (the missing “use” step of the data flow: record → distill → promote → display → USE). actions: candidates = which areas the usage signals nominate (pure aggregation: >=6 uses, >=1 confirmation, correction rate <20%, not already crystallized) — call it periodically and decide; crystallize = write skills/<name>.md from an area\'s proven steps (YOU write the procedure, the tool files and indexes it, status=candidate); activate/retire = lifecycle transitions (activate only after the procedure was actually followed successfully; retire when the environment changed, the file stays as history); list/read = what skills exist / full text. A skill file answers “do it exactly like THIS” — distinct from capabilities/ (“what tool exists”) and insights/ (“what principle holds”). A crystallized skill carries scope (global/project) and, with a kebab-case hostName, is published to the host skill catalog once active so the `skill` tool can load it directly.',
+			'Crystallize a REPEATED, CONFIRMED operation into a callable procedure under skills/ (the missing “use” step of the data flow: record → distill → promote → display → USE). actions: candidates = which areas the usage signals nominate (pure aggregation: >=6 uses, >=1 confirmation, correction rate <20%, not already crystallized) — call it periodically and decide; crystallize = write skills/<name>.md from an area\'s proven steps (YOU write the procedure, the tool files and indexes it, status=candidate); activate/retire = lifecycle transitions (activate only after the procedure was actually followed successfully; retire when the environment changed, the file stays as history); delete = remove the file and its index row (git is the only archive); list/read = what skills exist / full text. A skill file answers “do it exactly like THIS” — distinct from capabilities/ (“what tool exists”) and insights/ (“what principle holds”). A crystallized skill carries scope (global/project) and, with a kebab-case hostName, is published to the host skill catalog once active so the `skill` tool can load it directly. WRITING the procedure MUST follow the skill-creator skill (load it via the `skill` tool: ~/.dsh/skills/skill-creator/): Step1 concrete examples → Step2 plan reusable contents → Step3 init_skill.py → Step4 imperative-style editing → Step5 quick_validate.py + package_skill.py → Step6 real-task iteration, with its Quality Bar applied (description <=80 words with a when-to-use trigger, use/do-not-use triggers, imperative style, machine-checkable rules, no dangling links, size budgets). This tool is the REGISTRATION channel; the procedure\'s authoritative body is the skill-creator artifact (host bundle) — keep one body, not two.',
 		parameters: {
 			action: { type: 'string', required: true, enum: ['candidates', 'crystallize', 'activate', 'retire', 'list', 'read', 'delete'], description: 'candidates=看提名；crystallize=结晶一份技能；activate/retire=生命周期；delete=删除技能文件与索引行（不可恢复，git 是档案）；list/read=查。' },
 			project: { type: 'string', description: 'list 可选：按项目 key 过滤（skill_scope --route 语义）——global 技能全保留，project 技能只留 scope_project 匹配的，无 scope 的不计入确定适用。' },
@@ -1389,6 +1399,7 @@ function memorySkillTool(opts, hooks = {}) {
 			scopeProject: { type: 'string', description: 'scope=project 时必填：项目目录名/key（如 toolbox-login），召回与路由据此判适用性。' },
 			scopeNotes: { type: 'string', description: '可选：一句话说明适用条件（何时在哪些项目用）。' },
 			hostName: { type: 'string', description: '可选：本技能在宿主 skill 体系里的注册名（kebab-case，如 detached-restart）。给了就随 active 进宿主 ctx.skills 目录、被 skill 工具直接调用；不给则只走本插件召回。' },
+			bundlePath: { type: 'string', description: '可选：skill-creator 产出的权威目录包路径（如 ~/.dsh/skills/detached-restart/）。给了就写进「## 程序体（唯一来源）」节作为程序体指针；结晶后应按 skill-creator 流程产出并回填。' },
 			note: { type: 'string', description: 'activate/retire 可选：一句话依据（哪次成功验证 / 环境怎么变了）。' },
 		},
 		output: {
@@ -1462,7 +1473,7 @@ function memorySkillTool(opts, hooks = {}) {
 				const verb = v.action === 'crystallize' ? '已结晶技能' : v.action === 'activate' ? '已激活技能' : v.action === 'retire' ? '已退役技能' : '已删除技能';
 				const lines = [`${verb}：${v.file}（status=${v.status}）`];
 				for (const w of v.warnings) lines.push(`⚠ ${w}`);
-				if (v.action === 'crystallize') lines.push('ℹ 按真实任务跑通一次后，用 memory_skill(activate) 转正；pre-step 会优先提示命中技能。');
+				if (v.action === 'crystallize') lines.push('ℹ 程序体已登记。权威正文请按 skill-creator 流程产出（用 `skill` 工具加载 ~/.dsh/skills/skill-creator/：init_skill.py 建目录包 → 祈使句编辑 → quick_validate.py/package_skill.py 校验打包 → 真实任务实战），产物放宿主目录包、本文件留证据链指针；之后按真实任务跑通一次，用 memory_skill(activate) 转正，pre-step 会优先提示命中技能。');
 				if (v.action === 'delete') lines.push('ℹ 文件与索引行已删除，宿主目录同步失效；历史只能从 git 恢复。');
 				return [{ type: 'text', text: lines.join('\n') }];
 			},
@@ -1608,6 +1619,9 @@ function memorySkillTool(opts, hooks = {}) {
 					scopeProject,
 					scopeNotes,
 					hostName,
+					// The skill-creator artifact (host bundle) when the procedure has
+					// one; otherwise the template writes the TODO pointer line.
+					bundlePath: oneLine(args.bundlePath ?? ''),
 					steps,
 					pitfalls: oneLine(args.pitfalls ?? ''),
 					verification,
@@ -2599,7 +2613,7 @@ const DISCIPLINE_TEXT = [
 	'- **第 1 层 · 功能域（memory_write）**：从每日原始记录中**归纳汲取**功能划分——一次实质工作 = 一个 functions/<功能域>.md 迭代块（蒸馏结论：动因/改动/判据/待观察 各一句）。`summary` 是本块的一句话概括；功能域该新建还是并入既有的，判断依据就是每日记录里反复出现的主题。',
 	'- **第 2 层 · 创新思想（memory_insight）**：从功能划分中**再提取**可迁移原则（会重套的、不绑定单一功能机制的），回链来源功能域；取代旧思想传 `supersedes`。',
 	'- **第 3 层 · 索引与总览（memory_index）**：**整合层**——功能域稳定后（有 ≥2 个迭代块，或用户可感知为独立主题时）用 memory_index 把它收进 MEMORY.md 索引；索引行摘要 = 从各迭代块的概括中提炼的"这个功能是什么"。索引是展示与检索的派生物，不与单次写入强绑。',
-	'- **第 4 层 · 技能（memory_skill）**：**使用环收口**——一个被反复重跑且被确认的操作，应结晶为 skills/<技能>.md 的可调用程序（何时使用/步骤/坑/验证），下次命中直接照做，不再现场推导。何时结晶：`memory_skill(candidates)` 给出机械提名（≥6 次使用 + ≥1 次确认 + 纠正率<20%，来自 .usage.jsonl），**提名≠结晶**——是否成文由你判断证据是否连贯；生命周期 candidate→active（真实任务照做成功过才转正）→retired（环境变了留档）。召回只放行 active 技能并标注 ⭐；技能=怎么做（程序），capability=有什么工具，insight=什么原则——三者别混。结晶时标 `scope`（global=跨项目通用 / project=须带 scopeProject=<项目名>），跨项目复用前先核对作用域；想让宿主 `skill` 工具直接调用，给一个 kebab-case 的 `hostName`（active 后自动发布进宿主目录，中文 slug 宿主不认）。',
+	'- **第 4 层 · 技能（memory_skill）**：**使用环收口**——一个被反复重跑且被确认的操作，应结晶为 skills/<技能>.md 的可调用程序（何时使用/步骤/坑/验证），下次命中直接照做，不再现场推导。何时结晶：`memory_skill(candidates)` 给出机械提名（≥6 次使用 + ≥1 次确认 + 纠正率<20%，来自 .usage.jsonl），**提名≠结晶**——是否成文由你判断证据是否连贯。**成文必须走 skill-creator 流程**（宿主技能目录 `~/.dsh/skills/skill-creator/`，其描述命中即用 `skill` 工具加载）：Step1 具体用例 → Step2 规划可复用内容 → Step3 `init_skill.py` 初始化目录包 → Step4 祈使句式编辑 → Step5 `quick_validate.py` + `package_skill.py` 校验打包 → Step6 真实任务实战迭代；Quality Bar 逐条过（description ≤80 词且带 when-to-use、use/do-not-use 触发、祈使句式、规则配机器可检脚本、无死链、体积预算）。本插件的 `memory_skill(crystallize)` 是**登记通道**（落记忆侧文件 + 索引行 + 宿主发布），程序体权威版以 skill-creator 产物（宿主目录包）为准；两处不一致时改记忆侧指向目录包，不要让同一份程序存在两份正文。生命周期 candidate→active（真实任务照做成功过才转正）→retired（环境变了留档）。召回只放行 active 技能并标注 ⭐；技能=怎么做（程序），capability=有什么工具，insight=什么原则——三者别混。结晶时标 `scope`（global=跨项目通用 / project=须带 scopeProject=<项目名>），跨项目复用前先核对作用域；想让宿主 `skill` 工具直接调用，给一个 kebab-case 的 `hostName`（active 后自动发布进宿主目录，中文 slug 宿主不认）。',
 	'- **层级定义（道/法/术/器，按普适程度分）**：**器**=指向内容的指针与检索面（MEMORY.md 双表+面板）；**术**=一个功能域"怎么做"的完整迭代史（functions/，判据"我会不会再跑一次这个操作"）；**法**=从具体操作提炼的可套原则（insights/，判据"换个项目/领域还成立吗"）；**道**=跨域都必须遵守的约束（MEMORY.md 共识区，判据"违反了会不会出事故"）。**放错层的三个信号**：① 在功能域里翻到普适断言 → 该升到 insights；② 同一句话想写进两个功能域 → 该升到 insights；③ 一条"原则"每次都要附带操作步骤才能用 → 该降回 functions。**反例**：索引行里写推导过程；迭代块里写"以后所有项目都应该……"；原则写成"1. 先运行 X；2. 再执行 Y"；把某次技术选型记成共识。',
 	'- **先查后写**：涉及"项目里怎么做 / 为什么这么做 / 环境常量"时，先 `memory_read kind=index`（行内摘要判断相关性，再打开对应文件）；只记得片段、说不清在哪个域或哪天时用 `memory_search`（全库排序检索，返回命中的分区/文件/行号/小节/片段）。**动手前先查 `memory_capability`**：外部 CLI / MCP / 已装软件都在 `capabilities/` 台账里，能省下一整轮摸索。不要凭空重推已有结论。',
 	'- **用到的外部工具要登记**：只有**项目外部**的工具才进台账——第三方 CLI / MCP / 已装软件，且调用它需要摸索（确切命令、前提、踩过的坑）。不登记：harness 自带工具（shell/文件/网络等，模型本来就会）、本项目自己的脚本与 API（那是 functions/ 迭代块）。台账按工具一文件、就地更新——**不是流水账，是索引**。下次同类任务先 `action=list`，不要重新摸索同一个工具。',

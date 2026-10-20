@@ -978,6 +978,21 @@ ok(!skBareText.includes('](../测试功能.md)'), 'no zone-less bare href surviv
 // The frontmatter router (skill-creator lesson): description carries the WHEN.
 ok(/^---\nname: 分离延迟重启\n/m.test(skText) && /^description: "当.*时使用本技能/m.test(skText), 'skill file is frontmatter-shaped with a router description');
 ok(skText.includes('agent_created: true') && skText.includes('status: candidate'), 'frontmatter carries agent_created + status');
+// 5.23.0 — the skill-creator workflow is MANDATORY for crystallizing: the
+// discipline text must say so (the model reads it every session), the tool
+// description must name the six steps, and the template must carry the
+// 程序体 pointer section (one body, the host bundle, not two).
+ok(mod.DISCIPLINE_TEXT.includes('skill-creator') && mod.DISCIPLINE_TEXT.includes('quick_validate.py') && mod.DISCIPLINE_TEXT.includes('init_skill.py'), 'the discipline text mandates the skill-creator workflow');
+ok(/init_skill\.py/.test(T.memory_skill.description) && /Quality Bar/.test(T.memory_skill.description) && /registration channel/i.test(T.memory_skill.description), 'the tool description names the skill-creator steps and the registration-channel role');
+ok(skText.includes('## 程序体（唯一来源）') && skText.includes('skill-creator'), 'the template carries the 程序体 pointer section');
+// A supplied bundlePath lands in that section verbatim (the artifact is the
+// authority; the pointer must name it, not gesture).
+const skBundle = await T.memory_skill.execute(
+	{ action: 'crystallize', name: '带包技能', summary: 'bundlePath 回归', when: '包路径回归', procedure: ['一', '二'], verification: '路径落入程序体节', sources: ['测试功能'], bundlePath: '~/.dsh/skills/带包技能/' },
+	exec,
+);
+const bundleText = await readFile(skBundle.file, 'utf8');
+ok(bundleText.includes('~/.dsh/skills/带包技能/'), 'bundlePath is written into the 程序体 section');
 const skIdx = await T.memory_read.execute({ kind: 'index' }, exec);
 ok(rowsFor(skIdx.content, '分离延迟重启').length === 1 && skIdx.content.includes('skills/分离延迟重启.md'), 'skill row lands in the index table');
 // A crystallized area must drop out of nomination (support is now filed).
