@@ -793,6 +793,37 @@ ok(capSearchZone.count >= 1 && capSearchZone.hits.every((h0) => h0.zone === 'cap
 const cCap = await T.memory_check.execute({}, exec);
 ok(!cCap.results.some((r) => r.message.includes('ffmpeg') && r.level === 'FAIL'), 'capability files do not trip the linter');
 
+// 22b) memory defence (Hindsight-borrowed): credentials are redacted at the
+// write choke point; the health check reports what the redactor cannot reach
+// (the RAW daily layer, pre-defence files) and personal identifiers (tier 2)
+// are reported, NEVER rewritten — facts must not be silently mangled.
+{
+	const wSec = await T.memory_write.execute(
+		{ feature: '防线测试', title: '带密钥的迭代', summary: '验证写侧 redact', change: 'token ghp_abcdefghijklmnopqrstuvwxyz0123456789 已配置', result: 'done' },
+		exec,
+	);
+	ok(wSec.warnings.some((x) => x.includes('凭据材料') && x.includes('github-token')), 'write warns which credential was redacted');
+	const secFn = await readFile(path.join(root, 'functions', '防线测试.md'), 'utf8');
+	ok(secFn.includes('[REDACTED:github-token]') && !secFn.includes('ghp_abcdefghijklmnopqrstuvwxyz'), 'credential never reaches disk');
+	// A credential arriving via the plugin's own index path is redacted too.
+	await T.memory_index.execute({ zone: 'functions', name: '防线测试', summary: 'sk-proj-abcdefghijklmnopqrstuvwxyz123456 混进摘要' }, exec);
+	const secIdx = await readFile(path.join(root, 'MEMORY.md'), 'utf8');
+	ok(!secIdx.includes('sk-proj-abcdefghijklmnopqrstuvwxyz') && secIdx.includes('[REDACTED:'), 'index path is redacted as well');
+	// Tier-2: an ID number in the daily RAW layer is reported, never rewritten.
+	await writeFile(path.join(root, '2026-10-20.md'), '# 原始层\n\n- 用户身份证 11010519491231002X 已核对\n', 'utf8');
+	const cSec = await T.memory_check.execute({}, exec);
+	ok(cSec.results.some((r) => r.rule === 'R21' && r.level === 'WARN' && r.message.includes('cn-id')), 'R21 reports ID in the RAW layer');
+	const stillThere = await readFile(path.join(root, '2026-10-20.md'), 'utf8');
+	ok(stillThere.includes('11010519491231002X'), 'tier-2 is never rewritten');
+	// A fenced code example is documentation, not a leak (no false positive).
+	await T.memory_write.execute(
+		{ feature: '防线测试', title: '代码块示例', summary: '验证误报边界', change: '示例见下\n\n```bash\nexport OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwx\n```\n\n正文结束', result: 'done' },
+		exec,
+	);
+	const cSec2 = await T.memory_check.execute({}, exec);
+	ok(!cSec2.results.some((r) => r.rule === 'R21' && r.level === 'FAIL' && r.message.includes('防线测试')), 'fenced credential example is not a leak');
+}
+
 // 23) memory_skill — the crystallization layer (MemOS-borrowed, file-discipline
 // adapted): nomination is mechanical over the usage ledger, crystallization is
 // the model's judgement, and the lifecycle candidate→active→retired decides what

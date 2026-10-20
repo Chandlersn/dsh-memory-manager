@@ -44,6 +44,7 @@ import {
 	upsertIndexRow, appendUnderHeading, resolveOpenItems, refreshSummarySection, replaceSection,
 } from './src/markdown.js';
 import { tokensOf, matchIndexRows, buildRecallMessage } from './src/recall.js';
+import { redactSecrets, scanSecrets } from './src/secrets.js';
 import { resolveDshRoot, setHostRoot, loadHost, defineTool, createUserMessage } from './src/host.js';
 import {
 	name, inject, DEFAULTS, FUNC_TABLE_HEADING, INSIGHT_TABLE_HEADING, CAP_TABLE_HEADING,
@@ -152,6 +153,27 @@ async function checkLinks(text, filePath, root, add) {
 	}
 }
 
+/**
+ * R21 (memory defence): one file's secrets reported by the health check.
+ * Code spans are stripped first — an example token inside a fenced block is
+ * documentation, not a leak (Hindsight exempts its own docs the same way).
+ * Tier-1 hits mean the write predates the redactor or arrived outside the
+ * plugin's write path; tier-2 (ID/phone) is never rewritten anywhere, only
+ * reported here.
+ */
+function scanForSecrets(text, label, add) {
+	const findings = scanSecrets(stripCode(text));
+	if (!findings.length) return;
+	const part1 = findings.filter((f) => f.tier === 1);
+	const part2 = findings.filter((f) => f.tier === 2);
+	if (part1.length) {
+		add('FAIL', 'R21', `${label} 含凭据材料（${part1.map((f) => `${f.kind}×${f.count}`).join('、')}）：写入侧应已 redact——来自插件外的直接写入，请人工清理明文`);
+	}
+	if (part2.length) {
+		add('WARN', 'R21', `${label} 含个人标识（${part2.map((f) => `${f.kind}×${f.count}`).join('、')}）：不自动改写（常属正当事实），确认是否真需要留存`);
+	}
+}
+
 const REVERSE_DETAIL_FULL = /详见\s*MEMORY\.md[（(][^）)]{2,}[）)]/;
 const REVERSE_DETAIL_VAGUE = /详见\s*MEMORY\.md(?!\s*[（(])/;
 const DATE_TAG = /^##\s*\[(\d{4})-(\d{2})-(\d{2})/gm;
@@ -256,6 +278,7 @@ async function runHealthCheck(root, opts) {
 		if (n > 1) add('WARN', 'R15', `索引小节「${h}」出现 ${n} 次（多为模板换代后锚点失配的兜底产物）：保留第一处，删除其余小节`);
 	}
 
+	scanForSecrets(memText, 'MEMORY.md', add);
 	await checkLinks(memText, memPath, root, add);
 
 	// R16 (ported from the workbuddy skill's F4): env-constant lines often carry
@@ -397,6 +420,7 @@ async function runHealthCheck(root, opts) {
 					add('WARN', 'R20e', `技能「${sSlug}」索引行状态 ${rowM[1]} 与文件 status ${sStatus} 不一致：召回只放行 active，确认哪边是现状`);
 				}
 			}
+			scanForSecrets(text, `${zone}/${f}`, add);
 			await checkLinks(text, fp, root, add);
 		}
 	}
@@ -404,7 +428,14 @@ async function runHealthCheck(root, opts) {
 	try {
 		for (const f of await readdir(root)) {
 			if (!/^\d{4}-\d{2}-\d{2}\.md$/.test(f)) continue;
-			await checkLinks(await readFile(path.join(root, f), 'utf8'), path.join(root, f), root, add);
+			const dtext = await readFile(path.join(root, f), 'utf8');
+			await checkLinks(dtext, path.join(root, f), root, add);
+			// R21 (memory defence, Hindsight-borrowed): the daily RAW layer is
+			// where a pasted token most often lands — the write-side redactor
+			// never routes it (the model writes daily files itself), so the
+			// health check is what catches it, retroactively for pre-defence
+			// content too.
+			scanForSecrets(dtext, f, add);
 		}
 	} catch {
 		/* root absent */
@@ -1215,7 +1246,10 @@ function memoryCapabilityTool(opts) {
 			} else {
 				text = text.replace(/^>\s*摘要：.*$/m, `> 摘要：${summary}`);
 			}
-			await writeText(p, text);
+			const wroteCap = await writeText(p, text);
+			if (wroteCap?.hits?.length) {
+				warnings.push(`台账内容含凭据材料（${wroteCap.hits.join('、')}），落盘前已 redact——调用方式里留密钥没有意义，留调用形态即可`);
+			}
 			// Keep the index row in sync: the capability table is the "what can I
 			// use" lookup surface, and a ledger nobody indexes is a ledger nobody
 			// finds.
@@ -1625,7 +1659,10 @@ function memoryWriteTool(opts) {
 					fnText = fnText.split(p.oldString).join(p.newString);
 				}
 			}
-			await writeText(fnPath, fnText);
+			const wrote = await writeText(fnPath, fnText);
+			if (wrote?.hits?.length) {
+				warnings.push(`写入内容含凭据材料（${wrote.hits.join('、')}），落盘前已 redact 为 [REDACTED:kind]——密钥不该进记忆，请改用凭据服务`);
+			}
 			const fnBytes = byteLen(fnText);
 			if (fnBytes > opts.maxFunctionBytes) {
 				warnings.push(`functions/${feature}.md ${fnBytes}B > ${opts.maxFunctionBytes}B：调用 memory_fold(feature="${feature}") 折叠最旧块为早期演化段`);
@@ -2185,7 +2222,7 @@ async function searchMemory(root, rawQuery, { zone = 'all', limit = 20 } = {}) {
 function memoryCheckTool(opts) {	return defineTool({
 		name: 'memory_check',
 		description:
-			'Lint the memory root (read-only): MEMORY.md size caps + rows missing one-line summaries (R5), dangling / root-escaping links (R10), function files reverse-linking to MEMORY.md detail (R8), function-file size (R9), over-detailed iteration blocks and index rows that were not distilled (R14), duplicated index rows or table sections (R15), head stable-state summary older than the newest iteration block or missing (R3), env-constant absolute paths that no longer exist (R16), a function area corrected over 40% of the time in the last 7 days (R18 circuit breaker), iteration date tags not append-ordered (R3), legacy/ files missing the 历史原貌 header (R13). Guarded files (🛡 守护型) are exempt from the cold-memory rule. Run it after batch memory edits or when memory_check has never run on this root.',
+			'Lint the memory root (read-only): MEMORY.md size caps + rows missing one-line summaries (R5), dangling / root-escaping links (R10), function files reverse-linking to MEMORY.md detail (R8), function-file size (R9), over-detailed iteration blocks and index rows that were not distilled (R14), duplicated index rows or table sections (R15), head stable-state summary older than the newest iteration block or missing (R3), env-constant absolute paths that no longer exist (R16), a function area corrected over 40% of the time in the last 7 days (R18 circuit breaker), iteration date tags not append-ordered (R3), legacy/ files missing the 历史原貌 header (R13), credential material or personal identifiers in memory files (R21 memory defence). Guarded files (🛡 守护型) are exempt from the cold-memory rule. Run it after batch memory edits or when memory_check has never run on this root.',
 		parameters: {},
 		output: {
 			schema: {
@@ -2349,6 +2386,7 @@ const DISCIPLINE_TEXT = [
 	'- **守护型**：低频但高价值的记忆（安全审计、关键踩坑、兜底规则）用 `memory_write(guard=true)` 标记，体检的冷记忆规则会跳过它——不要因为"很久没写"就删掉兜底经验。',
 	'- **项目归属**：涉及特定项目的记忆，在功能域 slug 或正文里注明项目名（如 `toolbox-login`）。功能域多到单根过大时，可启用**联邦模式**（`federation: { root, projects }`）：项目真相源留在各项目记忆根，`memory_federation` 负责刷副本与跨项目索引，项目细节不上升。',
 	'- **收缩机制**：功能文件超 30KB 用 `memory_fold` 折叠最旧块；MEMORY.md 超线按 ### 子分区拆分；重命名/合并用 `memory_rename`（自动改写引用并验证死链清零）。',
+	'- **密钥防线**：凭据（API key / token / 私钥 / JWT）绝不进记忆——插件写入口在落盘前把凭据形态替换成 `[REDACTED:kind]` 并在回执点名；每日原始层不经插件，直接写文件时请自律（体检 R21 兜底报告，身份证/手机号只告警不改写）。留「调用形态 + 前提从哪里领」，不留密钥本体。',
 	'- 批量改动记忆后跑 `memory_check` 体检。',
 	'- 归属口诀：会**重跑**的操作（术·functions/）、会**重套**的原则（法·insights/）、**反复跑通且验证**的程序（技能·skills/）、违反即出事故的约束（道·共识区）、指向内容的指针（器·索引与面板）；原始过程永远只留在每日记录。',
 ].join('\n');
@@ -2686,7 +2724,11 @@ export function apply(ctx, config) {
 							const p = path.join(root, `${today}.md`);
 							const before = (await readIfExists(p)) ?? dailyTemplate(today);
 							const line = captureLineFor(userText, before, opts);
-							if (line) await appendFile(p, `${before.endsWith('\n') || before === '' ? '' : '\n'}${line}\n`, 'utf8');
+							// The capture writes via appendFile (bypassing writeText's
+							// choke point), so the credential scan must run here too —
+							// the user's raw words are the MOST likely place for a pasted
+							// token.
+							if (line) await appendFile(p, `${before.endsWith('\n') || before === '' ? '' : '\n'}${redactSecrets(line).text}\n`, 'utf8');
 						} catch {
 							/* capture is a best-effort breadcrumb, never a failure */
 						}

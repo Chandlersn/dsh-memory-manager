@@ -14,7 +14,7 @@ discipline injected into its system prompt.
 
 - Twelve memory tools + an injected system-prompt discipline + a budgeted `agent/pre-step` recall hook + a read-only Web panel
 - Writing is filing: `summary` and `currentState` are required parameters, so the index row never drifts
-- Twelve mechanical lint rules, so rot gets detected instead of remembered
+- Mechanical lint rules (R0–R21 plus temperature analysis; rule numbers grow, so no fixed count is claimed), so rot gets detected instead of remembered
 - **Capability ledger**: every EXTERNAL CLI / MCP / local tool you used is filed in `capabilities/` — look before
   you rediscover it (harness built-ins and the project's own scripts/APIs are NOT capabilities)
 - **Skill crystallization**: operations that keep being re-run and confirmed become callable procedures in
@@ -22,6 +22,9 @@ discipline injected into its system prompt.
   retired, and only active skills enter recall)
 - **Granularity gate**: iteration blocks hold distilled conclusions only; a block over 900 chars or an index
   row over 110 chars warns at write time and is named by lint rule R14
+- **Memory defence (Hindsight-borrowed)**: every plugin write path replaces credential shapes (API keys/tokens/
+  private keys/JWTs) with `[REDACTED:kind]` before they reach disk and names them in the receipt; national ID /
+  phone numbers are only reported by lint rule R21 — facts are never silently rewritten
 - Panel colors and sizes ride on the Host design tokens (`--dsw-alias-*` / `--dsw-radius-*`)
 
 ## Memory layout

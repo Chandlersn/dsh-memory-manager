@@ -1,11 +1,12 @@
 /**
  * Small shared helpers: dates, atomic file writes, slugs, iteration-block
- * parsing and memory-root resolution. No Host dependency, no side effects.
+ * parsing and memory-root resolution. No Host dependency.
  */
 import { readFile, writeFile, rename, unlink, mkdir, stat } from 'node:fs/promises';
 import * as path from 'node:path';
 import { homedir } from 'node:os';
 import { Buffer } from 'node:buffer';
+import { redactSecrets } from './secrets.js';
 
 const pad2 = (n) => String(n).padStart(2, '0');
 
@@ -40,16 +41,22 @@ export async function readIfExists(p) {
  * `rename` replaces the destination in one step (Node uses MOVEFILE_REPLACE_
  * EXISTING on Windows); a short retry covers transient locks from readers or
  * antivirus scanning the destination.
+ *
+ * MEMORY DEFENCE: every write funnels through here, so tier-1 credentials are
+ * redacted at the single choke point — no tool path can forget to scan. The
+ * returned `{ hits }` lets callers surface what changed in the tool receipt;
+ * callers that ignore the return value keep working.
  */
 export async function writeText(p, content) {
+	const { text, hits } = redactSecrets(content);
 	await mkdir(path.dirname(p), { recursive: true });
 	const tmp = `${p}.tmp-${process.pid.toString(36)}-${Date.now().toString(36)}`;
 	try {
-		await writeFile(tmp, content, 'utf8');
+		await writeFile(tmp, text, 'utf8');
 		for (let attempt = 0; ; attempt++) {
 			try {
 				await rename(tmp, p);
-				return;
+				return { hits };
 			} catch (err) {
 				if (attempt >= 3) throw err;
 				await new Promise((r) => setTimeout(r, 20 * (attempt + 1)));
