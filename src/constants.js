@@ -53,6 +53,13 @@ export const LEGACY_CAP_TABLE_HEADER = '| 能力 | 一句话用途 | 台账 | �
 export const LEGACY_SKILL_TABLE_HEADER = '| 技能 | 一句话用途 | 台账 | 状态 |';
 export const LEGACY_TABLE_HEADERS = new Set([LEGACY_FUNC_TABLE_HEADER, LEGACY_INSIGHT_TABLE_HEADER, LEGACY_CAP_TABLE_HEADER, LEGACY_SKILL_TABLE_HEADER]);
 
+// Insight trust (Hindsight's observations idea, adapted): a principle is a
+// BELIEF and beliefs carry evidence. The evidence already exists — positive /
+// correction signals in .usage.jsonl — so trust is COMPUTED from them, never
+// declared by hand. 待验证 (no verdict yet) → 已验证 → 稳固; 动摇 (corrections
+// reached or passed the positives) is the refine/supersede prompt.
+export const TRUST_LEVELS = ['待验证', '已验证', '稳固', '动摇'];
+
 // skills — the crystallization layer. Statuses mirror MemOS's lifecycle:
 // candidate → active (verified) → retired (environment changed; kept as history).
 export const SKILL_DIR = 'skills';

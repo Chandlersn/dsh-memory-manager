@@ -38,7 +38,7 @@ import {
 	localDateStr, normDate, oneLine, charLen, readIfExists, writeText, statExists, safeSlug,
 	splitIterationBlocks, dshHome, joinDshHome, resolveRoot, appendBlock, countHeadingDate,
 } from './src/util.js';
-import { usagePath, appendUsage, readUsage, summarizeUsage } from './src/usage.js';
+import { usagePath, appendUsage, readUsage, summarizeUsage, insightTrust, trustLineFor, refreshTrustLine } from './src/usage.js';
 import {
 	memoryIndexTemplate, functionFileTemplate, dailyTemplate, insightTemplate, sepOf,
 	upsertIndexRow, appendUnderHeading, resolveOpenItems, refreshSummarySection, replaceSection,
@@ -504,6 +504,25 @@ async function runHealthCheck(root, opts) {
 			for (const [href, c] of perHref) {
 				if (c.corrections >= 3 && c.corrections / Math.max(1, c.uses + c.corrections) > 0.4) {
 					add('WARN', 'R18', `${href} 近 7 天被纠正 ${c.corrections} 次、使用 ${c.uses} 次（纠正率 > 40%）：熔断——先重构该域再继续追加迭代，别把问题压进历史`);
+				}
+			}
+		}
+	} catch {
+		/* usage log is optional */
+	}
+
+	// R22 (insight trust): an idea whose corrections reached its confirmations
+	// is being overturned by real use — the same circuit-breaker logic as R18,
+	// lifted from function areas to the principle layer (Hindsight refines a
+	// belief instead of replacing it silently).
+	try {
+		const usage = await readUsage(root, 30);
+		if (usage.length) {
+			for (const it of summarizeUsage(usage)) {
+				if (!it.href.startsWith('insights/')) continue;
+				const trust = insightTrust(it);
+				if (trust.level === '动摇') {
+					add('WARN', 'R22', `${it.href} 认可 ${trust.positives} 次被纠正追平/反超（${trust.corrections} 次）：该思想正被动摇——精炼原则本体或 memory_insight(supersedes) 取代它`);
 				}
 			}
 		}
@@ -1724,6 +1743,10 @@ function memoryInsightTool(opts) {
 					linkedSources: { type: 'array', required: true, items: { type: 'string' } },
 					skippedSources: { type: 'array', required: true, items: { type: 'string' } },
 					supersededFile: { type: 'string' },
+					// The schema is additionalProperties:false — every field execute
+					// returns must be declared here or the Host rejects the receipt
+					// (the 5.11.3 lesson, in reverse).
+					trust: { type: 'object', required: true, additionalProperties: false, properties: { level: { type: 'string', required: true }, positives: { type: 'number', required: true }, corrections: { type: 'number', required: true } } },
 					warnings: { type: 'array', required: true, items: { type: 'string' } },
 				},
 			},
@@ -1796,6 +1819,16 @@ function memoryInsightTool(opts) {
 				}
 				if (args.open !== undefined && oneLine(args.open)) text = appendUnderHeading(text, '## 待观察', `- ${oneLine(args.open)}`).text;
 			}
+			// Trust refresh (Hindsight-borrowed: beliefs carry proof counts and are
+			// REFINED, never silently replaced): recompute from .usage.jsonl on every
+			// insight write, so the head line is always the current evidence — and a
+			// theme that keeps being corrected shows it right on its first line.
+			const trustItems = summarizeUsage(await readUsage(root));
+			const trust = insightTrust(trustItems.find((x) => x.href === `insights/${theme}.md`) ?? {});
+			text = refreshTrustLine(text, trustLineFor(trust));
+			if (trust.level === '动摇') {
+				warnings.push(`该思想正处于「动摇」（认可 ${trust.positives} · 纠正 ${trust.corrections}）：继续追加前先精炼原则本体或传 supersedes 取代它`);
+			}
 			await writeText(p, text);
 
 			// 1b) supersede (R12): stamp the old insight without deleting it.
@@ -1833,6 +1866,7 @@ function memoryInsightTool(opts) {
 				insightFile: p,
 				linkedSources: linked.map((s) => `functions/${s}.md`),
 				skippedSources: skipped.map((s) => `functions/${s}.md`),
+				trust,
 				warnings,
 			};
 			if (supersededFile) out.supersededFile = supersededFile;
@@ -2781,4 +2815,4 @@ export function resolveRecallBudget(configured) {
 	return Math.min(Math.max(0, configured), ceiling);
 }
 
-export { name, inject, dshHome, joinDshHome, resolveRoot, resolveDshRoot, runHealthCheck, panelizeHealth, zoneCounts, tokensOf, matchIndexRows, buildRecallMessage, decisionRepairTargets, indexRowsOf, captureLineFor, DEFAULTS, DISCIPLINE_TEXT };
+export { name, inject, dshHome, joinDshHome, resolveRoot, resolveDshRoot, runHealthCheck, panelizeHealth, zoneCounts, tokensOf, matchIndexRows, buildRecallMessage, decisionRepairTargets, indexRowsOf, captureLineFor, insightTrust, DEFAULTS, DISCIPLINE_TEXT };

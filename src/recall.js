@@ -1,8 +1,11 @@
 /**
  * Proactive recall: pre-step index matching (tokensOf + matchIndexRows) and the
  * recall message builder. Ranking fuses lexical IDF with usage heat via RRF;
- * decision-repair rows are forced in and visibly marked.
+ * decision-repair rows are forced in and visibly marked; insight rows carry
+ * their trust level (computed from usage evidence) so a shaken principle is
+ * never injected as if it were solid.
  */
+import { insightTrust } from './usage.js';
 
 /** Extract meaningful tokens: CJK bigrams + latin words, minus stopwords. */
 export function tokensOf(text) {
@@ -33,31 +36,8 @@ export function tokensOf(text) {
  *  - Relative threshold: rows scoring under 40% of the best match are dropped,
  *    so one strong hit does not drag three weak ones into the injection.
  *  - Dedupe by href (a table split into ### sub-sections can repeat a row).
- */
-/**
- * @param {Map<string, {uses:number,positives:number,badRate:number}>} [usage]
- *   Per-href usage signals (from .usage.jsonl). When present, the lexical IDF
- *   rank is FUSED with a usage rank via RRF (borrowed from MemOS's hybrid
- *   retrieval: FTS5 + vector → RRF), so a row that is both topically relevant
- *   AND repeatedly used wins, and a heavily-corrected row is demoted.
- */
-
-/**
- * Score index rows against the user's tokens and return the top rows whose
- * overlap clears a small threshold. Pure and synchronous: runs in pre-step.
  *
- * v2 ranking (same cost class, much better precision):
- *  - IDF weighting: tokens shared by every row (e.g. 「功能」「记忆」) count for
- *    little; a rare token (「逐帧」「懒加载」) dominates. Without this, a query
- *    mentioning a common word outranks the row that is actually about it.
- *  - Name/slug hits are boosted: the row's own identity matching beats a
- *    passing mention inside its summary.
- *  - Relative threshold: rows scoring under 40% of the best match are dropped,
- *    so one strong hit does not drag three weak ones into the injection.
- *  - Dedupe by href (a table split into ### sub-sections can repeat a row).
- */
-/**
- * @param {Map<string, {uses:number,positives:number,badRate:number}>} [usage]
+ * @param {Map<string, {uses:number,positives:number,corrections:number,badRate:number}>} [usage]
  *   Per-href usage signals (from .usage.jsonl). When present, the lexical IDF
  *   rank is FUSED with a usage rank via RRF (borrowed from MemOS's hybrid
  *   retrieval: FTS5 + vector → RRF), so a row that is both topically relevant
@@ -150,7 +130,12 @@ export function matchIndexRows(indexText, userTokens, limit = 3, usage) {
 		if (r.score < best * 0.4) break;
 		if (seen.has(r.href)) continue;
 		seen.add(r.href);
-		out.push(r);
+		const row = { ...r };
+		// Insight rows carry their trust level — the same computation as the head
+		// line of the file and the R22 lint, so the recall line and the file can
+		// never disagree. A principle without usage evidence yet is 待验证.
+		if (r.zone === 'insight') row.trust = insightTrust(usage?.get(r.href) ?? {});
+		out.push(row);
 		if (out.length >= limit) break;
 	}
 	return out;
@@ -166,15 +151,17 @@ export function matchIndexRows(indexText, userTokens, limit = 3, usage) {
 export function buildRecallMessage(lines) {
 	const hasSkill = lines.some((l) => l.zone === 'skill');
 	const hasRepair = lines.some((l) => l.repair);
+	const hasShaken = lines.some((l) => l.trust && l.trust.level === '动摇');
 	const text = [
 		'### 记忆召回（memory-manager）',
 		'',
 		'本轮用户输入与以下已有记忆的索引行相关。**先查后写**：涉及这些主题时先读对应文件再行动，不要凭空重推已有结论；如确属新工作，正常进行即可：',
 		'',
-		...lines.map((l) => `- ${l.zone === 'skill' ? '⭐ 已结晶技能：' : ''}${l.repair ? `⚠️ 决策修复（近 7 天纠正 ${l.repair.corrections} 次、纠正率 ${l.repair.badRate}）：` : ''}${l.summary} → [${l.href}](${l.href})${l.zone === 'skill' ? '（先读程序按步骤走，不要再现场推导）' : ''}`),
+		...lines.map((l) => `- ${l.zone === 'skill' ? '⭐ 已结晶技能：' : ''}${l.repair ? `⚠️ 决策修复（近 7 天纠正 ${l.repair.corrections} 次、纠正率 ${l.repair.badRate}）：` : ''}${l.trust && l.trust.level === '动摇' ? `⚠️ 信任动摇（认可 ${l.trust.positives} · 纠正 ${l.trust.corrections}）：` : ''}${l.summary} → [${l.href}](${l.href})${l.zone === 'skill' ? '（先读程序按步骤走，不要再现场推导）' : ''}`),
 		'',
 		hasSkill ? 'ℹ 命中 active 技能：这是过去反复验证过的操作程序，优先直接执行其步骤；执行结果与预期不符时，回到来源功能域重新推导。' : '',
 		hasRepair ? '⚠️ 决策修复命中：上面标 ⚠️ 的记忆近期被反复纠正——先读它再动手，别在同一个判断上再错一次（当前这一步未被打断）。' : '',
+		hasShaken ? '⚠️ 标「信任动摇」的思想：其认可已被纠正追平/反超（信任由使用证据自动计算，见文件头「> 信任：」行）——引用它时先复核，或考虑精炼/取代它。' : '',
 	].filter((s) => s !== '').join('\n');
 	return {
 		role: 'user',

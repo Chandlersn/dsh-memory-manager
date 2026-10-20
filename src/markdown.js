@@ -102,6 +102,7 @@ export function insightTemplate(theme, principle, srcLine, evolution, applicabil
 		`# 创新优化思想：${theme}`,
 		'',
 		'> 性质：可重套的原则（不是可重跑的操作）；操作细节留在来源 functions/ 文件。',
+		'> 信任：待验证（认可 0 · 纠正 0，由 memory_insight 按 .usage.jsonl 自动刷新）',
 		`> 来源：${srcLine}`,
 		'',
 		'## 核心原则',

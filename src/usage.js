@@ -87,3 +87,32 @@ export function summarizeUsage(entries) {
 	items.sort((a, b) => b.uses - a.uses || b.last - a.last);
 	return items;
 }
+
+/**
+ * Insight trust from usage evidence (Hindsight-borrowed: beliefs carry proof
+ * counts, and new evidence REFINES rather than silently replaces).
+ *
+ *   positives 0, corrections 0  → 待验证（沉淀了但还没被用过/验证过）
+ *   corrections >= positives>0  → 动摇（被纠正追平了认可：该精炼或取代了）
+ *   positives >= 3              → 稳固（反复被确认）
+ *   positives >= 1              → 已验证
+ */
+export function insightTrust(item) {
+	const p = item?.positives ?? 0;
+	const c = item?.corrections ?? 0;
+	if (p === 0) return { level: '待验证', positives: 0, corrections: c };
+	if (c >= p) return { level: '动摇', positives: p, corrections: c };
+	if (p >= 3) return { level: '稳固', positives: p, corrections: c };
+	return { level: '已验证', positives: p, corrections: c };
+}
+
+/** The head line written into every insight file; the panel renders it for free. */
+export function trustLineFor(trust) {
+	return `> 信任：${trust.level}（认可 ${trust.positives} · 纠正 ${trust.corrections}，由 memory_insight 按 .usage.jsonl 自动刷新）`;
+}
+
+/** Replace or insert the trust line right after the `> 性质：` head line. */
+export function refreshTrustLine(text, line) {
+	if (/^> 信任：.*$/m.test(text)) return text.replace(/^> 信任：.*$/m, line);
+	return text.replace(/^(> 性质：[^\n]*\n)/, `$1${line}\n`);
+}

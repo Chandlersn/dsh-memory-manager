@@ -205,6 +205,33 @@ const badUsage = new Map([
 const demoted = mod.matchIndexRows(fusionIndex, mod.tokensOf('逐帧 渲染'), 3, badUsage);
 ok(demoted[0]?.href === 'functions/冷门域.md', `high correction rate demotes a hot row (${demoted[0]?.href})`);
 
+// 3f) Insight trust (Hindsight borrow): a principle is a belief that carries
+// proof counts, computed from the SAME usage evidence the panel and R18 use —
+// never declared by hand. Levels and the 动摇 boundary are the contract.
+ok(mod.insightTrust({}).level === '待验证', 'no evidence -> 待验证');
+ok(mod.insightTrust({ positives: 1, corrections: 0 }).level === '已验证', 'one confirmation -> 已验证');
+ok(mod.insightTrust({ positives: 3, corrections: 0 }).level === '稳固', 'three confirmations -> 稳固');
+ok(mod.insightTrust({ positives: 2, corrections: 1 }).level === '已验证', 'corrections below positives stay 已验证');
+ok(mod.insightTrust({ positives: 1, corrections: 1 }).level === '动摇', 'corrections REACHED positives -> 动摇');
+ok(mod.insightTrust({ positives: 0, corrections: 3 }).level === '待验证', 'corrections with zero positives is 待验证 not 动摇');
+// matchIndexRows attaches the computed trust to insight rows only, and
+// buildRecallMessage marks a shaken one — the recall line can never disagree
+// with the file head because both call insightTrust.
+const trustIndex = [
+	'| 已验证思想 | 逐帧 渲染 的原则 | [insights/甲.md](insights/甲.md) |',
+	'| 被动摇思想 | 逐帧 渲染 的旧原则 | [insights/乙.md](insights/乙.md) |',
+].join('\n');
+const trustUsage = new Map([
+	['insights/甲.md', { uses: 5, positives: 4, corrections: 0, badRate: 0 }],
+	['insights/乙.md', { uses: 5, positives: 1, corrections: 2, badRate: 0.3 }],
+]);
+const trustRows = mod.matchIndexRows(trustIndex, mod.tokensOf('逐帧 渲染'), 3, trustUsage);
+ok(trustRows.find((r) => r.href === 'insights/甲.md')?.trust?.level === '稳固', 'insight row carries its computed trust');
+ok(trustRows.find((r) => r.href === 'insights/乙.md')?.trust?.level === '动摇', 'shaken insight computed from the same signal');
+const trustMsg = mod.buildRecallMessage(trustRows).content[0].text;
+ok(trustMsg.includes('信任动摇') && trustMsg.includes('认可 1 · 纠正 2'), 'a shaken principle is marked in the recall');
+ok(mod.matchIndexRows(trustIndex, mod.tokensOf('逐帧 渲染'), 3).find((r) => r.href === 'insights/甲.md')?.trust?.level === '待验证', 'insight recall without usage map still computes (待验证)');
+
 // 4) second write same day -> 补 suffix
 const w2 = await T.memory_write.execute(
 	{ feature: '测试功能', title: '第二次迭代', summary: '同日第二块加补后缀', currentState: '两块后仍稳定', result: 'pending' },
@@ -276,6 +303,26 @@ const i3 = await T.memory_insight.execute(
 ok(i3.supersededFile === undefined && !('supersededFile' in i3), 'no undefined field in an insight update result');
 const insightText = await readFile(i3.insightFile, 'utf8');
 ok(insightText.includes('刷新后的适用面文案'), 'applicability refreshed on insight update');
+
+// 7c) insight trust end-to-end: every insight file carries a computed
+// 「> 信任：」 head line; recorded evidence moves it, and shaking it both warns
+// at write time and trips the R22 lint.
+ok(insightText.includes('> 信任：'), 'insight file starts with a trust line');
+const tPos = await T.memory_insight.execute({ theme: '信任主题', principle: '被反复认可的原则', summary: '信任测试', sources: ['测试功能'] }, exec);
+ok(tPos.trust?.level === '待验证', `fresh insight is 待验证 (${JSON.stringify(tPos.trust)})`);
+await T.memory_usage.execute({ action: 'record', href: 'insights/信任主题.md', kind: 'positive' }, exec);
+await T.memory_usage.execute({ action: 'record', href: 'insights/信任主题.md', kind: 'positive' }, exec);
+const tSteady = await T.memory_insight.execute({ theme: '信任主题', principle: '被反复认可的原则（迭代）', summary: '信任测试', sources: ['测试功能'] }, exec);
+ok(tSteady.trust?.level === '已验证' && tSteady.trust.positives === 2, `two positives raise trust (${JSON.stringify(tSteady.trust)})`);
+await T.memory_usage.execute({ action: 'record', href: 'insights/信任主题.md', kind: 'correction' }, exec);
+await T.memory_usage.execute({ action: 'record', href: 'insights/信任主题.md', kind: 'correction' }, exec);
+const tShaken = await T.memory_insight.execute({ theme: '信任主题', principle: '被纠正追平的同一原则', summary: '信任测试', sources: ['测试功能'] }, exec);
+ok(tShaken.trust?.level === '动摇', `corrections reached positives -> 动摇 (${JSON.stringify(tShaken.trust)})`);
+ok(tShaken.warnings.some((w) => w.includes('动摇') && w.includes('supersedes')), 'shaking an insight warns at write time');
+const shakenFile = await readFile(tShaken.insightFile, 'utf8');
+ok(/>\s*信任：动摇（认可 2 · 纠正 2/.test(shakenFile), 'the head line holds the current evidence counts');
+const cTrust = await T.memory_check.execute({}, exec);
+ok(cTrust.results.some((r) => r.rule === 'R22' && r.message.includes('信任主题')), 'R22 reports the shaken insight');
 
 // 8) fold: create a file with many blocks, fold keeping 2
 await T.memory_write.execute({ feature: '折叠目标', title: '块一', summary: 's1', result: 'reverted', open: '教训一' }, exec);
