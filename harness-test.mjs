@@ -358,6 +358,18 @@ const shakenFile = await readFile(tShaken.insightFile, 'utf8');
 ok(/>\s*信任：动摇（认可 2 · 纠正 2/.test(shakenFile), 'the head line holds the current evidence counts');
 const cTrust = await T.memory_check.execute({}, exec);
 ok(cTrust.results.some((r) => r.rule === 'R22' && r.message.includes('信任主题')), 'R22 reports the shaken insight');
+// Regression (found end-to-end on the REAL root): a file written BEFORE the
+// 5.16.1 template carries no `> 信任：` line, so the update must INSERT one.
+// The insert regex originally lacked the `m` flag — `^` anchored at the very
+// start (the `# 标题` line), never matched, and all 16 pre-existing insights
+// silently stayed without the line R22 and the recall marker key on.
+{
+	const legacyPath = path.join(root, 'insights', '旧代思想.md');
+	await writeFile(legacyPath, '# 创新优化思想：旧代思想\n\n> 性质：可重套的原则。\n> 来源：[functions/测试功能.md](../functions/测试功能.md)\n\n## 核心原则\n\n- 旧版原则本体\n', 'utf8');
+	await T.memory_insight.execute({ theme: '旧代思想', principle: '旧版原则本体（迭代）', summary: '旧代补信任', sources: ['测试功能'] }, exec);
+	const legacyText = await readFile(legacyPath, 'utf8');
+	ok(/^> 信任：.*$/m.test(legacyText), 'a pre-template file gets its trust line INSERTED on update');
+}
 
 // 8) fold: create a file with many blocks, fold keeping 2
 await T.memory_write.execute({ feature: '折叠目标', title: '块一', summary: 's1', result: 'reverted', open: '教训一' }, exec);

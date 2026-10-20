@@ -111,8 +111,21 @@ export function trustLineFor(trust) {
 	return `> 信任：${trust.level}（认可 ${trust.positives} · 纠正 ${trust.corrections}，由 memory_insight 按 .usage.jsonl 自动刷新）`;
 }
 
-/** Replace or insert the trust line right after the `> 性质：` head line. */
+/**
+ * Replace or insert the trust line right after the `> 性质：` head line.
+ * BOTH branches matter: files created by the 5.16.1 template already carry the
+ * line (replace), files written by an earlier generation do not (insert) — and
+ * the insert needs the `m` flag, or `^` anchors at the very start of the body
+ * (the `# 标题` line) and silently never matches. An insight update must never
+ * return without its trust line: the recall marker and R22 both key on it.
+ */
 export function refreshTrustLine(text, line) {
 	if (/^> 信任：.*$/m.test(text)) return text.replace(/^> 信任：.*$/m, line);
-	return text.replace(/^(> 性质：[^\n]*\n)/, `$1${line}\n`);
+	const withInsert = text.replace(/^(> 性质：[^\n]*\n)/m, `$1${line}\n`);
+	if (withInsert !== text) return withInsert;
+	// No `> 性质：` head at all (a hand-written or truncated file): put the line
+	// under the title instead of dropping it.
+	const afterTitle = text.replace(/^(#[^\n]*\n\n?)/m, `$1${line}\n`);
+	if (afterTitle !== text) return afterTitle;
+	return `${line}\n${text}`;
 }
