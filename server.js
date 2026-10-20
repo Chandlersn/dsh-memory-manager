@@ -421,11 +421,19 @@ async function runHealthCheck(root, opts) {
 				const hostM = (stripped.match(/^hostName:\s*(\S+)/m) ?? [])[1];
 				if (hostM && !isSkillName(hostM)) add('WARN', 'R20h', `skills/${f} hostName「${hostM}」不是 kebab-case：宿主目录会忽略它，改成小写-连字符形式`);
 				if (sStatus !== 'retired') {
+					// Pointer form (5.19.0): a memory skill whose PROCEDURE lives in a
+					// host bundle (hostName + a 「## 程序体」 pointer section) is
+					// complete — duplicating the steps here would be a second source
+					// to drift. The pointer must name the bundle, not just gesture.
+					const isPointer = Boolean(hostM) && /## 程序体/.test(stripped);
 					const steps = (/## 调用步骤\s*\n([\s\S]*?)(?=\n## |$)/.exec(stripped) ?? [])[1] ?? '';
 					const numbered = (steps.match(/^\s*1[.、]/gm) ?? []).length;
-					if (!numbered) add('WARN', 'R20', `skills/${f} 「调用步骤」没有编号步骤：技能必须可直接执行，空壳请补全或 retire`);
+					if (!numbered && !isPointer) add('WARN', 'R20', `skills/${f} 「调用步骤」没有编号步骤：技能必须可直接执行，空壳请补全或 retire（程序体在宿主目录包的指针形态请写「## 程序体」节并带 hostName）`);
 					const when = (stripped.match(/## 何时使用\s*\n+-\s*(.+)/) ?? [])[1];
-					if (!when) add('WARN', 'R20', `skills/${f} 「何时使用」为空：没有触发条件的技能永远不会被命中`);
+					// whenToUse in frontmatter carries the trigger for pointer-form
+					// files too — either surface satisfies the router check.
+					const whenFm = (stripped.match(/^whenToUse:\s*"([^"]+)"/m) ?? [])[1];
+					if (!when && !whenFm) add('WARN', 'R20', `skills/${f} 「何时使用」为空：没有触发条件的技能永远不会被命中`);
 				}
 				// R20e: the index row's 状态 cell must agree with the file status, or the
 				// recall filter (which reads the index) trusts the wrong lifecycle.

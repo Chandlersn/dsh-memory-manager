@@ -1019,6 +1019,24 @@ const r20 = cSk.results.filter((r) => r.rule === 'R20' || r.rule === 'R20e');
 ok(r20.some((r) => r.message.includes('状态「weird」非法')), 'R20 flags an illegal status');
 ok(r20.some((r) => r.message.includes('调用步骤')), 'R20 flags an empty procedure');
 ok(r20.some((r) => r.message.includes('何时使用')), 'R20 flags a missing trigger section');
+// Pointer form (5.19.0): a skill whose procedure lives in a host bundle is
+// COMPLETE without numbered steps here — but ONLY when it names the bundle
+// (hostName + a 「## 程序体」 section). A pointer WITHOUT the section is still
+// an empty shell, and frontmatter whenToUse satisfies the router check.
+await writeFile(
+	path.join(root, 'skills', '指针技能.md'),
+	'---\nname: 指针技能\ndescription: 程序体在宿主包\nwhenToUse: "需要指针回归时"\nhostName: pointer-skill\nagent_created: true\nscope: global\nstatus: active\n---\n\n# 指针技能\n\n## 程序体（唯一来源）\n\n- 宿主目录包：`~/.dsh/skills/pointer-skill/`\n',
+	'utf8',
+);
+const cPtr = await T.memory_check.execute({}, exec);
+ok(!cPtr.results.some((r) => r.rule === 'R20' && r.message.includes('指针技能')), 'pointer form with bundle reference passes R20');
+await writeFile(
+	path.join(root, 'skills', '伪指针.md'),
+	'---\nname: 伪指针\ndescription: 有 hostName 但没有程序体节\nwhenToUse: "伪指针回归"\nhostName: fake-pointer\nagent_created: true\nscope: global\nstatus: active\n---\n\n# 伪指针\n\n没有程序体节，也没有步骤。\n',
+	'utf8',
+);
+const cFake = await T.memory_check.execute({}, exec);
+ok(cFake.results.some((r) => r.rule === 'R20' && r.message.includes('伪指针') && r.message.includes('调用步骤')), 'hostName alone without a 程序体 section is still an empty shell');
 
 // 24) host skill bridge + scope metadata (5.17.0). The core lesson this encodes
 // is the same as 5.16.3's: a compat path MUST be exercised with the legacy
