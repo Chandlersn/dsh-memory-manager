@@ -134,6 +134,11 @@ ok(!!scRow && scRow.kind === 'host', 'the installed skill-creator bundle is list
 if (scRow) {
 	ok(scRow.source === 'user-dsh', `host row carries its root source (${scRow.source})`);
 	ok(Array.isArray(scRow.files) && scRow.files.some((f) => f.rel === 'SKILL.md') && scRow.files.some((f) => f.rel === 'scripts/quick_validate.py'), `bundle file tree includes SKILL.md + scripts (${scRow.files.length} files)`);
+	// Runtime artifacts are not skill assets: this machine really has a
+	// __pycache__ inside that bundle (the validator was run), so the LIVE
+	// answer — not a fixture — proves the filter.
+	ok(!scRow.files.some((f) => /(^|\/)__pycache__\//.test(f.rel) || f.name.endsWith('.pyc')), 'the file tree excludes __pycache__ runtime artifacts');
+	ok(!scRow.files.some((f) => /(^|\/)node_modules\//.test(f.rel)), 'the file tree excludes node_modules');
 }
 // /skill reads a STORED main file; kind picks the root; traversal is a 400.
 const memBody = await call(`/api/memory-org/skill?name=${encoded('分离延迟重启')}&kind=memory`);

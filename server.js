@@ -2796,6 +2796,9 @@ function memoryPanelApi(opts) {
 						const walk = async (rel) => {
 							const abs = path.join(dir2, rel);
 							for (const de of await readdir(abs, { withFileTypes: true })) {
+								// Runtime artifacts are not skill assets: __pycache__
+								// appears the moment anything runs the scripts.
+								if (de.name === '__pycache__' || de.name === 'node_modules') continue;
 								const rel2 = rel ? `${rel}/${de.name}` : de.name;
 								if (de.isDirectory()) await walk(rel2);
 								else files.push({ rel: rel2, name: de.name, bytes: (await stat(path.join(dir2, rel2))).size });
@@ -2825,10 +2828,13 @@ function memoryPanelApi(opts) {
 				// The file list travels WITH the body: the panel's detail view needs
 				// it, and re-deriving it client-side would mean the client knowing
 				// the host roots (it does not — the server resolves them).
-				const filesOf = async (dir2, fn) => {
+				const filesOf = async (dir2) => {
 					const files = [];
 					const walk = async (rel) => {
 						for (const de of await readdir(path.join(dir2, rel), { withFileTypes: true })) {
+							// __pycache__/node_modules are runtime artifacts, not skill
+							// content — the panel reader must not see them as assets.
+							if (de.name === '__pycache__' || de.name === 'node_modules') continue;
 							const rel2 = rel ? `${rel}/${de.name}` : de.name;
 							if (de.isDirectory()) await walk(rel2);
 							else files.push({ rel: rel2, name: de.name, bytes: (await stat(path.join(dir2, rel2))).size });
