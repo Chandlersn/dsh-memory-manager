@@ -165,6 +165,38 @@ function rowSlug(line) {
  * domain, and the index must still upsert into the RIGHT sub-table instead of
  * appending to whichever table happens to come first.
  */
+/**
+ * Remove one row (by first-cell slug) from the table under `headingPrefix`,
+ * wherever it lives — the flat table or any `### 索引·<域>` sub-section. The
+ * mirror of upsertIndexRow for the delete path (a deleted artifact must not
+ * leave a dangling index row behind). Same rowSlug resolution, same section
+ * bounds, no other line touched. Returns the text unchanged when absent.
+ */
+export function dropIndexRow(indexText, headingPrefix, headerRow, firstCell) {
+	const lines = String(indexText ?? '').split('\n');
+	let secStart = -1;
+	for (let i = 0; i < lines.length; i++) {
+		if (lines[i].startsWith(headingPrefix)) {
+			secStart = i;
+			break;
+		}
+	}
+	if (secStart === -1) return indexText;
+	let secEnd = lines.length;
+	for (let i = secStart + 1; i < lines.length; i++) {
+		if (lines[i].startsWith('## ')) {
+			secEnd = i;
+			break;
+		}
+	}
+	const before = lines.length;
+	for (let i = secEnd - 1; i > secStart; i--) {
+		if (!lines[i].startsWith('|')) continue;
+		if (rowSlug(lines[i]) === firstCell) lines.splice(i, 1);
+	}
+	return lines.length === before ? indexText : lines.join('\n');
+}
+
 export function upsertIndexRow(indexText, headingPrefix, headerRow, firstCell, newRow, group) {
 	const lines = indexText.split('\n');
 	let secStart = -1;

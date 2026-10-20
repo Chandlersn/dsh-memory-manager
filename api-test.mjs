@@ -10,6 +10,7 @@
  */
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { mkdir, writeFile, readFile, stat } from 'node:fs/promises';
 
 const mod = await import(new URL('./server.js', import.meta.url).href);
 
@@ -48,6 +49,25 @@ async function call(pathname) {
 		},
 		end(body) {
 			captured.body = body;
+		},
+	};
+	await routeHandler(req, res);
+	return captured;
+}
+
+// POST with a JSON body (the panel's write channel). The stub req is an async
+// iterable of one Buffer, mirroring Node's request stream closely enough.
+async function post(pathname, body) {
+	const url = new URL(pathname, 'http://localhost');
+	const payload = Buffer.from(JSON.stringify(body), 'utf8');
+	const req = { method: 'POST', url: url.pathname + url.search, async *[Symbol.asyncIterator]() { yield payload; } };
+	let captured;
+	const res = {
+		writeHead(status) {
+			captured = { status };
+		},
+		end(b) {
+			captured.body = b;
 		},
 	};
 	await routeHandler(req, res);
@@ -155,6 +175,52 @@ const badRel = await call(`/api/memory-org/skillfile?name=skill-creator&file=${e
 ok(badRel.status === 400, 'skillfile rejects .. in the relative path');
 const badRel2 = await call(`/api/memory-org/skillfile?name=skill-creator&file=${encoded('scripts\\x.py')}`);
 ok(badRel2.status === 400, 'skillfile rejects backslashes in the relative path');
+// --- panel write channel (5.21.0) --------------------------------------------
+// The only mutating route. It runs the memory_skill tool's real executor, so
+// the same guards hold; crystallize is deliberately NOT reachable here.
+const getOnly = await call('/api/memory-org/skill-action');
+ok(getOnly.status === 405, 'skill-action is POST-only');
+const badAct = await post('/api/memory-org/skill-action', { action: 'crystallize', name: 'x' });
+ok(badAct.status === 400, 'crystallize is not reachable from the panel (model judgement)');
+const noName = await post('/api/memory-org/skill-action', { action: 'activate' });
+ok(noName.status === 400, 'a missing/invalid name is rejected (safeSlug guard still in force)');
+// A real lifecycle round trip on the real root, then restore the prior state:
+// the assertion is the ROUND TRIP (retire -> list shows retired -> activate ->
+// list shows active again), not just a 200.
+const before = (await call('/api/memory-org/skills')).body;
+const sepBefore = JSON.parse(before).memory.find((s) => s.name === '分离延迟重启');
+const prior = sepBefore?.status;
+if (prior === 'active') {
+	const ret = await post('/api/memory-org/skill-action', { action: 'retire', name: '分离延迟重启' });
+	ok(ret.status === 200 && JSON.parse(ret.body).status === 'retired', 'panel retire returns the new status');
+	const afterRet = JSON.parse((await call('/api/memory-org/skills')).body).memory.find((s) => s.name === '分离延迟重启');
+	ok(afterRet.status === 'retired' && afterRet.published === false, 'a retired skill leaves the published set');
+	const act = await post('/api/memory-org/skill-action', { action: 'activate', name: '分离延迟重启' });
+	ok(act.status === 200 && JSON.parse(act.body).status === 'active', 'panel activate restores it');
+	const afterAct = JSON.parse((await call('/api/memory-org/skills')).body).memory.find((s) => s.name === '分离延迟重启');
+	ok(afterAct.status === 'active' && afterAct.published === true, 'reactivated skill re-enters the published set');
+} else {
+	ok(true, `lifecycle round trip skipped (prior status=${prior})`);
+}
+// delete: create a throwaway skill, delete it, and prove BOTH the file and the
+// index row are gone (the row must not linger as a dangling pointer). The skill
+// is planted directly (not via the tool) so the delete path is tested alone.
+await mkdir(path.join(root, 'skills'), { recursive: true });
+await writeFile(
+	path.join(root, 'skills', '待删技能.md'),
+	'---\nname: 待删技能\ndescription: 删除断言用的临时技能\nagent_created: true\nscope: global\nstatus: active\n---\n\n# 待删技能\n\n## 何时使用\n\n- x\n\n## 调用步骤\n\n1. a\n2. b\n',
+	'utf8',
+);
+const del = await post('/api/memory-org/skill-action', { action: 'delete', name: '待删技能' });
+ok(del.status === 200, 'panel delete succeeds');
+const fileGone = await stat(path.join(root, 'skills', '待删技能.md')).then(() => false, () => true);
+ok(fileGone, 'the skill file is gone');
+const rowGone = !JSON.parse((await call('/api/memory-org/skills')).body).memory.some((s) => s.name === '待删技能');
+ok(rowGone, 'its index row is gone too');
+const idxText = await readFile(path.join(root, 'MEMORY.md'), 'utf8');
+ok(!idxText.includes('| [待删技能]'), 'MEMORY.md carries no dangling row for the deleted skill');
+const delMissing = await post('/api/memory-org/skill-action', { action: 'delete', name: '不存在的技能xyz' });
+ok(delMissing.status === 400, 'deleting a missing skill is a 400, not a 500');
 
 // --- overview / counts -------------------------------------------------------
 const idx = await call('/api/memory-org/overview');

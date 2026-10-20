@@ -111,6 +111,17 @@ window.__ModuleLoader__.load({
 .dmo-row-name{font-family:var(--ds-font-family-code,ui-monospace,monospace);font-size:14px;line-height:22px}
 .dmo-row-meta{margin-left:auto;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary);flex-shrink:0;font-variant-numeric:tabular-nums}
 .dmo-row-sum{margin-top:2px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+/* skill library rows: the row is a container (flex), the open button takes the
+   remaining width, the lifecycle controls sit at the right edge. */
+.dmo-row-btn{display:block;flex:1;min-width:0;text-align:left;padding:10px 8px;border:none;background:transparent;color:inherit;cursor:pointer;font:inherit}
+.dmo-row-btn:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.dmo-row-actions{display:flex;align-items:center;gap:8px;padding:0 10px;flex-shrink:0}
+.dmo-switch{position:relative;width:34px;height:20px;border-radius:999px;border:.5px solid var(--dsw-alias-border-l3);background:var(--dsw-alias-bg-layer-2);cursor:pointer;transition:background .15s ease;padding:0}
+.dmo-switch.on{background:var(--dsw-alias-state-success-primary);border-color:transparent}
+.dmo-switch-dot{position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff;transition:transform .15s ease}
+.dmo-switch.on .dmo-switch-dot{transform:translateX(14px)}
+.dmo-row-del{border:none;background:transparent;color:var(--dsw-alias-label-tertiary);font-size:16px;line-height:20px;cursor:pointer;padding:2px 6px;border-radius:var(--dsw-radius-sm)}
+.dmo-row-del:hover{color:var(--dsw-alias-state-error-primary);background:var(--dsw-alias-interactive-bg-hover)}
 .dmo-crumbs{display:flex;align-items:center;gap:6px;font-size:12px;line-height:18px}
 .dmo-crumb-sep{color:var(--dsw-alias-label-tertiary)}
 .dmo-doc-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
@@ -821,7 +832,7 @@ window.__ModuleLoader__.load({
 		 * local useState) so the panel renders either side deterministically — in
 		 * the browser via setView, in the UI test via initialView.
 		 */
-		function SkillLibrary({ data, loading, error, tab, onTab, onOpenMemory, onOpenHost, filter, setFilter }) {
+		function SkillLibrary({ data, loading, error, tab, onTab, onOpenMemory, onOpenHost, onToggle, onDelete, actMsg, filter, setFilter }) {
 			const mem = data?.memory ?? [];
 			const host = data?.host ?? [];
 			const q = filter.trim().toLowerCase();
@@ -851,41 +862,131 @@ window.__ModuleLoader__.load({
 					? h('div', { className: 'dmo-empty' }, `读取技能库失败：${error}`)
 					: loading && !data
 						? h('div', { className: 'dmo-empty' }, '读取技能库…')
-						: shown.length
+						: actMsg
+							? h('div', { className: 'dmo-empty', 'data-dmo': 'skill-actmsg' }, actMsg)
+							: shown.length
 					? h(
 							'div',
 							{ className: 'dmo-rows' },
 							shown.map((s) =>
 								h(
-									'button',
+									'div',
 									{
-										key: `${tab}:${s.name}`, type: 'button', className: 'dmo-row', 'data-dmo': 'skill-row',
-										onClick: () => (tab === 'host' ? onOpenHost(s.name) : onOpenMemory(s.name)),
+										key: `${tab}:${s.name}`, className: 'dmo-row', 'data-dmo': 'skill-row',
 										title: s.name,
 									},
+									// The row opens the skill; the controls at its right act
+									// WITHOUT opening (separate buttons, stopPropagation
+									// not needed — they are not inside the open button).
 									h(
-										'div',
-										{ className: 'dmo-row-top' },
-										h('span', { className: 'dmo-row-name' }, s.name),
+										'button',
+										{
+											type: 'button', className: 'dmo-row-btn', 'data-dmo': 'skill-open',
+											onClick: () => (tab === 'host' ? onOpenHost(s.name) : onOpenMemory(s.name)),
+											title: `打开 ${s.name}`,
+										},
 										h(
-											'span',
-											{ className: 'dmo-row-meta' },
-											tab === 'host'
-												? h(Chip, {}, `${s.source || 'host'} · ${s.files?.length ?? 0} 文件`)
-												: h(
-														'span',
-														{},
-														h(Chip, { tone: STATUS_TONE[s.status] }, s.status),
-														s.published ? h(Chip, { tone: 'ok' }, '已发布宿主') : null,
-														s.scope ? h(Chip, {}, s.scope === 'project' && s.scopeProject ? `${s.scope}:${s.scopeProject}` : s.scope) : null,
-													),
+											'div',
+											{ className: 'dmo-row-top' },
+											h('span', { className: 'dmo-row-name' }, s.name),
+											h(
+												'span',
+												{ className: 'dmo-row-meta' },
+												tab === 'host'
+													? h(Chip, {}, `${s.source || 'host'} · ${s.files?.length ?? 0} 文件`)
+													: h(
+															'span',
+															{},
+															h(Chip, { tone: STATUS_TONE[s.status] }, s.status),
+															s.published ? h(Chip, { tone: 'ok' }, '已发布宿主') : null,
+															s.scope ? h(Chip, {}, s.scope === 'project' && s.scopeProject ? `${s.scope}:${s.scopeProject}` : s.scope) : null,
+														),
+											),
 										),
+										s.description ? h('div', { className: 'dmo-row-sum' }, s.description) : null,
 									),
-									s.description ? h('div', { className: 'dmo-row-sum' }, s.description) : null,
+									// Lifecycle controls, crystallized side only: the enable
+									// switch (activate/retire) and delete. Host bundles are
+									// managed in their own repos / the plugin manager.
+									tab === 'memory'
+										? h(
+												'span',
+												{ className: 'dmo-row-actions' },
+												h(
+													'button',
+													{
+														type: 'button', className: `dmo-switch${s.status === 'active' ? ' on' : ''}`,
+														'data-dmo': 'skill-toggle', role: 'switch', 'aria-checked': s.status === 'active',
+														title: s.status === 'active' ? '停用（retire）' : '启用（activate）',
+														onClick: () => onToggle(s.name, s.status === 'active' ? 'retire' : 'activate'),
+													},
+													h('span', { className: 'dmo-switch-dot' }),
+												),
+												h(
+													'button',
+													{
+														type: 'button', className: 'dmo-row-del',
+														'data-dmo': 'skill-delete', title: `删除 ${s.name}（不可恢复，git 是档案）`,
+														onClick: () => onDelete(s.name),
+													},
+													'×',
+												),
+											)
+										: null,
 								),
 							),
 						)
 					: h('div', { className: 'dmo-empty' }, filter ? '没有匹配的技能。' : tab === 'host' ? '宿主技能根没有可列的目录包。' : '还没有结晶技能——memory_skill(candidates) 看提名，反复跑通的操作可结晶成程序。'),
+			);
+		}
+
+		/**
+		 * A MEMORY skill's stored-content view: same shape as the host side
+		 * (body + file tree), so both tabs of the library answer "what does this
+		 * skill contain" identically. The difference is the data source: one
+		 * single-file skill from the memory root instead of a host bundle.
+		 */
+		function MemorySkillView({ data, name, onBack }) {
+			const d = data?.data;
+			const files = d?.files ?? [];
+			return h(
+				'div',
+				{ style: { display: 'flex', flexDirection: 'column', gap: 8 } },
+				h(
+					'div',
+					{ className: 'dmo-toolbar' },
+					h(Btn, { sm: true, onClick: onBack, title: '返回技能库', 'data-dmo': 'back' }, '← 返回技能库'),
+					h('span', { className: 'grow' }),
+					h('span', { className: 'dmo-meta' }, '存储内容 · 只读'),
+				),
+				h(
+					'div',
+					{ style: { display: 'flex', gap: 10, alignItems: 'flex-start' } },
+					h(
+						'div',
+						{ style: { width: 230, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 6 } },
+						h('div', { className: 'dmo-meta', style: { padding: '0 2px' } }, `文件 ${files.length}`),
+						h(
+							'div',
+							{ className: 'dmo-chips' },
+							files.map((f) =>
+								// A memory skill's file has no rel path — show its real
+								// name (SKILL.md would be a lie: the file IS the skill).
+								h('span', { key: f.rel, className: 'dmo-chip', 'data-dmo': 'skill-file', title: f.rel || f.name }, f.rel || f.name),
+							),
+						),
+					),
+					h(
+						'div',
+						{ style: { flex: 1, minWidth: 0 } },
+						h(
+							'div',
+							{ className: 'dmo-card' },
+							h('h3', { className: 'dmo-h2', style: { margin: '0 0 6px' } }, name),
+							h(MarkdownBody, { text: d?.text ?? '', zone: undefined, onNavigate: () => {} }),
+						),
+					),
+				),
 			);
 		}
 
@@ -1079,6 +1180,30 @@ window.__ModuleLoader__.load({
 			const onSkills = view.kind === 'zone' && view.zone === 'skills';
 			const skillLib = useApi(onSkills ? `${API}/skills?v=${tick}` : null, fixtures);
 			const hostSkill = useApi(view.kind === 'hostskill' ? `${API}/skill?name=${enc(view.name)}&kind=host` : null, fixtures);
+			const memSkill = useApi(view.kind === 'memskill' ? `${API}/skill?name=${enc(view.name)}&kind=memory` : null, fixtures);
+			// Write actions go through the memory_skill TOOL channel (not a bespoke
+			// API): the panel posts the same arguments the model would, so every
+			// guard the tool has (safeSlug, atomic write, link lint, index sync)
+			// stays in force. Failures surface inline; the list refetches after.
+			const [actMsg, setActMsg] = useState('');
+			const skillAction = async (args) => {
+				setActMsg('');
+				try {
+					const r = await fetch(`${API}/skill-action`, {
+						method: 'POST',
+						headers: { 'content-type': 'application/json' },
+						body: JSON.stringify(args),
+					});
+					const j = await r.json().catch(() => ({}));
+					if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+					setTick((n) => n + 1); // refetch the library
+					setActMsg(j.message || '');
+					return j;
+				} catch (e) {
+					setActMsg(`操作失败：${String(e?.message ?? e)}`);
+					return null;
+				}
+			};
 			const search = useApi(live.length >= 2 ? `${API}/search?q=${enc(live)}${searchZone !== 'all' ? `&zone=${searchZone}` : ''}` : null, fixtures);
 
 			const ws = overview.data?.[0];
@@ -1128,7 +1253,7 @@ window.__ModuleLoader__.load({
 			const navigate = (target) => openFile(target.zone, target.name);
 			const back = () => {
 				if (view.kind === 'file' && view.zone) setView({ kind: 'zone', zone: view.zone });
-				else if (view.kind === 'hostskill') setView({ kind: 'zone', zone: 'skills', tab: 'host' });
+				else if (view.kind === 'hostskill' || view.kind === 'memskill') setView({ kind: 'zone', zone: 'skills', tab: 'memory' });
 				else setView({ kind: 'overview' });
 			};
 
@@ -1139,7 +1264,7 @@ window.__ModuleLoader__.load({
 			const fileText = opened ? (opened.zone === '' ? indexText : fileRes.data?.text ?? null) : null;
 			const kind = !opened ? null : opened.zone === '' ? 'index' : opened.zone === 'functions' ? 'functions' : opened.zone === 'insights' ? 'insights' : opened.zone === 'capabilities' ? 'capabilities' : opened.zone === 'skills' ? 'skills' : 'daily';
 
-			const activeKey = view.kind === 'overview' ? 'overview' : view.kind === 'zone' ? view.zone : view.kind === 'hostskill' ? 'skills' : view.zone === '' ? 'index' : view.zone;
+			const activeKey = view.kind === 'overview' ? 'overview' : view.kind === 'zone' ? view.zone : view.kind === 'hostskill' || view.kind === 'memskill' ? 'skills' : view.zone === '' ? 'index' : view.zone;
 
 			const onKeyDown = (e) => {
 				const tag = e.target?.tagName;
@@ -1180,11 +1305,15 @@ window.__ModuleLoader__.load({
 					// The toggle is navigation: switching sides is a setView, not a
 					// local useState — so both halves are reachable in a render test.
 					onTab: (t) => setView({ kind: 'zone', zone: 'skills', tab: t }),
-					onOpenMemory: (name) => openFile('skills', `${name}.md`),
+					onOpenMemory: (name) => setView({ kind: 'memskill', name }),
 					onOpenHost: (name) => setView({ kind: 'hostskill', name }),
+					onToggle: (name, next) => { void skillAction({ action: next, name }); },
+					onDelete: (name) => { if (window.confirm(`删除技能「${name}」？文件与索引行都会被移除，git 是唯一档案。`)) void skillAction({ action: 'delete', name }); },
+					actMsg,
 					filter, setFilter,
 				});
 			else if (view.kind === 'hostskill') main = h(HostSkillView, { data: hostSkill, name: view.name, onBack: back, sel: view.file ?? null, onSel: (f) => setView({ kind: 'hostskill', name: view.name, file: f }), fixtures });
+			else if (view.kind === 'memskill') main = h(MemorySkillView, { data: memSkill, name: view.name, onBack: back });
 			else if (view.kind === 'zone') main = h(ZoneList, { zone: view.zone, rows: rowsOf(view.zone), sort, setSort, filter, setFilter, onOpen: openFile });
 			else if (fileText) main = h(Reader, { view, text: fileText, meta: fileMeta, kind, root: ws.root, onBack: back, onNavigate: navigate });
 			else main = h('div', { className: 'dmo-empty' }, fileRes.loading ? '读取文件…' : fileRes.error ? `读取失败：${fileRes.error}` : '文件为空。');

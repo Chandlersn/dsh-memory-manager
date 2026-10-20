@@ -305,11 +305,14 @@ accumulation (dozens of function areas, hundreds of daily threads) rather than a
   groups by month, so it never turns into a wall
 - **Skill library**: the skills page is a two-sided library behind ONE toggle — "crystallized / system":
   the crystallized side shows the memory-root `skills/` in every lifecycle state (candidate/active/retired +
-  a published-to-host badge + scope); the system side SCANS HOST STORAGE (the `~/.dsh/skills` and
-  `~/.agents/skills` directory bundles). Opening either side renders that skill's stored SKILL.md body
-  plus its **file tree** (the `scripts/` and `references/` assets the bundle carries, readable one click
-  away) — the panel shows stored content; invocation policy stays the host registry's surface, two layers
-  each doing its job
+  a published-to-host badge + scope) with an **enable switch (activate/retire) and a delete button on every
+  row**; the system side SCANS HOST STORAGE (the `~/.dsh/skills` and `~/.agents/skills` directory bundles).
+  Opening either side renders that skill's stored SKILL.md body plus its **file tree** (the `scripts/` and
+  `references/` assets the bundle carries, readable one click away) — the panel shows stored content;
+  invocation policy stays the host registry's surface, two layers each doing its job. Panel writes go
+  through the single `POST /skill-action` route, which runs the memory_skill tool's real executor (safeSlug,
+  atomic write, index sync, host invalidation all still apply); crystallize is deliberately NOT panel-reachable
+  (that is a model judgement)
 - **Reader**: function files fold per iteration block — only the newest is expanded by default (short files
   open fully) — with a date jump strip and "expand all"; insights and daily files open per section; the index
   page renders the function-module and innovation-insight index tables as **clickable navigation tables** and folds the rest

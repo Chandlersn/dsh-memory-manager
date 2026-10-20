@@ -141,6 +141,7 @@ const fixtures = {
 		error: null,
 	},
 	'/api/memory-org/skill?name=skill-creator&kind=host': { data: { name: 'skill-creator', kind: 'host', text: '---\nname: skill-creator\ndescription: Guide\n---\n\n# Skill Creator\n\n先看 provider 契约。', files: [{ rel: '', name: 'SKILL.md', bytes: 60 }, { rel: 'scripts/init_skill.py', name: 'init_skill.py', bytes: 11627 }, { rel: 'scripts/quick_validate.py', name: 'quick_validate.py', bytes: 2165 }] }, loading: false, error: null },
+	'/api/memory-org/skill?name=%E5%88%86%E7%A6%BB%E5%BB%B6%E8%BF%9F%E9%87%8D%E5%90%AF&kind=memory': { data: { name: '分离延迟重启', kind: 'memory', text: '---\nname: 分离延迟重启\nstatus: active\n---\n\n# 技能：分离延迟重启（指针）\n\n程序体在宿主目录包。', files: [{ rel: '', name: '分离延迟重启.md', bytes: 2221 }] }, loading: false, error: null },
 	'/api/memory-org/skillfile?name=skill-creator&file=scripts%2Fquick_validate.py': { data: { name: 'skill-creator', file: 'scripts/quick_validate.py', text: '#!/usr/bin/env python3\nimport sys\n' }, loading: false, error: null },
 	'/api/memory-org/list?zone=daily&v=0': { data: { files: [{ name: '2026-10-18.md', bytes: 400, mtime: iso(5) }, { name: '2026-09-30.md', bytes: 800, mtime: iso(18_000) }] }, loading: false, error: null },
 	'/api/memory-org/file?name=MEMORY.md&v=0': { data: { name: 'MEMORY.md', text: indexText }, loading: false, error: null },
@@ -250,6 +251,21 @@ ok(hostRead.includes('文件 3') && hostRead.includes('scripts/init_skill.py') &
 const hostFile = render({ kind: 'hostskill', name: 'skill-creator', file: 'scripts/quick_validate.py' });
 ok(hostFile.includes('#!/usr/bin/env python3'), 'a stored resource file renders its raw text');
 ok(hostFile.includes('scripts/quick_validate.py'), 'the file view titles the selected resource');
+// Lifecycle controls on the crystallized side (5.21.0): an enable switch per
+// row (state reflects the lifecycle) and a delete button — the host side has
+// none (bundles are managed in their own repos).
+ok(count(skillMem, 'data-dmo="skill-toggle"') === 2, 'every crystallized row carries an enable switch');
+// The shim's serializer does not carry aria-*, so switch state is asserted via
+// the class the renderer derives it from: exactly one switch is ON (active),
+// the other stays default (candidate).
+ok(count(skillMem, 'dmo-switch on') === 1, 'exactly one switch renders ON (the active skill)');
+ok(count(skillMem, 'title="停用（retire）"') === 1 && count(skillMem, 'title="启用（activate）"') === 1, 'switch titles reflect each row\'s lifecycle');
+ok(count(skillMem, 'data-dmo="skill-delete"') === 2, 'every crystallized row carries a delete button');
+ok(count(skillHost, 'data-dmo="skill-toggle"') === 0 && count(skillHost, 'data-dmo="skill-delete"') === 0, 'host rows carry no lifecycle controls');
+// The crystallized detail view mirrors the host one: stored body + file list.
+const memRead = render({ kind: 'memskill', name: '分离延迟重启' });
+ok(memRead.includes('程序体在宿主目录包。') && memRead.includes('存储内容 · 只读'), 'the crystallized detail renders its stored content');
+ok(memRead.includes('文件 1') && memRead.includes('分离延迟重启.md'), 'the crystallized detail lists its own file');
 ok(hostRead.includes('返回技能库'), 'the detail view offers the way back');
 
 // --- reader: long function file folds to the newest block -------------------

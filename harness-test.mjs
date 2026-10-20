@@ -1012,6 +1012,26 @@ for (const a of [
 	}
 }
 ok(skThrew === 3, `crystallize/activate validate their inputs (${skThrew}/3)`);
+// delete (5.21.0): removes BOTH the file and the index row — a lingering row
+// would be a dangling pointer the next recall trusts. Also refuses a name that
+// is not there (400, not a silent success).
+await T.memory_skill.execute(
+	{ action: 'crystallize', name: '待删技能', summary: '删除断言', when: '删除回归', procedure: ['一', '二'], verification: '文件与行俱消', sources: ['测试功能'] },
+	exec,
+);
+const delOk = await T.memory_skill.execute({ action: 'delete', name: '待删技能' }, exec);
+ok(delOk.status === 'deleted' && delOk.items.length === 0, 'delete reports the terminal status');
+const gone = !(await statExists(path.join(root, 'skills', '待删技能.md')));
+ok(gone, 'the skill file is gone');
+const idxAfterDel = await readFile(path.join(root, 'MEMORY.md'), 'utf8');
+ok(!idxAfterDel.includes('| [待删技能]'), 'the index row is gone with it');
+let delThrew = false;
+try {
+	await T.memory_skill.execute({ action: 'delete', name: '不存在技能abc' }, exec);
+} catch {
+	delThrew = true;
+}
+ok(delThrew, 'deleting a missing skill throws');
 await mkdir(path.join(root, 'skills'), { recursive: true });
 await writeFile(path.join(root, 'skills', '空壳技能.md'), '# 技能：空壳技能\n\n> 状态：weird · 首次结晶：2026-10-19\n\n## 调用步骤\n\n- \n', 'utf8');
 const cSk = await T.memory_check.execute({}, exec);

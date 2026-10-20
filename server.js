@@ -42,6 +42,7 @@ import { usagePath, appendUsage, readUsage, summarizeUsage, insightTrust, trustL
 import {
 	memoryIndexTemplate, functionFileTemplate, dailyTemplate, insightTemplate, sepOf,
 	upsertIndexRow, appendUnderHeading, resolveOpenItems, refreshSummarySection, replaceSection,
+	dropIndexRow,
 } from './src/markdown.js';
 import { tokensOf, matchIndexRows, buildRecallMessage } from './src/recall.js';
 import { redactSecrets, scanSecrets } from './src/secrets.js';
@@ -1375,7 +1376,7 @@ function memorySkillTool(opts, hooks = {}) {
 		description:
 			'Crystallize a REPEATED, CONFIRMED operation into a callable procedure under skills/ (the missing “use” step of the data flow: record → distill → promote → display → USE). actions: candidates = which areas the usage signals nominate (pure aggregation: >=6 uses, >=1 confirmation, correction rate <20%, not already crystallized) — call it periodically and decide; crystallize = write skills/<name>.md from an area\'s proven steps (YOU write the procedure, the tool files and indexes it, status=candidate); activate/retire = lifecycle transitions (activate only after the procedure was actually followed successfully; retire when the environment changed, the file stays as history); list/read = what skills exist / full text. A skill file answers “do it exactly like THIS” — distinct from capabilities/ (“what tool exists”) and insights/ (“what principle holds”). A crystallized skill carries scope (global/project) and, with a kebab-case hostName, is published to the host skill catalog once active so the `skill` tool can load it directly.',
 		parameters: {
-			action: { type: 'string', required: true, enum: ['candidates', 'crystallize', 'activate', 'retire', 'list', 'read'], description: 'candidates=看提名；crystallize=结晶一份技能；activate/retire=生命周期；list/read=查。' },
+			action: { type: 'string', required: true, enum: ['candidates', 'crystallize', 'activate', 'retire', 'list', 'read', 'delete'], description: 'candidates=看提名；crystallize=结晶一份技能；activate/retire=生命周期；delete=删除技能文件与索引行（不可恢复，git 是档案）；list/read=查。' },
 			project: { type: 'string', description: 'list 可选：按项目 key 过滤（skill_scope --route 语义）——global 技能全保留，project 技能只留 scope_project 匹配的，无 scope 的不计入确定适用。' },
 			name: { type: 'string', description: 'crystallize/activate/retire/read 必填：技能名（文件名 slug）。' },
 			summary: { type: 'string', description: 'crystallize 必填：一句话用途（索引行与命中提示用）。' },
@@ -1458,10 +1459,11 @@ function memorySkillTool(opts, hooks = {}) {
 					for (const w of v.warnings) lines.push(`⚠ ${w}`);
 					return [{ type: 'text', text: lines.join('\n') }];
 				}
-				const verb = v.action === 'crystallize' ? '已结晶技能' : v.action === 'activate' ? '已激活技能' : '已退役技能';
+				const verb = v.action === 'crystallize' ? '已结晶技能' : v.action === 'activate' ? '已激活技能' : v.action === 'retire' ? '已退役技能' : '已删除技能';
 				const lines = [`${verb}：${v.file}（status=${v.status}）`];
 				for (const w of v.warnings) lines.push(`⚠ ${w}`);
 				if (v.action === 'crystallize') lines.push('ℹ 按真实任务跑通一次后，用 memory_skill(activate) 转正；pre-step 会优先提示命中技能。');
+				if (v.action === 'delete') lines.push('ℹ 文件与索引行已删除，宿主目录同步失效；历史只能从 git 恢复。');
 				return [{ type: 'text', text: lines.join('\n') }];
 			},
 		},
@@ -1643,6 +1645,23 @@ function memorySkillTool(opts, hooks = {}) {
 				const item = { name, status: to, summary: sumM ? sumM[1].trim() : name, updated: st.mtime.toISOString() };
 				await syncIndexRow(item);
 				return { action: args.action, file: p, status: to, items: [item], warnings };
+			}
+			if (args.action === 'delete') {
+				// Full lifecycle close: remove the file AND its index row, then
+				// invalidate the host catalog (a published skill must disappear from
+				// the host catalog in the same breath). Unlike retire, the history
+				// is gone — git is the archive, as with every delete.
+				const text = await readIfExists(p);
+				if (text === undefined) throw new Error(`技能台账里没有 ${name}`);
+				await unlink(p);
+				const indexPath = path.join(root, 'MEMORY.md');
+				const idxText = await readIfExists(indexPath);
+				if (idxText !== undefined) {
+					const without = dropIndexRow(idxText, SKILL_TABLE_HEADING, SKILL_TABLE_HEADER, name);
+					if (without !== idxText) await writeText(indexPath, without);
+				}
+				publish();
+				return { action: 'delete', file: p, status: 'deleted', items: [], warnings };
 			}
 			throw new Error(`unknown action: ${args.action}`);
 		},
@@ -2607,6 +2626,23 @@ function json(res, status, body) {
 	res.end(JSON.stringify(body));
 }
 
+/** Read a small JSON POST body (the panel's write channel only sends tiny payloads). */
+async function readBody(req, limit = 16 * 1024) {
+	const chunks = [];
+	let size = 0;
+	for await (const c of req) {
+		size += c.length;
+		if (size > limit) throw new Error('body too large');
+		chunks.push(c);
+	}
+	if (!chunks.length) return {};
+	try {
+		return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+	} catch {
+		throw new Error('invalid JSON body');
+	}
+}
+
 function htmlPage(res, status, title, body) {
 	res.writeHead(status, MIME_HTML);
 	res.end(
@@ -2740,6 +2776,24 @@ function memoryPanelApi(opts) {
 			// not one source (the user's point: 后端运行逻辑与前端展示不必一致).
 			// Host roots mirror dsh-skill-filesystem's roots() so what is listed
 			// here is exactly what is on disk there.
+			// Panel write channel (5.21.0): the ONLY mutating route. The panel posts
+			// the same argument shape the memory_skill tool takes and this runs the
+			// tool's real executor — so the slug guard, atomic write, index sync and
+			// host invalidation hold identically. Actions are whitelisted here; a
+			// browser must never reach crystallize (that is a model judgement).
+			if (seg === 'skill-action') {
+				if (req.method !== 'POST') return json(res, 405, { error: 'POST only' });
+				const body = await readBody(req);
+				const action = String(body?.action ?? '');
+				if (!['activate', 'retire', 'delete'].includes(action)) return json(res, 400, { error: `action must be activate|retire|delete (got ${action})` });
+				const skill = memorySkillTool(opts);
+				try {
+					const out = await skill.execute({ action, name: String(body?.name ?? ''), note: '面板操作' }, {});
+					return json(res, 200, { message: `${action} ok`, status: out.status, file: out.file, warnings: out.warnings ?? [] });
+				} catch (err) {
+					return json(res, 400, { error: String(err?.message ?? err) });
+				}
+			}
 			if (seg === 'skills') {
 				const ourDir = path.join(root, SKILL_DIR);
 				const memory = [];
