@@ -1462,7 +1462,20 @@ function memorySkillTool(opts) {
 				if (steps.length < 2) throw new Error('procedure needs at least 2 concrete steps — a skill is a callable procedure, not a hint');
 				const verification = oneLine(args.verification);
 				if (!verification) throw new Error('verification is required: how success is judged after following the procedure');
-				const srcs = (Array.isArray(args.sources) ? args.sources : []).map((s) => oneLine(s)).filter(Boolean);
+				const srcs = (Array.isArray(args.sources) ? args.sources : [])
+					.map((s) => oneLine(s))
+					.filter(Boolean)
+					// Evidence hrefs must resolve: callers hand over anything from a
+					// bare slug ("memory-manager") to a full "../functions/x.md".
+					// Stripping the zone prefix and re-adding only `../` produced the
+					// dangling `../memory-manager` R10 caught on the real root.
+					// Normalize to a zone path; the default zone is functions/ — where
+					// the iteration history a skill cites lives.
+					.map((s) => {
+						if (s.includes('](')) return s; // an authored markdown link passes through
+						const t = s.trim().replace(/^\.\.?\//, '').replace(/\.md$/i, '');
+						return /^(functions|insights|capabilities|skills)\//.test(t) ? `${t}.md` : `functions/${t}.md`;
+					});
 				if (!srcs.length) throw new Error('sources is required: link the evidence areas (functions/xxx.md) the procedure was distilled from');
 				const date = localDateStr();
 				const existing = await readIfExists(p);
@@ -1473,7 +1486,15 @@ function memorySkillTool(opts) {
 				// Router field (the skill-creator lesson): the frontmatter description
 				// decides WHEN the skill fires, so it embeds the trigger, third-person.
 				const description = `当${when}时使用本技能：${summary}`.replace(/"/g, "'");
-				const srcLines = srcs.map((s) => (s.includes('](') ? `- ${s}` : `- [${s.replace(/^(?:functions|insights|capabilities)\//, '').replace(/\.md$/, '')}.md](../${s.replace(/^\.\//, '')})`));
+				const srcLines = srcs.map((s) => {
+					if (s.includes('](')) return `- ${s}`; // an authored markdown link passes through
+					// One place builds the (label, href) pair: the label is the bare
+					// filename, the href keeps its zone folder — chained regexes here
+					// dropped the .md once too often and made every backlink dangle.
+					const rel = s.trim().replace(/^\.\.?\//, '').replace(/\.md$/i, '');
+					const label = rel.replace(/^(?:functions|insights|capabilities|skills)\//, '');
+					return `- [${label}.md](../${rel}.md)`;
+				});
 				// Carry the old 使用记录 across a re-crystallization: the lifecycle
 				// history belongs to the skill, not to one version of its body.
 				let priorUse = [];

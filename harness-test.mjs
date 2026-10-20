@@ -950,6 +950,35 @@ ok(skCry.created && skCry.status === 'candidate' && skCry.file.replace(/\\/g, '/
 const skText = await readFile(skCry.file, 'utf8');
 ok(skText.includes('## 调用步骤') && /^\s*1[.、]/m.test(skText), 'skill body has numbered procedure steps');
 ok(skText.includes('../functions/分离延迟重启.md'), 'skill backlinks its evidence source');
+// Regression (5.16.4, found on the REAL root): a bare-slug source ("x") was
+// emitted as `../x` — the zone prefix was stripped for the label and forgotten
+// for the href, so R10 flagged the skill file dangling. Callers pass bare slugs
+// as often as zone paths, and the existing fixture only used the path form.
+const skBare = await T.memory_skill.execute(
+	{
+		action: 'crystallize',
+		name: '裸来源技能',
+		summary: '验证裸 slug 回链',
+		when: '回归裸来源时',
+		procedure: ['步骤一：打开文件', '步骤二：确认回链'],
+		verification: '回链能解析',
+		sources: ['测试功能', 'insights/闭环验证', 'functions/分离延迟重启.md'],
+	},
+	exec,
+);
+const skBareText = await readFile(skBare.file, 'utf8');
+ok(skBareText.includes('../functions/测试功能.md'), 'bare slug resolves to functions/ in the href');
+ok(skBareText.includes('../insights/闭环验证.md'), 'zone-prefixed source keeps its zone');
+ok((skBareText.match(/\.\.\/functions\/分离延迟重启\.md/g) ?? []).length === 1 && !skBareText.includes('.md.md'), 'x.md tolerates to one .md and no doubling');
+ok(!skBareText.includes('](../测试功能.md)'), 'no zone-less bare href survives');
+{
+	const cSk = await T.memory_check.execute({}, exec);
+	ok(!cSk.results.some((r) => r.rule === 'R10' && r.level === 'FAIL' && r.message.includes('裸来源技能')), 'crystallized skill links resolve (no R10)');
+}
+{
+	const cSk = await T.memory_check.execute({}, exec);
+	ok(!cSk.results.some((r) => r.rule === 'R10' && r.level === 'FAIL' && r.message.includes('裸来源技能')), 'crystallized skill links resolve (no R10)');
+}
 // The frontmatter router (skill-creator lesson): description carries the WHEN.
 ok(/^---\nname: 分离延迟重启\n/m.test(skText) && /^description: "当.*时使用本技能/m.test(skText), 'skill file is frontmatter-shaped with a router description');
 ok(skText.includes('agent_created: true') && skText.includes('status: candidate'), 'frontmatter carries agent_created + status');
