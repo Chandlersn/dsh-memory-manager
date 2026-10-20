@@ -130,6 +130,41 @@ await writeFile(crlfDay, '# 1999-01-01 记录\r\n\r\n## 今日线索\r\n\r\n- �
 const s4 = await T.memory_search.execute({ q: '冷启动' }, exec);
 ok(s4.count >= 1 && s4.hits[0].heading === '今日线索', `search survives CRLF input (heading=${JSON.stringify(s4.hits[0]?.heading)})`);
 await rm(crlfDay, { force: true });
+
+// 3g) Temporal bounds (Hindsight borrow): every hit carries its attributed date
+// (iteration block tag → file head 截至 → filename → mtime), and after/before
+// (inclusive) filter by it. An invalid or inverted bound FAILS LOUD — a
+// silently-wrong filter is worse than none.
+{
+	await T.memory_write.execute(
+		{ feature: '时序检索', title: '三月旧事', summary: 's', change: '时序锚点只在旧块出现', date: '2026-03-01', result: 'done' },
+		exec,
+	);
+	await T.memory_write.execute(
+		{ feature: '时序检索', title: '十月新篇', summary: 's2', change: '时序锚点只在新块出现', date: '2026-10-05', result: 'done' },
+		exec,
+	);
+	const allT = await T.memory_search.execute({ q: '时序锚点' }, exec);
+	ok(allT.count >= 2 && allT.hits.every((h) => /^\d{4}-\d{2}-\d{2}$/.test(h.date ?? '')), `every hit resolves an attribution date (${JSON.stringify(allT.hits.map((h) => h.date))})`);
+	const oldHit = (h) => h.snippet.includes('旧块');
+	const newHit = (h) => h.snippet.includes('新块');
+	const onlyNew = await T.memory_search.execute({ q: '时序锚点', after: '2026-09-01' }, exec);
+	ok(onlyNew.hits.some(newHit) && !onlyNew.hits.some(oldHit), 'after excludes the older block');
+	ok(onlyNew.hits.find(newHit)?.date === '2026-10-05', 'the kept block reports its own tag date');
+	const onlyOld = await T.memory_search.execute({ q: '时序锚点', before: '2026-04-01' }, exec);
+	ok(onlyOld.hits.some(oldHit) && !onlyOld.hits.some(newHit), 'before excludes the newer block');
+	const window = await T.memory_search.execute({ q: '时序锚点', after: '2026-10-01', before: '2026-10-31' }, exec);
+	ok(window.hits.some(newHit) && !window.hits.some(oldHit), 'after+before bound a range');
+	let boundThrew = 0;
+	for (const bad of [{ q: '时间线词', after: '2026-13-99' }, { q: '时间线词', before: '上个月' }, { q: '时间线词', after: '2026-06-01', before: '2026-01-01' }]) {
+		try {
+			await T.memory_search.execute(bad, exec);
+		} catch {
+			boundThrew++;
+		}
+	}
+	ok(boundThrew === 3, `invalid/inverted bounds fail loud (threw=${boundThrew}/3)`);
+}
 // Ranking: a token shared by most rows must not beat a rare token. With 5 rows
 // where 4 share 「记忆/面板」 and 1 owns 「逐帧/渲染」, IDF gives the rare row
 // roughly twice the weight per token, so it must rank first — and the common

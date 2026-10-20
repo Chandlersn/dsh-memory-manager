@@ -25,6 +25,13 @@ discipline injected into its system prompt.
 - **Memory defence (Hindsight-borrowed)**: every plugin write path replaces credential shapes (API keys/tokens/
   private keys/JWTs) with `[REDACTED:kind]` before they reach disk and names them in the receipt; national ID /
   phone numbers are only reported by lint rule R21 — facts are never silently rewritten
+- **Insight trust (Hindsight's observations, adapted)**: a principle is a belief that carries proof counts. The
+  trust level (待验证 / 已验证 / 稳固 / 动摇) is COMPUTED from the positives and corrections in `.usage.jsonl`,
+  written into the file head and refreshed on every distill; a shaken one is marked in recall and lint rule R22
+  prompts refining or superseding it — never a silent replace
+- **Temporal search (Hindsight's temporal recall)**: `memory_search` gains `after`/`before` date bounds, and every
+  hit carries its attributed date (block tag → file head → filename → mtime), so "how was this solved last month"
+  is a direct query
 - Panel colors and sizes ride on the Host design tokens (`--dsw-alias-*` / `--dsw-radius-*`)
 
 ## Memory layout
@@ -149,7 +156,7 @@ records *why* we believed it then.
 | Tool | What it does |
 |---|---|
 | `memory_read` | read the index / a function file / an insight file / a capability entry / a skill / a daily log (`kind=index` first, to judge relevance) |
-| `memory_search` | **ranked full-text search** across the whole root: scans bodies, not just one-line summaries, and returns zone/file/line/section/snippet. Use it when you remember a fragment but not the area or the day |
+| `memory_search` | **ranked full-text search** across the whole root: scans bodies, not just one-line summaries, and returns zone/file/line/section/snippet plus each hit's attributed date. Use it when you remember a fragment but not the area or the day; `after`/`before` filter by date range (block tag → file head → filename → mtime, in that order) |
 | `memory_capability` | **the capability ledger**: `record` files an EXTERNAL CLI/MCP/local tool you used (invocation, prerequisites, what it solved — one file per tool, updated in place; never the harness's own tools or the project's own scripts); `list` before a task to see what is available; `read` for a tool's full entry |
 | `memory_write` | **append one iteration block** (a conclusion distilled from the raw daily record) and refresh the head stable-state summary; `summary` is the block's one-line takeaway. **Writes no index row, never touches the daily log** |
 | `memory_index` | **the integration layer**: once an area/theme stabilizes, upsert its row into the MEMORY.md index (row summary distilled from the block summaries); pass `group` to land in a `### 索引·<domain>` sub-table when the table has been split |

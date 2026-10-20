@@ -661,11 +661,13 @@ function memorySearchTool(opts) {
 	return defineTool({
 		name: 'memory_search',
 		description:
-			'Ranked full-text search across the ENTIRE memory root (index, functions/, insights/, daily logs) and return the best matching lines with their zone, file, line number, section heading and a snippet. Use it when you remember something was recorded but cannot tell which function area or which day: memory_read kind=index only scans one-line summaries, while this scans the bodies. Ranking is lexical (query substring, token hits, section heading, file name) with per-file caps, so a broad keyword does not return one file\'s whole history. Read the file afterwards with memory_read before re-deriving anything.',
+			'Ranked full-text search across the ENTIRE memory root (index, functions/, insights/, daily logs) and return the best matching lines with their zone, file, line number, section heading and a snippet. Use it when you remember something was recorded but cannot tell which function area or which day: memory_read kind=index only scans one-line summaries, while this scans the bodies. Ranking is lexical (query substring, token hits, section heading, file name) with per-file caps, so a broad keyword does not return one file\'s whole history. Read the file afterwards with memory_read before re-deriving anything. Temporal queries (「上个月怎么解决的」) use after/before: every hit carries its attributed date (iteration-block tag → file-head date → filename → mtime) and the bounds filter inclusively.',
 		parameters: {
 			q: { type: 'string', required: true, description: '检索词：一个词或短句（≥2 字符）。中文子串与英文单词都支持。' },
 			zone: { type: 'string', enum: ['all', 'functions', 'insights', 'capabilities', 'skills', 'daily'], description: '限定检索分区，缺省 all（含索引）。能力台账（CLI/MCP/本地工具）在 capabilities，技能程序在 skills。' },
 			limit: { type: 'integer', description: '最多返回多少条命中（默认 20，最大 50）。' },
+			after: { type: 'string', description: '时间下限 YYYY-MM-DD（含）：只看这天及之后的内容。迭代块按 [日期] 标签归属，文件其余按头部「截至」日期，每日按文件名，无日期文件按 mtime——问“上个月怎么解决的”用它。' },
+			before: { type: 'string', description: '时间上限 YYYY-MM-DD（含）。与 after 成对使用框出一个区间。' },
 		},
 		output: {
 			schema: {
@@ -685,6 +687,7 @@ function memorySearchTool(opts) {
 								line: { type: 'integer', required: true },
 								heading: { type: 'string', required: true },
 								snippet: { type: 'string', required: true },
+								date: { type: 'string', required: true, description: '命中行的归属日期（迭代块标签 / 文件头 / 文件名 / mtime 逐级解析，可能为空串=未知）' },
 							},
 						},
 					},
@@ -694,7 +697,7 @@ function memorySearchTool(opts) {
 				if (!v.count) return [{ type: 'text', text: '没有命中：换一个更具体的关键词，或先 memory_read kind=index 看分区摘要。' }];
 				const lines = [`命中 ${v.count} 条（按相关度排序）：`];
 				for (const h of v.hits) {
-					lines.push(`- [${h.zone}] ${h.name}:${h.line}${h.heading ? ` · ${h.heading}` : ''} — ${h.snippet}`);
+					lines.push(`- [${h.zone}] ${h.name}:${h.line}${h.date ? ` · ${h.date}` : ''}${h.heading ? ` · ${h.heading}` : ''} — ${h.snippet}`);
 				}
 				lines.push('调用 memory_read 打开命中文件确认上下文，再决定是否追加迭代。');
 				return [{ type: 'text', text: lines.join('\n') }];
@@ -707,7 +710,24 @@ function memorySearchTool(opts) {
 			if (charLen(q) < 2) throw new Error('q must be at least 2 characters');
 			const zone = ['functions', 'insights', 'capabilities', 'skills', 'daily'].includes(args.zone) ? args.zone : 'all';
 			const limit = Math.min(Math.max(1, Number(args.limit) || 20), 50);
-			const hits = await searchMemory(root, q, { zone, limit });
+			// Date bounds: accept YYYY-MM-DD (tolerating spaces) or reject loudly —
+			// a silently-ignored `after: 上个月` would return everything and be
+			// trusted as a filtered answer.
+			const normBound = (v, label) => {
+				if (v === undefined || v === '') return '';
+				const s = String(v).trim();
+				// Format AND calendar validity: `2026-13-99` compares as a string but
+				// means nothing — a bound that cannot be a real date must fail loud,
+				// because a silently-wrong filter is worse than no filter.
+				if (!/^\d{4}-\d{2}-\d{2}$/.test(s) || !Number.isFinite(Date.parse(s))) {
+					throw new Error(`${label} 必须是有效日期 YYYY-MM-DD（收到：${s.slice(0, 24)}）`);
+				}
+				return s;
+			};
+			const after = normBound(args.after, 'after');
+			const before = normBound(args.before, 'before');
+			if (after && before && after > before) throw new Error(`after ${after} 晚于 before ${before}：区间为空`);
+			const hits = await searchMemory(root, q, { zone, limit, after, before });
 			return { count: hits.length, hits };
 		},
 	});
@@ -2181,8 +2201,14 @@ function decisionRepairTargets(usageItems, { minCorrections = 2, minBadRate = 0.
  * Ranked full-text search over the whole memory root. Shared by the
  * `memory_search` tool and the panel's /search route so both rank identically
  * (the panel used to do a naive indexOf, whose order was file order).
+ *
+ * `after` / `before` (YYYY-MM-DD, inclusive) filter each hit by a LINE-level
+ * date (Hindsight's temporal retrieval, lifted from a DB column to plain
+ * markdown): an iteration block attributes to its `[YYYY-MM-DD…]` heading
+ * tag, everything else in a file attributes to the head 「截至」 date, a daily
+ * log to its filename, and a file with no date at all falls back to mtime.
  */
-async function searchMemory(root, rawQuery, { zone = 'all', limit = 20 } = {}) {
+async function searchMemory(root, rawQuery, { zone = 'all', limit = 20, after = '', before = '' } = {}) {
 	const q = String(rawQuery ?? '').trim().toLowerCase();
 	if (q.length < 2) return [];
 	const tokens = tokensOf(q);
@@ -2217,13 +2243,33 @@ async function searchMemory(root, rawQuery, { zone = 'all', limit = 20 } = {}) {
 		// line silently fails, which left every daily hit without its heading.
 		const lines = text.split(/\r?\n/);
 		const nameHit = f.name.toLowerCase().includes(q) || tokensOf(f.name).size && [...tokens].some((t) => tokensOf(f.name).has(t));
+		// Date attribution, cheapest source first; mtime is stat'd lazily and
+		// only when a hit actually needs the fallback.
+		const headDate = /当前状态摘要（截至\s*(\d{4}-\d{2}-\d{2})/.exec(text)?.[1] ?? '';
+		const nameDate = /^(\d{4}-\d{2}-\d{2})\.md$/.exec(f.name)?.[1] ?? '';
+		let fileDate = headDate || nameDate;
+		let mtimeDate = null;
+		const dateOf = async (blockDate) => {
+			if (blockDate || fileDate) return blockDate || fileDate;
+			if (mtimeDate === null) {
+				try {
+					mtimeDate = localDateStr(new Date((await stat(f.file)).mtime));
+				} catch {
+					mtimeDate = '';
+				}
+			}
+			return mtimeDate;
+		};
 		let heading = '';
+		let blockDate = '';
 		const fileHits = [];
 		for (let i = 0; i < lines.length; i++) {
 			const line = lines[i];
 			const lower = line.toLowerCase();
 			const hm = lower.match(/^#{1,3}\s+(.+)$/);
 			if (hm) heading = hm[1].trim();
+			const dm = /^##\s*\[(\d{4}-\d{2}-\d{2})/.exec(line.trim());
+			if (dm) blockDate = dm[1];
 			let score = 0;
 			if (lower.includes(q)) score += 3;
 			if (heading && heading.toLowerCase().includes(q)) score += 2;
@@ -2231,12 +2277,18 @@ async function searchMemory(root, rawQuery, { zone = 'all', limit = 20 } = {}) {
 			for (const tk of tokens) if (lower.includes(tk)) tokenHits++;
 			score += tokenHits;
 			if (score === 0) continue;
+			const hitDate = await dateOf(blockDate);
+			// A line whose date cannot be resolved at all passes both bounds —
+			// never hide a hit whose age is unknown; the date field shows why.
+			if (after && hitDate && hitDate < after) continue;
+			if (before && hitDate && hitDate > before) continue;
 			fileHits.push({
 				zone: f.zone,
 				name: f.name,
 				line: i + 1,
 				heading: heading.slice(0, 60),
 				snippet: line.trim().slice(0, 160),
+				date: hitDate,
 				score: score + (nameHit ? 2 : 0),
 			});
 		}
@@ -2245,7 +2297,7 @@ async function searchMemory(root, rawQuery, { zone = 'all', limit = 20 } = {}) {
 		hits.push(...fileHits.slice(0, 3));
 	}
 	hits.sort((a, b) => b.score - a.score);
-	return hits.slice(0, limit).map(({ zone: z, name, line, heading, snippet }) => ({ zone: z, name, line, heading, snippet }));
+	return hits.slice(0, limit).map(({ zone: z, name, line, heading, snippet, date }) => ({ zone: z, name, line, heading, snippet, date }));
 }
 
 
