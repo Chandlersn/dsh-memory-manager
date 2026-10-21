@@ -289,12 +289,19 @@ ok(idx.status === 200 && Array.isArray(JSON.parse(idx.body)) && JSON.parse(idx.b
 const o = JSON.parse(idx.body)[0];
 console.log(`    overview: title=${o.title} root=${o.root}`);
 ok(o.root.endsWith('memory'), 'overview root is the global memory dir');
-ok(o.counts && ['functions', 'insights', 'daily'].every((z) => Number.isInteger(o.counts[z])), `overview carries zone counts (${JSON.stringify(o.counts)})`);
+ok(o.counts && ['functions', 'insights', 'daily', 'capabilities', 'skills'].every((z) => Number.isInteger(o.counts[z])), `overview carries all five zone counts (${JSON.stringify(o.counts)})`);
 if (o.counts) {
 	const fnList = JSON.parse(list.body).files.length;
 	ok(o.counts.functions === fnList, `functions count matches its listing (${o.counts.functions} vs ${fnList})`);
 	ok(o.counts.daily === dailyFiles.length, `daily count matches its listing (${o.counts.daily} vs ${dailyFiles.length})`);
 }
+// Environment block (5.26.0): the overview reports the RUNNING build, both
+// stores' locations and the index thresholds — from the server's own truth.
+ok(o.env && typeof o.env.version === 'string' && /^\d+\.\d+\.\d+/.test(o.env.version), `env.version is the running semver (${o.env?.version})`);
+ok(o.env && typeof o.env.canReload === 'boolean', 'env reports whether the host supports hot reload');
+ok(o.env && o.env.memoryRoot && o.env.skillRoot && o.env.skillRoot.replace(/\\/g, '/').includes('/skills'), `env names both stores (${o.env?.memoryRoot} / ${o.env?.skillRoot})`);
+ok(o.env && Number.isInteger(o.env.indexBytes) && o.env.indexBytes > 0, `env carries the real index size (${o.env?.indexBytes}B)`);
+ok(o.env && o.env.indexComfortBytes > 0 && o.env.indexHardBytes > o.env.indexComfortBytes, 'env thresholds are ordered (comfort < hard)');
 
 // --- search ------------------------------------------------------------------
 const search = await call('/api/memory-org/search?q=' + encodeURIComponent('插件'));

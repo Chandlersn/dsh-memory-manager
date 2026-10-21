@@ -175,6 +175,14 @@ window.__ModuleLoader__.load({
 .dmo-gcard{flex:1 1 120px;border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-md);padding:8px 10px;cursor:pointer;background:var(--dsw-alias-bg-layer-1);text-align:left;color:inherit;font:inherit}
 .dmo-gcard:hover{background:var(--dsw-alias-interactive-bg-hover)}
 .dmo-gnum{font-size:20px;line-height:28px;font-weight:600}
+/* environment block (5.26.0 overview): key/value rows + the index fill meter. */
+.dmo-env-rows{display:flex;flex-direction:column;gap:4px;font-size:12px;line-height:18px}
+.dmo-env-row{display:flex;gap:8px;align-items:center}
+.dmo-env-k{width:56px;flex-shrink:0;color:var(--dsw-alias-label-tertiary)}
+.dmo-env-v{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-secondary)}
+.dmo-meter{position:relative;display:inline-block;width:80px;height:6px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);vertical-align:middle;overflow:hidden}
+.dmo-meter-fill{position:absolute;inset:0 auto 0 0;background:var(--dsw-alias-state-success-primary)}
+.dmo-meter-fill.over{background:var(--dsw-alias-state-warning-primary)}
 @media (max-width:720px){.dmo-body{flex-direction:column;padding:0 12px 12px}.dmo-rail{width:auto;flex-direction:row;overflow-x:auto;border-right:none;border-bottom:.5px solid var(--dsw-alias-border-l2);padding:0 0 6px}}
 `;
 
@@ -737,7 +745,7 @@ window.__ModuleLoader__.load({
 		// overview / lists / search
 		// ---------------------------------------------------------------------
 
-		function Overview({ health, counts, timeline, usage, onOpen, onZone }) {
+		function Overview({ health, counts, timeline, usage, env, preview, previewQ, setPreviewQ, onOpen, onZone, onNavigate }) {
 			const problems = health?.results ?? [];
 			const fails = problems.filter((p) => p.level === 'FAIL');
 			const warns = problems.filter((p) => p.level === 'WARN');
@@ -745,6 +753,45 @@ window.__ModuleLoader__.load({
 			const usageLayer = usage?.layers ?? {};
 			const hotspots = usage?.hotspots ?? [];
 			const hasSignals = (usage?.signalCount ?? 0) > 0;
+			// Index fill meter: comfort line is the design target, the hard line
+			// the wall. Two thresholds, one bar — the reader sees headroom at a
+			// glance instead of reading a byte count.
+			const envRow = env
+				? h(
+						'div',
+						{ style: { display: 'flex', flexDirection: 'column', gap: 8 } },
+						h(
+							'div',
+							{ className: 'dmo-chips' },
+							h(Chip, { tone: 'ok' }, `运行版本 ${env.version || '?'}`),
+							env.canReload
+								? h(Chip, { tone: 'ok' }, '支持热重启')
+								: h(Chip, { tone: 'warn' }, '宿主不支持热重启'),
+							env.hotReloadRunning ? h(Chip, { tone: 'warn' }, '换弹进行中') : null,
+						),
+						h(
+							'div',
+							{ className: 'dmo-env-rows', 'data-dmo': 'env-rows' },
+							h('div', { className: 'dmo-env-row' }, h('span', { className: 'dmo-env-k' }, '记忆根'), h('span', { className: 'dmo-env-v dmo-mono' }, env.memoryRoot ?? '')),
+							h('div', { className: 'dmo-env-row' }, h('span', { className: 'dmo-env-k' }, '技能库'), h('span', { className: 'dmo-env-v dmo-mono' }, env.skillRoot ?? '')),
+							h(
+								'div',
+								{ className: 'dmo-env-row' },
+								h('span', { className: 'dmo-env-k' }, '索引体积'),
+								h(
+									'span',
+									{ className: 'dmo-env-v' },
+									h(
+										'span',
+										{ className: 'dmo-meter', title: `MEMORY.md ${env.indexBytes ?? 0}B / 舒适线 ${env.indexComfortBytes ?? 0}B / 硬上限 ${env.indexHardBytes ?? 0}B` },
+										h('i', { className: `dmo-meter-fill${(env.indexBytes ?? 0) > (env.indexComfortBytes ?? 0) ? ' over' : ''}`, style: { width: `${Math.min(100, Math.round(((env.indexBytes ?? 0) / Math.max(1, env.indexHardBytes ?? 1)) * 100))}%` } }),
+									),
+									h('span', { className: 'dmo-meta' }, ` ${fmtBytes(env.indexBytes ?? 0)} / 舒适 ${fmtBytes(env.indexComfortBytes ?? 0)}`),
+								),
+							),
+						),
+					)
+				: null;
 			return h(
 				'div',
 				{ style: { display: 'flex', flexDirection: 'column', gap: 12 } },
@@ -768,6 +815,8 @@ window.__ModuleLoader__.load({
 					[
 						{ zone: 'functions', label: '功能模块' },
 						{ zone: 'insights', label: '创新优化思想' },
+						{ zone: 'capabilities', label: '能力台账' },
+						{ zone: 'skills', label: '技能库' },
 						{ zone: 'daily', label: '当日线索' },
 					].map((g) =>
 						h(
@@ -778,6 +827,9 @@ window.__ModuleLoader__.load({
 						),
 					),
 				),
+				env
+					? h(Card, null, h(CardTitle, null, '运行环境'), envRow)
+					: null,
 				h(
 					Card,
 					null,
@@ -810,6 +862,9 @@ window.__ModuleLoader__.load({
 									: h('div', { className: 'dmo-meta' }, '无热点：没有反复推翻或高纠正率的记忆。'),
 							),
 				),
+				preview
+					? h(RecallPreviewCard, { res: preview, q: previewQ, setQ: setPreviewQ, onNavigate })
+					: null,
 				h(
 					Card,
 					null,
@@ -830,6 +885,84 @@ window.__ModuleLoader__.load({
 								),
 							)
 						: h('div', { className: 'dmo-meta' }, '还没有记忆文件。'),
+				),
+			);
+		}
+
+		/**
+		 * Recall self-check (5.26.0 overview card): type what a future session
+		 * might say and see EXACTLY which index rows the real pre-step pipeline
+		 * would inject, with the reasons (name hits, lexical score, usage stats).
+		 * The same endpoint already debugged recall from the CLI side; this makes
+		 * it visible in the panel. All state is parent-owned (q is the input
+		 * value, res the debounced fetch) so the card renders deterministically
+		 * under the UI shim — the same contract SearchPane proves.
+		 */
+		function RecallPreviewCard({ res, q, setQ, onNavigate }) {
+			const data = res?.data;
+			const rows = data?.rows ?? [];
+			return h(
+				Card,
+				null,
+				h(CardTitle, null, '召回自检'),
+				h(
+					'div',
+					{ style: { display: 'flex', flexDirection: 'column', gap: 8 } },
+					h('input', {
+						type: 'search', className: 'dmo-filter', placeholder: '输入一段话，看它现在会召回什么…',
+						value: q, 'data-dmo': 'preview-input',
+						onChange: (e) => setQ(e.target.value),
+					}),
+					q.trim().length < 2
+						? h('div', { className: 'dmo-meta' }, '至少 2 个字。命中 = 未来会话开头会注入的记忆行。')
+						: res?.loading
+							? h('div', { className: 'dmo-empty' }, '跑召回中…')
+							: res?.error
+								? h('div', { className: 'dmo-empty' }, `召回失败：${res.error}`)
+								: h(
+										'div',
+										{ className: 'dmo-rows', 'data-dmo': 'preview-rows' },
+										rows.length
+											? rows.map((r, i) => {
+													const t = resolveHref(r.href, r.zone === 'skill' ? 'skills' : r.zone === 'insight' ? 'insights' : 'functions');
+													// recall rows name zones in the SINGULAR (skill/function/
+													// insight); the label table keys them in plural.
+													const zoneKey = r.zone === 'skill' ? 'skills' : r.zone === 'insight' ? 'insights' : r.zone === 'function' ? 'functions' : r.zone;
+													// A bundle row's leaf is SKILL.md — the reader wants the
+													// DIRECTORY name (the skill's identity), not the leaf.
+													const seg = String(r.href).split('/').filter(Boolean);
+													const leaf = seg[seg.length - 1] ?? '';
+													const label = leaf === 'SKILL.md' ? (seg[seg.length - 2] ?? leaf) : leaf.replace(/\.md$/, '');
+													return h(
+														'div',
+														{ key: i, className: 'dmo-row', 'data-dmo': 'preview-row' },
+														h(
+															'button',
+															{
+																type: 'button', className: 'dmo-row-btn', title: r.href,
+																disabled: !t,
+																onClick: () => t && onNavigate(t),
+															},
+															h(
+																'div',
+																{ className: 'dmo-row-top' },
+																h('span', { className: 'dmo-zone-tag' }, ZONE_LABEL[zoneKey] ?? r.zone),
+																h('span', { className: 'dmo-row-name' }, label),
+																h('span', { className: 'dmo-row-meta' }, `融合分 ${r.fusedScore}`),
+															),
+															h('div', { className: 'dmo-row-sum' }, r.summary),
+														),
+														r.reasons?.length
+															? h(
+																	'div',
+																	{ className: 'dmo-chips', style: { padding: '0 8px 8px' } },
+																	r.reasons.map((why, j) => h('span', { key: j, className: 'dmo-chip' }, why)),
+																)
+															: null,
+													);
+												})
+											: h('div', { className: 'dmo-empty' }, data?.message ?? '（无命中）'),
+									),
 				),
 			);
 		}
@@ -1183,6 +1316,16 @@ window.__ModuleLoader__.load({
 			// guard; this one is for the button), `reloadMsg` carries the result.
 			const [reloading, setReloading] = useState(false);
 			const [reloadMsg, setReloadMsg] = useState('');
+			// Recall self-check card (5.26.0): its own input, debounced through the
+			// SAME mechanism the global search proves (live → fetch url). The overview
+			// is where "what would a future session recall" is worth asking.
+			const [previewQ, setPreviewQ] = useState('');
+			const [previewLive, setPreviewLive] = useState('');
+			const preview = useApi(previewLive.length >= 2 ? `${API}/recall-preview?q=${enc(previewLive)}` : null, fixtures);
+			useEffect(() => {
+				const t = setTimeout(() => setPreviewLive(previewQ.trim()), 350);
+				return () => clearTimeout(t);
+			}, [previewQ]);
 			const searchRef = useRef(null);
 			const mainRef = useRef(null);
 
@@ -1327,7 +1470,7 @@ window.__ModuleLoader__.load({
 			else if (overview.error) main = h('div', { className: 'dmo-empty' }, `API 不可用：${overview.error}`);
 			else if (!ws) main = h('div', { className: 'dmo-empty' }, '没有已注册的 workspace。');
 			else if (!health?.initialized) main = h('div', { className: 'dmo-empty' }, '记忆还没有建立（`~/.dsh/memory/` 尚未创建）。让 Agent 做一次实质工作，它就会用 memory_write 写下第一份迭代。');
-			else if (view.kind === 'overview') main = h(Overview, { health, counts, timeline, usage: overview.data?.[0]?.usage, onOpen: openFile, onZone: (z) => setView({ kind: 'zone', zone: z }) });
+			else if (view.kind === 'overview') main = h(Overview, { health, counts, timeline, usage: overview.data?.[0]?.usage, env: overview.data?.[0]?.env, preview, previewQ, setPreviewQ, onOpen: openFile, onZone: (z) => setView({ kind: 'zone', zone: z }), onNavigate: navigate });
 			else if (view.kind === 'zone' && view.zone === 'skills')
 				main = h(SkillLibrary, {
 					data: skillLib.data, loading: skillLib.loading, error: skillLib.error,
@@ -1464,7 +1607,7 @@ window.__ModuleLoader__.load({
 			},
 			// Pure view logic, exposed so ui-test.mjs can assert the panel's
 			// parsing/folding behaviour without a browser.
-			__internalsForTest: { relTime, plain, parseIndexTables, splitSections, resolveHref, defaultOpen, SearchPane, reverseBullets, highlight },
+			__internalsForTest: { relTime, plain, parseIndexTables, splitSections, resolveHref, defaultOpen, SearchPane, RecallPreviewCard, reverseBullets, highlight },
 		};
 	},
 });

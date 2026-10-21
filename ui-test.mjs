@@ -120,7 +120,7 @@ const indexText = [
 	'- ',
 ].join('\n');
 const fixtures = {
-	'/api/memory-org/overview?v=0': { data: [{ root: 'C:/x/memory', initialized: true, failCount: 0, warnCount: 1, results: [{ level: 'WARN', rule: 'TEMP', message: 'functions/beta.md 冷记忆' }], title: '全局记忆', path: 'C:/x/.dsh', counts: { functions: 2, insights: 1, capabilities: 0, skills: 1, daily: 2 } }], loading: false, error: null },
+	'/api/memory-org/overview?v=0': { data: [{ root: 'C:/x/memory', initialized: true, failCount: 0, warnCount: 1, results: [{ level: 'WARN', rule: 'TEMP', message: 'functions/beta.md 冷记忆' }], title: '全局记忆', path: 'C:/x/.dsh', counts: { functions: 2, insights: 1, capabilities: 0, skills: 1, daily: 2 }, env: { version: '5.26.0', canReload: true, hotReloadRunning: false, memoryRoot: 'C:/x/memory', skillRoot: 'C:/x/.dsh/skills', indexBytes: 6000, indexComfortBytes: 8000, indexHardBytes: 16000 } }], loading: false, error: null },
 	'/api/memory-org/list?zone=functions&v=0': { data: { files: [{ name: 'alpha.md', bytes: fnText.length, mtime: iso(30) }, { name: 'beta.md', bytes: 900, mtime: iso(2000) }] }, loading: false, error: null },
 	'/api/memory-org/list?zone=insights&v=0': { data: { files: [{ name: 'gamma.md', bytes: 500, mtime: iso(120) }] }, loading: false, error: null },
 	'/api/memory-org/list?zone=skills&v=0': { data: { files: [{ name: '分离延迟重启.md', bytes: 700, mtime: iso(60) }] }, loading: false, error: null },
@@ -188,10 +188,19 @@ const count = (s, needle) => s.split(needle).length - 1;
 const overview = render({ kind: 'overview' });
 ok(count(overview, 'data-dmo="nav-item"') === 7, `rail has 7 destinations (${count(overview, 'data-dmo="nav-item"')})`);
 ok(overview.includes('功能') && overview.includes('思想') && overview.includes('每日') && overview.includes('索引') && overview.includes('能力') && overview.includes('技能'), 'rail labels for every zone');
-ok(count(overview, 'data-dmo="growth-card"') === 3, 'overview shows three zone count cards');
+ok(count(overview, 'data-dmo="growth-card"') === 5, `overview shows all five zone count cards (${count(overview, 'data-dmo="growth-card"')})`);
+ok(overview.includes('能力台账') && overview.includes('技能库'), 'the added capability/skill cards label their zones');
 ok(overview.includes('WARN 1') && overview.includes('冷记忆 1'), 'health chips carry the warning and the cold count');
 ok(overview.includes('[WARN] TEMP: functions/beta.md 冷记忆'), 'the health list renders every problem from overview.results');
 ok(overview.includes('2 功能 · 1 思想 · 2 日线索'), 'header summarises the memory size');
+// Environment card (5.26.0): the overview answers "which build runs, where do
+// the stores live, how full is the index" from the server's own truth.
+ok(overview.includes('运行环境') && overview.includes('5.26.0'), 'the env card names the running version');
+ok(overview.includes('支持热重启'), 'the env card reports the reload capability');
+ok(overview.includes('记忆根') && overview.includes('技能库') && overview.includes('C:/x/.dsh/skills'), 'the env card names both roots');
+ok(overview.includes('dmo-meter') && overview.includes('索引体积'), 'the index fill meter renders');
+// The recall self-check card is on the overview: empty query explains itself.
+ok(overview.includes('召回自检') && overview.includes('至少 2 个字'), 'the recall-preview card invites input');
 // Hot reload (5.25.0): the header offers the in-place server-half swap button.
 ok(overview.includes('热重启'), 'the header offers a 热重启 button');
 ok(count(overview, 'data-dmo="timeline-row"') === 6, `timeline merges all zones (${count(overview, 'data-dmo="timeline-row"')})`);
@@ -393,6 +402,39 @@ ok(linkBtns === 1, `alpha is a clickable link exactly once in the row (buttons=$
 const dayBody = dayRead.slice(dayRead.indexOf('今日线索'));
 ok(dayBody.indexOf('待验证项') < dayBody.lastIndexOf('alpha'), `daily bullets render newest-first (${dayBody.indexOf('待验证项')} < ${dayBody.lastIndexOf('alpha')})`);
 ok(dayBody.indexOf('今日待观察') < dayBody.lastIndexOf('功能：alpha'), 'daily section order unchanged, only bullet order flips');
+
+// --- recall self-check card (5.26.0) -----------------------------------------
+// The card shows what the REAL pre-step pipeline would inject for a query.
+// Rows carry reasons; a file:/// skill row opens the bundle view, not a reader.
+const previewRes = {
+	data: {
+		query: '重启 宿主',
+		tokens: ['重启', '宿主'],
+		usageSignals: 3,
+		rows: [
+			{ href: 'file:///C:/x/.dsh/skills/detached-restart/SKILL.md', zone: 'skill', summary: '会话跑在宿主内时用分离继电器安全重启', fusedScore: 2.9, reasons: ['名称命中：重启', '使用 6 次 · 认可 2 · 纠正率 0'] },
+			{ href: 'functions/memory-manager.md', zone: 'function', summary: '记忆插件 5.26.0', fusedScore: 1.2, lexicalScore: 1.2, reasons: ['词法分 1.20'] },
+		],
+		message: '',
+	},
+	loading: false,
+	error: null,
+};
+const previewView = serialize(
+	FakeReact.createElement(T.RecallPreviewCard, { res: previewRes, q: '重启 宿主', setQ: () => {}, onNavigate: () => {} }),
+);
+ok(count(previewView, 'data-dmo="preview-row"') === 2, `every recalled row renders (${count(previewView, 'data-dmo="preview-row"')})`);
+ok(previewView.includes('detached-restart') && previewView.includes('融合分 2.9'), 'a bundle row labels itself by its DIRECTORY name, with its score');
+ok(previewView.includes('名称命中') && previewView.includes('使用 6 次'), 'the reasons behind each recall land as chips');
+ok(previewView.includes('技能') || previewView.includes('功能'), 'rows carry their zone tags');
+const previewEmpty = serialize(
+	FakeReact.createElement(T.RecallPreviewCard, { res: { data: { query: 'zz', rows: [], message: '（无命中：该输入不会注入任何召回）' }, loading: false, error: null }, q: 'zz', setQ: () => {}, onNavigate: () => {} }),
+);
+ok(previewEmpty.includes('无命中'), 'an empty recall explains itself instead of showing a blank card');
+const previewIdle = serialize(
+	FakeReact.createElement(T.RecallPreviewCard, { res: { data: null, loading: false, error: null }, q: '', setQ: () => {}, onNavigate: () => {} }),
+);
+ok(previewIdle.includes('至少 2 个字'), 'an idle preview invites input');
 
 // --- search results use the API's snippet + heading --------------------------
 let searchZoneCalls = 0;

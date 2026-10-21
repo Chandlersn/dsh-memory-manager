@@ -12,9 +12,13 @@
 
 - 十二个记忆工具 + 一段系统提示纪律 + 一条 `agent/pre-step` 主动回忆钩子 + 一个只读 Web 面板
 - 写入即建档：`summary` 与 `currentState` 是必填参数，索引行不会漂移
-- 带机械体检（R0–R21 + 温度分析，规则号会增长故不写死条数），坏了能被检查出来，而不是靠记性
+- 带机械体检（R0–R22 + 温度分析，规则号会增长故不写死条数），坏了能被检查出来，而不是靠记性
 - **能力台账**：用过的外部 CLI / MCP / 本地工具（不含 harness 自带能力与本项目自己的脚本/API）登记在 `capabilities/`，下次同类任务先查台账，不重复摸索
-- **技能结晶**：反复重跑且被确认的操作结晶成 `skills/` 可调用程序（使用信号机械提名、模型判断成文、candidate→active→retired，只有 active 进召回）——数据流的"用"这一步就此闭合；技能带 `scope`（global/project，作用域审计 R20s），`active` 且带 kebab-case `hostName` 时经可选桥注册进宿主 skill 目录、可被 `skill` 工具直接调用（宿主无该服务则静默降级，仍走自家召回）
+- **技能结晶**：反复重跑且被确认的操作结晶成**宿主技能目录包**（`~/.dsh/skills/<kebab>/`，与宿主 `skill` 工具、
+  面板技能库读同一份，无记忆根副本；使用信号机械提名、模型判断成文、candidate→active→retired，只有 active 进召回）
+  ——数据流的"用"这一步就此闭合；技能带 `scope`（global/project），frontmatter `agent_created: true` 标记本插件自有
+  （面板据此分「结晶/系统」两栏），`active` 时经可选桥注册进宿主 skill 目录、可被 `skill` 工具直接调用
+  （宿主无该服务则静默降级，仍走自家召回）；成文必须走 skill-creator 流程（Step1-6 + Quality Bar）
 - **粒度有闸门**：迭代块只写蒸馏结论，块 >900 字或索引行摘要 >110 字会在写入时告警并由体检 R14 点名
 - **密钥防线（借鉴 Hindsight 的 memory defence）**：插件全部写路径在落盘前把凭据形态（API key/token/私钥/JWT）替换成 `[REDACTED:kind]` 并在回执点名；身份证/手机号只由体检 R21 告警、绝不改写（事实不得被静默篡改）
 - **洞察有信任级（借鉴 Hindsight 的 observations）**：原则是「带证据的信念」——信任级（待验证/已验证/稳固/动摇）由 `.usage.jsonl` 的认可与纠正计数**自动算出**，写进思想文件头并随每次沉淀刷新；动摇的思想在召回里标 ⚠️、由体检 R22 提示精炼或取代，绝不被静默替换
@@ -258,7 +262,9 @@ Node ≥ 22.12），返回的正是 Host 已加载的同一份命名空间。
 
 侧栏"记忆管理"图标打开，**只读**，面向长期积累（几十个功能域、上百天线索）而不是文件浏览器：
 
-- **总览**：体检徽标（FAIL/WARN/冷记忆）+ 三个分区计数卡 + **跨分区「最近改动」时间线**
+- **总览**：体检徽标（FAIL/WARN/冷记忆）+ 五个分区计数卡（功能/思想/能力/技能/当日）+ **运行环境卡**（正在运行的
+  插件版本、宿主是否支持热重启、记忆根与技能库两个存储的位置、索引体积对舒适线/硬上限的填充条）+ **召回自检卡**
+  （输入一段话，看真管线现在会注入哪些行、每行的命中理由与融合分，点行直接跳转）+ **跨分区「最近改动」时间线**
   （按 mtime 倒序，带索引里的一行摘要），先看"记忆最近长成什么样"
 - **功能 / 思想 / 每日**：每个文件一行卡片，直接显示索引摘要（不用点进去才知道是什么）、相对时间、体积；
   可**按时间/名称排序**、**按名称或摘要过滤**；每日区按月份分组，天多了也不会变成一堵墙
@@ -302,10 +308,12 @@ Node ≥ 22.12），返回的正是 Host 已加载的同一份命名空间。
 
 | 响应 | 字段 |
 |---|---|
-| `overview`（数组，单元素） | `root`、`initialized`、`failCount`、`warnCount`、**`results`**（体检条目：`level`/`rule`/`message`；不是 `problems`）、`counts{functions,insights,daily}` |
+| `overview`（数组，单元素） | `root`、`initialized`、`failCount`、`warnCount`、**`results`**（体检条目：`level`/`rule`/`message`；不是 `problems`）、`counts{functions,insights,capabilities,skills,daily}`、`usage{signalCount,layers,hotspots}`、`env{version,canReload,hotReloadRunning,memoryRoot,skillRoot,indexBytes,indexComfortBytes,indexHardBytes}`（`skillRoot` 为**已解析**的存储路径：无覆盖时 = `<dshHome>/skills`，与 config 项同名同义） |
 | `list` | `files[]{name,bytes,mtime}` |
 | `file` | `{name,text}` |
 | `search` | `hits[]{zone,name,line,heading,snippet}`（片段是 `snippet`，不是 `text`） |
+| `skills` | `memory[]`（frontmatter 带 `agent_created` 的宿主目录包，含 `status/scope/files[]`）+ `host[]`（安装的技能，同形状）——一个存储两个视角 |
+| `recall-preview` | `rows[]{href,zone,summary,fusedScore,reasons[]}`——真管线对该查询会注入什么 |
 
 ## 开发与测试
 

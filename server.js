@@ -2790,7 +2790,28 @@ function memoryPanelApi(opts) {
 					}
 				}
 				const signalCount = (await readIfExists(usagePath(root)))?.split('\n').filter((l) => l.trim()).length ?? 0;
-				return json(res, 200, [{ ...health, title: '全局记忆', path: joinDshHome(), counts: await zoneCounts(root, opts.skillRoot), usage: { signalCount, layers: layerCounts, hotspots: hotspots.slice(0, 5) } }]);
+				// Overview environment block (5.26.0): the panel answers "which
+				// build is actually running, where do my two stores live, how full
+				// is the index" from the SERVER's own truth. `version` is opts.version
+				// — captured when THIS fiber applied — not a fresh disk read, so it
+				// is the RUNNING build, which may lag an edit until the swap.
+				let indexBytes = 0;
+				try {
+					indexBytes = byteLen((await readIfExists(path.join(root, 'MEMORY.md'))) ?? '');
+				} catch {
+					/* fresh root */
+				}
+				const env = {
+					version: opts.version ?? '',
+					canReload: Boolean(opts.canReload),
+					hotReloadRunning: isReloading(),
+					memoryRoot: root,
+					skillRoot: opts.skillRoot ? path.resolve(opts.skillRoot) : path.join(dshHome(), 'skills'),
+					indexBytes,
+					indexComfortBytes: opts.maxIndexBytes,
+					indexHardBytes: opts.maxIndexHardBytes,
+				};
+				return json(res, 200, [{ ...health, title: '全局记忆', path: joinDshHome(), counts: await zoneCounts(root, opts.skillRoot), usage: { signalCount, layers: layerCounts, hotspots: hotspots.slice(0, 5) }, env }]);
 			}
 			if (seg === 'file') {
 				const name = url.searchParams.get('name');

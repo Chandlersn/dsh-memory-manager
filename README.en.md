@@ -14,15 +14,17 @@ discipline injected into its system prompt.
 
 - Twelve memory tools + an injected system-prompt discipline + a budgeted `agent/pre-step` recall hook + a read-only Web panel
 - Writing is filing: `summary` and `currentState` are required parameters, so the index row never drifts
-- Mechanical lint rules (R0–R21 plus temperature analysis; rule numbers grow, so no fixed count is claimed), so rot gets detected instead of remembered
+- Mechanical lint rules (R0–R22 plus temperature analysis; rule numbers grow, so no fixed count is claimed), so rot gets detected instead of remembered
 - **Capability ledger**: every EXTERNAL CLI / MCP / local tool you used is filed in `capabilities/` — look before
   you rediscover it (harness built-ins and the project's own scripts/APIs are NOT capabilities)
-- **Skill crystallization**: operations that keep being re-run and confirmed become callable procedures in
-  `skills/` (mechanical nomination from usage signals; the model decides to crystallize; candidate → active →
-  retired, and only active skills enter recall). Each skill carries `scope` (global/project, audited by R20s);
-  an `active` skill with a kebab-case `hostName` is published through an optional bridge into the host skill
-  catalog and becomes loadable by the `skill` tool — a host without that service degrades silently and the
-  plugin's own recall keeps serving every skill
+- **Skill crystallization**: operations that keep being re-run and confirmed become callable procedures — each one
+  a HOST bundle (`~/.dsh/skills/<kebab>/`, the exact directory the host `skill` tool and the panel library read;
+  no memory-root copy). Mechanical nomination from usage signals; the model decides to crystallize; candidate →
+  active → retired, and only active skills enter recall. Writing the procedure MUST follow the skill-creator flow
+  (Step1-6 + Quality Bar). Each bundle carries `scope` (global/project) and `agent_created: true` marks it as
+  ours — the panel splits the library on that frontmatter field. An `active` owned bundle is published through an
+  optional bridge into the host skill catalog and becomes loadable by the `skill` tool; a host without that
+  service degrades silently and the plugin's own recall keeps serving every skill
 - **Granularity gate**: iteration blocks hold distilled conclusions only; a block over 900 chars or an index
   row over 110 chars warns at write time and is named by lint rule R14
 - **Memory defence (Hindsight-borrowed)**: every plugin write path replaces credential shapes (API keys/tokens/
@@ -297,7 +299,11 @@ them matches, it fails with an explicit message telling you to set `DSH_INSTALL_
 Opened from the "记忆管理" (memory manager) icon in the sidebar; **read-only**, and built for long
 accumulation (dozens of function areas, hundreds of daily threads) rather than as a file browser:
 
-- **Overview**: health chips (FAIL / WARN / cold memory) + three zone count cards + a **cross-zone "recent
+- **Overview**: health chips (FAIL / WARN / cold memory) + five zone count cards (functions / insights /
+  capabilities / skills / daily) + an **environment card** (the RUNNING plugin version, whether the host
+  supports hot reload, where the memory root and skill store live, an index-size fill meter against the comfort
+  and hard lines) + a **recall self-check card** (type a sentence, see exactly which rows the real pipeline
+  would inject, with per-row reasons and fused scores; a row opens its file) + a **cross-zone "recent
   changes" timeline** (mtime descending, with each row's index summary) — start by seeing how memory has been
   growing
 - **Functions / Insights / Daily**: one row per file, showing the index summary directly (no need to open it
@@ -356,10 +362,12 @@ the panel, so `api-test.mjs` pins them with contract assertions):
 
 | Response | Fields |
 |---|---|
-| `overview` (array, single element) | `root`, `initialized`, `failCount`, `warnCount`, **`results`** (findings: `level`/`rule`/`message`; not `problems`), `counts{functions,insights,daily}` |
+| `overview` (array, single element) | `root`, `initialized`, `failCount`, `warnCount`, **`results`** (findings: `level`/`rule`/`message`; not `problems`), `counts{functions,insights,capabilities,skills,daily}`, `usage{signalCount,layers,hotspots}`, `env{version,canReload,hotReloadRunning,memoryRoot,skillRoot,indexBytes,indexComfortBytes,indexHardBytes}` |
 | `list` | `files[]{name,bytes,mtime}` |
 | `file` | `{name,text}` |
 | `search` | `hits[]{zone,name,line,heading,snippet}` (the snippet is `snippet`, not `text`) |
+| `skills` | `memory[]` (bundles whose frontmatter says `agent_created`, carrying `status/scope/files[]`) + `host[]` (the installed bundles, same shape) — ONE store, two lenses |
+| `recall-preview` | `rows[]{href,zone,summary,fusedScore,reasons[]}` — what the real pipeline would inject for the query |
 
 ## Development and tests
 
