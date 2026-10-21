@@ -222,6 +222,66 @@ try {
 }
 const delMissing = await post('/api/memory-org/skill-action', { action: 'delete', name: 'no-such-skill-xyz' });
 ok(delMissing.status === 400, 'deleting a missing skill is a 400, not a 500');
+// hot reload (5.25.0): POST-only, and a host WITHOUT loader/registry degrades
+// to 501 with a message — this file's fakeCtx IS exactly such a host (the
+// legacy-generation branch, tested with the legacy artifact per the rule).
+const reloadGet = await call('/api/memory-org/reload');
+ok(reloadGet.status === 405, 'reload is POST-only');
+const reloadNoLoader = await post('/api/memory-org/reload', {});
+ok(reloadNoLoader.status === 501 && JSON.parse(reloadNoLoader.body).error.includes('不支持热重启'), 'a host without loader/registry answers 501, never half-swaps');
+// The real loader branch end-to-end: an apply() WITH loader/registry must get a
+// reload that actually re-imports. A live host is not available here, so the
+// loader is faked with the two primitives the swap really uses (internal.load
+// Cache + import/unwrapExports) and a fiber-shaped ctx; the assertion is that
+// the fresh module object arrives (cache purge → re-evaluation), not a 501.
+{
+	const { selfReload } = await import(new URL('./src/reload.js', import.meta.url).href);
+	const pkgUrl = new URL('./', import.meta.url).href;
+	const entry = new URL('./server.js', import.meta.url).href;
+	const { pathToFileURL } = await import('node:url');
+	// Seed Node's ESM loadCache shape with THIS package's real module URLs, so the
+	// purge has genuine keys to remove (what a loaded plugin looks like).
+	const cache = new Map();
+	for (const f of ['server.js', 'src/reload.js']) {
+		cache.set(new URL(`./${f}`, import.meta.url).href, { id: f });
+	}
+	const oldApply = () => {};
+	const newApply = () => {};
+	const importLog = [];
+	const loader = {
+		internal: { loadCache: cache },
+		async import(url) {
+			importLog.push(url);
+			// unwrapExports in the real host turns the namespace into the exports
+			// object; a plugin entry exports apply().
+			return { apply: newApply };
+		},
+		unwrapExports: (m) => m,
+	};
+	const newFiber = { uid: 'f2', await: async () => {} };
+	const oldFiber = {
+		uid: 'f1',
+		await: async () => {},
+		inject: {},
+		entry: undefined,
+		_config: {},
+		parent: { registry: { plugin: () => ({ ctx: { fiber: newFiber } }) } },
+	};
+	const registry = {
+		get: (p) => (p === oldApply ? { fibers: [oldFiber], name: 'dsh-memory-manager', Config: undefined } : undefined),
+		delete: () => true,
+	};
+	const res = await selfReload({ loader, registry, fiber: { ...oldFiber, runtime: { callback: oldApply } } }, { packageUrl: pkgUrl, entryUrl: entry, logger: { info: () => {}, warn: () => {} } });
+	ok(res.ok === true && res.fibers === 1, `selfReload completes against a loader-shaped host (ok=${res.ok}${res.error ? ' err=' + res.error : ''})`);
+	ok(importLog.length >= 1 && importLog[0].includes('server.js'), 'the entry is re-imported through the host loader');
+	ok(!cache.has(entry) || importLog[importLog.length - 1] !== entry, 'a purged cache did not silently serve the old module');
+	// The failure path must ROLLBACK: an entry that throws on re-import restores
+	// the caches and returns restored:true with the old code still in place.
+	const cache2 = new Map([[entry, { id: 'server' }]]);
+	const loader2 = { internal: { loadCache: cache2 }, async import() { throw new Error('boom'); }, unwrapExports: (m) => m };
+	const failRes = await selfReload({ loader: loader2, registry: { get: () => ({ fibers: [oldFiber] }), delete: () => true }, fiber: { ...oldFiber, runtime: { callback: oldApply } } }, { packageUrl: pkgUrl, entryUrl: entry, logger: { info: () => {}, warn: () => {} } });
+	ok(failRes.ok === false && failRes.restored === true && cache2.has(entry), 'a failed re-import restores the cache and reports the rollback');
+}
 
 // --- overview / counts -------------------------------------------------------
 const idx = await call('/api/memory-org/overview');

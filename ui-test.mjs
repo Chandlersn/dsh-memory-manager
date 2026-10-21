@@ -192,6 +192,8 @@ ok(count(overview, 'data-dmo="growth-card"') === 3, 'overview shows three zone c
 ok(overview.includes('WARN 1') && overview.includes('冷记忆 1'), 'health chips carry the warning and the cold count');
 ok(overview.includes('[WARN] TEMP: functions/beta.md 冷记忆'), 'the health list renders every problem from overview.results');
 ok(overview.includes('2 功能 · 1 思想 · 2 日线索'), 'header summarises the memory size');
+// Hot reload (5.25.0): the header offers the in-place server-half swap button.
+ok(overview.includes('热重启'), 'the header offers a 热重启 button');
 ok(count(overview, 'data-dmo="timeline-row"') === 6, `timeline merges all zones (${count(overview, 'data-dmo="timeline-row"')})`);
 const tl = overview.slice(overview.indexOf('data-dmo="timeline-row"'));
 ok(tl.indexOf('2026-10-18') < tl.indexOf('beta'), 'timeline is newest-first');

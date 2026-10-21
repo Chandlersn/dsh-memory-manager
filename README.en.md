@@ -303,16 +303,23 @@ accumulation (dozens of function areas, hundreds of daily threads) rather than a
 - **Functions / Insights / Daily**: one row per file, showing the index summary directly (no need to open it
   to know what it is), relative time and size; sort by time or name, filter by name or summary; the daily zone
   groups by month, so it never turns into a wall
-- **Skill library**: the skills page is a two-sided library behind ONE toggle — "crystallized / system":
-  the crystallized side shows the memory-root `skills/` in every lifecycle state (candidate/active/retired +
-  a published-to-host badge + scope) with an **enable switch (activate/retire) and a delete button on every
-  row**; the system side SCANS HOST STORAGE (the `~/.dsh/skills` and `~/.agents/skills` directory bundles).
-  Opening either side renders that skill's stored SKILL.md body plus its **file tree** (the `scripts/` and
-  `references/` assets the bundle carries, readable one click away) — the panel shows stored content;
-  invocation policy stays the host registry's surface, two layers each doing its job. Panel writes go
-  through the single `POST /skill-action` route, which runs the memory_skill tool's real executor (safeSlug,
-  atomic write, index sync, host invalidation all still apply); crystallize is deliberately NOT panel-reachable
-  (that is a model judgement)
+- **Skill library**: the skills page is a two-sided library behind ONE toggle — "crystallized / system" — but the
+  two sides are ONE store seen through two lenses: every skill is a host bundle (`~/.dsh/skills/<kebab>/`); the
+  ones whose frontmatter carries `agent_created: true` are ours (full lifecycle candidate/active/retired + scope,
+  with an **enable switch (activate/retire) and a delete button per row**), everything else is installed (like
+  skill-creator, read-only). Opening either side renders that skill's stored SKILL.md body plus its **file tree**
+  (the `scripts/` and `references/` assets the bundle carries, readable one click away) — the panel shows stored
+  content; invocation policy stays the host registry's surface. Panel writes go through the single
+  `POST /skill-action` route, which runs the memory_skill tool's real executor (kebab-name guard, atomic write,
+  index sync, host invalidation all still apply); crystallize is deliberately NOT panel-reachable (that is a model
+  judgement)
+- **Hot reload**: the header's 热重启 button (5.25.0) — replaces the running server half with the code on disk,
+  no host process restart (the mechanism is borrowed from dsh-our-free-model's src/reload.js: snapshot the fibers,
+  purge this package from the module caches, re-import through the host loader, re-register; on failure the caches
+  and the old registration are restored and the swap reports it). This plugin dares to do it because it holds no
+  long-running state (the memory root is disk, and tools/recall/routes rebuild with apply). A host without
+  loader/registry gets an explicit 501, never a half-accepted swap. **Client-half changes still need a page
+  refresh** (the swap replaces the client bundle registration)
 - **Reader**: function files fold per iteration block — only the newest is expanded by default (short files
   open fully) — with a date jump strip and "expand all"; insights and daily files open per section; the index
   page renders the function-module and innovation-insight index tables as **clickable navigation tables** and folds the rest

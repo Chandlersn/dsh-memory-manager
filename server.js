@@ -20,6 +20,7 @@
  * @module dsh-memory-manager
  */
 import { readFile, writeFile, rename, unlink, rm, mkdir, readdir, stat, appendFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { existsSync } from 'node:fs';
 import * as path from 'node:path';
 import { homedir } from 'node:os';
@@ -44,6 +45,7 @@ import {
 	upsertIndexRow, appendUnderHeading, resolveOpenItems, refreshSummarySection, replaceSection,
 	dropIndexRow,
 } from './src/markdown.js';
+import { selfReload, isReloading } from './src/reload.js';
 import { tokensOf, matchIndexRows, buildRecallMessage } from './src/recall.js';
 import { redactSecrets, scanSecrets } from './src/secrets.js';
 import { isSkillName, registerMemorySkillBridge, parseSkillText, isPublishable, skillAppliesToProject, PROVIDER_NAME } from './src/host-skill.js';
@@ -2852,6 +2854,26 @@ function memoryPanelApi(opts) {
 			// tool's real executor — so the slug guard, atomic write, index sync and
 			// host invalidation hold identically. Actions are whitelisted here; a
 			// browser must never reach crystallize (that is a model judgement).
+			// Hot reload (5.25.0): replace the running server half with the code on
+			// disk — NO process restart (the mechanism, borrowed from
+			// dsh-our-free-model, purges the module caches and re-applies the plugin
+			// in place; safe here because this plugin holds no long-running state).
+			// Respond FIRST, swap on a plain timer: disposing the current fiber would
+			// otherwise cancel the very effect performing the swap.
+			if (seg === 'reload') {
+				if (req.method !== 'POST') return json(res, 405, { error: 'POST only' });
+				// A host without the plugin loader/registry cannot re-import or
+				// re-register — say so up front (501) instead of accepting (202) and
+				// failing silently inside the async swap. The capability is probed
+				// exactly the way selfReload probes it.
+				if (!opts.canReload) return json(res, 501, { error: '本宿主不支持热重启（没有 loader/registry），请重启进程' });
+				if (isReloading()) return json(res, 409, { error: '已有热重启在跑' });
+				json(res, 202, { note: 'hot reload started', version: opts.version });
+				setTimeout(() => {
+					opts.reload().catch(() => {});
+				}, 150);
+				return;
+			}
 			if (seg === 'skill-action') {
 				if (req.method !== 'POST') return json(res, 405, { error: 'POST only' });
 				const body = await readBody(req);
@@ -3066,9 +3088,11 @@ function memoryPanelApi(opts) {
 					'<li><code>GET /api/memory-org/check</code> — 体检</li>' +
 					'<li><code>GET /api/memory-org/list?zone=functions|insights|daily</code> — 分区文件列表</li>' +
 					'<li><code>GET /api/memory-org/file?zone=functions&amp;name=&lt;file&gt;.md</code> — 读记忆文件（省略 zone 即索引）</li>' +
-					'<li><code>GET /api/memory-org/skills</code> — 技能库（扫存储：记忆根单文件 + 宿主目录包，各带文件树）</li>' +
-					'<li><code>GET /api/memory-org/skill?name=&lt;skill&gt;&amp;kind=memory|host</code> — 存储的技能主文件 + 文件清单（记忆侧 &lt;slug&gt;.md / 宿主侧 &lt;bundle&gt;/SKILL.md）</li>' +
-					'<li><code>GET /api/memory-org/skillfile?name=&lt;bundle&gt;&amp;file=&lt;rel&gt;</code> — 宿主包内资源文件原文（scripts/references；根由服务端解析，相对路径禁穿越）</li>' +
+					'<li><code>GET /api/memory-org/skills</code> — 技能库（宿主目录包单一存储；agent_created 分「结晶/系统」两栏，各带文件树）</li>' +
+					'<li><code>GET /api/memory-org/skill?name=&lt;bundle&gt;</code> — 技能包正文 + 文件清单（服务端解析根，请求只给名字）</li>' +
+					'<li><code>GET /api/memory-org/skillfile?name=&lt;bundle&gt;&amp;file=&lt;rel&gt;</code> — 包内资源文件原文（scripts/references；相对路径禁穿越）</li>' +
+					'<li><code>POST /api/memory-org/skill-action</code> — 面板写通道（activate/retire/delete，跑 memory_skill 真执行器）</li>' +
+					'<li><code>POST /api/memory-org/reload</code> — 热重启：server 半重新加载磁盘代码，不重启宿主进程（宿主无 loader/registry 时 501）</li>' +
 					'<li><code>GET /api/memory-org/search?q=&lt;关键词&gt;</code> — 全库搜索</li></ul>',
 			);
 		} catch (err) {
@@ -3100,6 +3124,23 @@ export function apply(ctx, config) {
 		captureUserTurns: config?.captureUserTurns === true,
 		// Opt-in three-tier federation: { root, projects: [{ key, root }] }.
 		federation: config?.federation && typeof config.federation === 'object' ? config.federation : undefined,
+		// Hot reload (5.25.0): the panel's /reload endpoint calls this. selfReload
+		// snapshots the fibers, purges this package from the module caches,
+		// re-imports server.js through the host loader and re-registers it — the
+		// same sequence the kernel HMR service uses for partialReload, from a
+		// plugin that by design survives a swap (disk-only state).
+		// The capability is probed EXACTLY the way selfReload probes it: on a host
+		// without loader/registry, reload is undefined and the route answers 501
+		// up front instead of accepting a swap that can never complete.
+		canReload: ctx.loader !== undefined && ctx.registry !== undefined,
+		version: (() => {
+			try {
+				return JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version ?? '';
+			} catch {
+				return '';
+			}
+		})(),
+		reload: () => selfReload(ctx, { logger: ctx.logger ?? console }),
 	};
 
 	const disposers = [

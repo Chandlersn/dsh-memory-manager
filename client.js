@@ -1169,6 +1169,11 @@ window.__ModuleLoader__.load({
 			const [live, setLive] = useState('');
 			const [searchZone, setSearchZone] = useState('all');
 			const [tick, setTick] = useState(0);
+			// Hot-reload button state (5.25.0): `reloading` guards against a second
+			// click while a swap is in flight (the server side has its own single
+			// guard; this one is for the button), `reloadMsg` carries the result.
+			const [reloading, setReloading] = useState(false);
+			const [reloadMsg, setReloadMsg] = useState('');
 			const searchRef = useRef(null);
 			const mainRef = useRef(null);
 
@@ -1349,6 +1354,36 @@ window.__ModuleLoader__.load({
 						h('span', { className: 'dmo-kbd' }, '/'),
 					),
 					h(Btn, { tone: 'outline', onClick: () => setTick((n) => n + 1), title: '重新读取记忆' }, '刷新'),
+					// Hot reload (5.25.0, the mechanism borrowed from our-free-model):
+					// make the running SERVER half equal the code on disk without
+					// restarting the host process. The swap disposes this plugin's
+					// fibers and re-registers them — including the client bundle, so
+					// after a successful reload the page still needs one refresh for
+					// NEW CLIENT code (the server half is instantly live).
+					h(
+						Btn,
+						{
+							tone: 'outline',
+							title: '让运行中的插件 server 半重新加载磁盘代码（不重启宿主进程）；client 半改动仍需刷新页面',
+							disabled: reloading,
+							onClick: async () => {
+								setReloading(true);
+								setReloadMsg('热重启中…');
+								try {
+									const r = await fetch(`${API}/reload`, { method: 'POST' });
+									const j = await r.json().catch(() => ({}));
+									if (!r.ok && r.status !== 202) throw new Error(j.error || `HTTP ${r.status}`);
+									setReloadMsg('server 半已重载');
+									setTimeout(() => setReloadMsg(''), 5000);
+								} catch (err) {
+									setReloadMsg(`热重启失败：${String(err?.message ?? err)}`);
+								} finally {
+									setReloading(false);
+								}
+							},
+						},
+						reloadMsg || '热重启',
+					),
 				),
 				h(
 					'div',
