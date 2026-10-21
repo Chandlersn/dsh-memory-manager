@@ -127,11 +127,13 @@ const fixtures = {
 	// Skill library payload — 5.20.0 storage scan: the host side lists what is
 	// ON DISK (bundle dirs with their file trees); no registry fields, no
 	// hostDegraded (a missing root just means no bundles there).
+	// 5.24.0: ONE store — every row is a host bundle; the split is provenance
+	// (agent_created ⇒ crystallized, else system), never storage.
 	'/api/memory-org/skills?v=0': {
 		data: {
 			memory: [
-				{ name: '分离延迟重启', hostName: 'detached-restart', description: '会话跑在宿主内时用分离进程延迟重启', status: 'active', scope: 'global', scopeProject: '', published: true, kind: 'memory', dir: 'C:/x/memory/skills', files: [{ rel: '', name: '分离延迟重启.md', bytes: 700 }] },
-				{ name: '草稿技能', hostName: '', description: '一个还没转正的候选', status: 'candidate', scope: 'project', scopeProject: 'demo', published: false, kind: 'memory', dir: 'C:/x/memory/skills', files: [{ rel: '', name: '草稿技能.md', bytes: 300 }] },
+				{ name: 'detached-restart', description: '会话跑在宿主内时用分离进程延迟重启', status: 'active', scope: 'global', scopeProject: '', kind: 'memory', dir: 'C:/x/.dsh/skills/detached-restart', files: [{ rel: '', name: 'SKILL.md', bytes: 4056 }, { rel: 'scripts/restart-relay.mjs', name: 'restart-relay.mjs', bytes: 5127 }] },
+				{ name: 'draft-skill', description: '一个还没转正的候选', status: 'candidate', scope: 'project', scopeProject: 'demo', kind: 'memory', dir: 'C:/x/.dsh/skills/draft-skill', files: [{ rel: '', name: 'SKILL.md', bytes: 300 }] },
 			],
 			host: [
 				{ name: 'skill-creator', description: 'Guide for creating effective skills.', source: 'user-dsh', kind: 'host', dir: 'C:/x/.dsh/skills/skill-creator', files: [{ rel: '', name: 'SKILL.md', bytes: 17957 }, { rel: 'scripts/init_skill.py', name: 'init_skill.py', bytes: 11627 }, { rel: 'scripts/quick_validate.py', name: 'quick_validate.py', bytes: 2165 }] },
@@ -140,9 +142,10 @@ const fixtures = {
 		loading: false,
 		error: null,
 	},
-	'/api/memory-org/skill?name=skill-creator&kind=host': { data: { name: 'skill-creator', kind: 'host', text: '---\nname: skill-creator\ndescription: Guide\n---\n\n# Skill Creator\n\n先看 provider 契约。', files: [{ rel: '', name: 'SKILL.md', bytes: 60 }, { rel: 'scripts/init_skill.py', name: 'init_skill.py', bytes: 11627 }, { rel: 'scripts/quick_validate.py', name: 'quick_validate.py', bytes: 2165 }] }, loading: false, error: null },
-	'/api/memory-org/skill?name=%E5%88%86%E7%A6%BB%E5%BB%B6%E8%BF%9F%E9%87%8D%E5%90%AF&kind=memory': { data: { name: '分离延迟重启', kind: 'memory', text: '---\nname: 分离延迟重启\nstatus: active\n---\n\n# 技能：分离延迟重启（指针）\n\n程序体在宿主目录包。', files: [{ rel: '', name: '分离延迟重启.md', bytes: 2221 }] }, loading: false, error: null },
+	'/api/memory-org/skill?name=skill-creator': { data: { name: 'skill-creator', kind: 'host', text: '---\nname: skill-creator\ndescription: Guide\n---\n\n# Skill Creator\n\n先看 provider 契约。', files: [{ rel: '', name: 'SKILL.md', bytes: 60 }, { rel: 'scripts/init_skill.py', name: 'init_skill.py', bytes: 11627 }, { rel: 'scripts/quick_validate.py', name: 'quick_validate.py', bytes: 2165 }] }, loading: false, error: null },
+	'/api/memory-org/skill?name=detached-restart': { data: { name: 'detached-restart', kind: 'memory', status: 'active', scope: 'global', text: '---\nname: detached-restart\nstatus: active\nagent_created: true\n---\n\n# Detached Restart\n\n## Procedure\n\n1. 锁真 PID\n2. 触发继电器', files: [{ rel: '', name: 'SKILL.md', bytes: 4056 }, { rel: 'scripts/restart-relay.mjs', name: 'restart-relay.mjs', bytes: 5127 }] }, loading: false, error: null },
 	'/api/memory-org/skillfile?name=skill-creator&file=scripts%2Fquick_validate.py': { data: { name: 'skill-creator', file: 'scripts/quick_validate.py', text: '#!/usr/bin/env python3\nimport sys\n' }, loading: false, error: null },
+	'/api/memory-org/skillfile?name=detached-restart&file=scripts%2Frestart-relay.mjs': { data: { name: 'detached-restart', file: 'scripts/restart-relay.mjs', text: 'import { spawn } from "node:child_process";\n' }, loading: false, error: null },
 	'/api/memory-org/list?zone=daily&v=0': { data: { files: [{ name: '2026-10-18.md', bytes: 400, mtime: iso(5) }, { name: '2026-09-30.md', bytes: 800, mtime: iso(18_000) }] }, loading: false, error: null },
 	'/api/memory-org/file?name=MEMORY.md&v=0': { data: { name: 'MEMORY.md', text: indexText }, loading: false, error: null },
 	'/api/memory-org/file?zone=functions&name=alpha.md': { data: { name: 'alpha.md', text: fnText }, loading: false, error: null },
@@ -233,22 +236,24 @@ ok(dailyList.indexOf('2026-10') < dailyList.indexOf('2026-09'), 'months run newe
 const skillMem = render({ kind: 'zone', zone: 'skills', tab: 'memory' });
 ok(count(skillMem, 'data-dmo="skill-tab"') === 2, 'the library offers two toggle tabs');
 ok(skillMem.includes('结晶技能 2') && skillMem.includes('系统技能 1'), 'tabs carry per-side counts');
-ok(skillMem.includes('分离延迟重启') && skillMem.includes('草稿技能'), 'memory tab lists every lifecycle state');
-ok(skillMem.includes('已发布宿主'), 'a published skill carries its publish badge');
+ok(skillMem.includes('detached-restart') && skillMem.includes('draft-skill'), 'crystallized tab lists every lifecycle state');
+// 5.24.0: active IS published (one store, one lifecycle) — the redundant
+// "已发布宿主" badge is gone, the status chip carries it.
+ok(!skillMem.includes('已发布宿主'), 'no redundant publish badge beside the status chip');
 ok(skillMem.includes('active') && skillMem.includes('candidate'), 'lifecycle statuses render');
 ok(skillMem.includes('global') && skillMem.includes('project:demo'), 'scope renders, project keeps its key');
-ok(!skillMem.includes('skill-creator'), 'the memory tab does not leak host rows');
+ok(!skillMem.includes('skill-creator'), 'the crystallized tab does not leak system rows');
 const skillHost = render({ kind: 'zone', zone: 'skills', tab: 'host' });
-ok(skillHost.includes('skill-creator') && skillHost.includes('user-dsh'), 'host tab lists stored bundles with their root source');
+ok(skillHost.includes('skill-creator') && skillHost.includes('user-dsh'), 'system tab lists stored bundles with their root source');
 ok(skillHost.includes('3 文件'), 'a bundle row shows its stored file count');
-ok(!skillHost.includes('分离延迟重启'), 'the host tab does not leak memory rows');
-ok(count(skillHost, 'data-dmo="skill-row"') === 1, `host tab rows == host payload length (${count(skillHost, 'data-dmo="skill-row"')})`);
-// The detail view renders the STORED SKILL.md and the bundle's file tree; each
-// stored file is one click away (a name + a relative file, never a client path).
-const hostRead = render({ kind: 'hostskill', name: 'skill-creator' });
+ok(!skillHost.includes('detached-restart'), 'the system tab does not leak crystallized rows');
+ok(count(skillHost, 'data-dmo="skill-row"') === 1, `system tab rows == payload length (${count(skillHost, 'data-dmo="skill-row"')})`);
+// ONE renderer for ONE store: a detail view is a bundle from either tab —
+// SKILL.md + clickable file tree, navigation identical.
+const hostRead = render({ kind: 'bundle', name: 'skill-creator', tab: 'host' });
 ok(hostRead.includes('先看 provider 契约') && hostRead.includes('存储内容 · 只读'), 'the stored SKILL.md renders, read-only');
 ok(hostRead.includes('文件 3') && hostRead.includes('scripts/init_skill.py') && hostRead.includes('scripts/quick_validate.py'), 'the bundle file tree is listed (SKILL.md + scripts)');
-const hostFile = render({ kind: 'hostskill', name: 'skill-creator', file: 'scripts/quick_validate.py' });
+const hostFile = render({ kind: 'bundle', name: 'skill-creator', tab: 'host', file: 'scripts/quick_validate.py' });
 ok(hostFile.includes('#!/usr/bin/env python3'), 'a stored resource file renders its raw text');
 ok(hostFile.includes('scripts/quick_validate.py'), 'the file view titles the selected resource');
 // Lifecycle controls on the crystallized side (5.21.0): an enable switch per
@@ -261,11 +266,17 @@ ok(count(skillMem, 'data-dmo="skill-toggle"') === 2, 'every crystallized row car
 ok(count(skillMem, 'dmo-switch on') === 1, 'exactly one switch renders ON (the active skill)');
 ok(count(skillMem, 'title="停用（retire）"') === 1 && count(skillMem, 'title="启用（activate）"') === 1, 'switch titles reflect each row\'s lifecycle');
 ok(count(skillMem, 'data-dmo="skill-delete"') === 2, 'every crystallized row carries a delete button');
-ok(count(skillHost, 'data-dmo="skill-toggle"') === 0 && count(skillHost, 'data-dmo="skill-delete"') === 0, 'host rows carry no lifecycle controls');
-// The crystallized detail view mirrors the host one: stored body + file list.
-const memRead = render({ kind: 'memskill', name: '分离延迟重启' });
-ok(memRead.includes('程序体在宿主目录包。') && memRead.includes('存储内容 · 只读'), 'the crystallized detail renders its stored content');
-ok(memRead.includes('文件 1') && memRead.includes('分离延迟重启.md'), 'the crystallized detail lists its own file');
+ok(count(skillHost, 'data-dmo="skill-toggle"') === 0 && count(skillHost, 'data-dmo="skill-delete"') === 0, 'system rows carry no lifecycle controls');
+// ONE renderer for ONE store: opening a bundle from either tab gives the same
+// view — SKILL.md body, clickable file tree, and the way back lands the reader
+// where they came from (view.tab), which only holds if the views are the same.
+const memRead = render({ kind: 'bundle', name: 'detached-restart', tab: 'memory' });
+ok(memRead.includes('锁真 PID') && memRead.includes('存储内容 · 只读'), 'the crystallized detail renders its stored bundle body');
+ok(memRead.includes('文件 2') && memRead.includes('scripts/restart-relay.mjs'), 'the crystallized detail lists its own bundle file tree');
+// The merge's payoff: a crystallized skill gets the SAME resource browser the
+// system side always had — click scripts/restart-relay.mjs, read its source.
+const memFile = render({ kind: 'bundle', name: 'detached-restart', tab: 'memory', file: 'scripts/restart-relay.mjs' });
+ok(memFile.includes('import { spawn } from "node:child_process"'), 'a crystallized bundle opens its script through /skillfile too');
 ok(hostRead.includes('返回技能库'), 'the detail view offers the way back');
 
 // --- markdown preview mode: code blocks and tables are READER-grade ----------

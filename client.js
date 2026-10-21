@@ -875,14 +875,14 @@ window.__ModuleLoader__.load({
 		// ---------------------------------------------------------------------
 
 		/**
-		 * The skills destination, upgraded from "list my folder" to a two-sided
-		 * library with ONE toggle. 系统技能 = everything the host `skill` tool can
-		 * load (bundled presets, office, project/user dirs, including our published
-		 * skills); 结晶技能 = our skills/ memory root in every lifecycle state. The
-		 * server folds our published rows into the memory half so a skill never
-		 * appears on both tabs. `tab` is navigation state owned by the parent (not
-		 * local useState) so the panel renders either side deterministically — in
-		 * the browser via setView, in the UI test via initialView.
+		 * The skills destination: a library over ONE store (5.24.0) — every skill
+		 * is a host bundle under the user skill root. The ONE toggle splits by
+		 * provenance: 结晶技能 = bundles this plugin owns (`agent_created`), in
+		 * every lifecycle state; 系统技能 = installed bundles (skill-creator and
+		 * friends), read-only. Both tabs open the same bundle view. `tab` is
+		 * navigation state owned by the parent (not local useState) so the panel
+		 * renders either side deterministically — in the browser via setView, in
+		 * the UI test via initialView.
 		 */
 		function SkillLibrary({ data, loading, error, tab, onTab, onOpenMemory, onOpenHost, onToggle, onDelete, actMsg, filter, setFilter }) {
 			const mem = data?.memory ?? [];
@@ -950,7 +950,10 @@ window.__ModuleLoader__.load({
 															'span',
 															{},
 															h(Chip, { tone: STATUS_TONE[s.status] }, s.status),
-															s.published ? h(Chip, { tone: 'ok' }, '已发布宿主') : null,
+															// 5.24.0: one store — active IS published
+															// (the bridge gate reads this same bundle), so a
+															// separate "已发布宿主" badge would only echo
+															// the status chip. Scope still earns its own.
 															s.scope ? h(Chip, {}, s.scope === 'project' && s.scopeProject ? `${s.scope}:${s.scopeProject}` : s.scope) : null,
 														),
 											),
@@ -993,65 +996,15 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
-		 * A MEMORY skill's stored-content view: same shape as the host side
-		 * (body + file tree), so both tabs of the library answer "what does this
-		 * skill contain" identically. The difference is the data source: one
-		 * single-file skill from the memory root instead of a host bundle.
-		 */
-		function MemorySkillView({ data, name, onBack }) {
-			const d = data?.data;
-			const files = d?.files ?? [];
-			return h(
-				'div',
-				{ style: { display: 'flex', flexDirection: 'column', gap: 8 } },
-				h(
-					'div',
-					{ className: 'dmo-toolbar' },
-					h(Btn, { sm: true, onClick: onBack, title: '返回技能库', 'data-dmo': 'back' }, '← 返回技能库'),
-					h('span', { className: 'grow' }),
-					h('span', { className: 'dmo-meta' }, '存储内容 · 只读'),
-				),
-				h(
-					'div',
-					{ style: { display: 'flex', gap: 10, alignItems: 'flex-start' } },
-					h(
-						'div',
-						{ style: { width: 230, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 6 } },
-						h('div', { className: 'dmo-meta', style: { padding: '0 2px' } }, `文件 ${files.length}`),
-						h(
-							'div',
-							{ className: 'dmo-chips' },
-							files.map((f) =>
-								// A memory skill's file has no rel path — show its real
-								// name (SKILL.md would be a lie: the file IS the skill).
-								h('span', { key: f.rel, className: 'dmo-chip', 'data-dmo': 'skill-file', title: f.rel || f.name }, f.rel || f.name),
-							),
-						),
-					),
-					h(
-						'div',
-						{ style: { flex: 1, minWidth: 0 } },
-						h(
-							'div',
-							{ className: 'dmo-card' },
-							h('h3', { className: 'dmo-h2', style: { margin: '0 0 6px' } }, name),
-							h(MarkdownBody, { text: d?.text ?? '', zone: undefined, onNavigate: () => {} }),
-						),
-					),
-				),
-			);
-		}
-
-		/** A host skill's body, loaded through the registry (read-only view). */
-		/**
-		 * A host skill's STORED-CONTENT view: the SKILL.md body rendered plus the
-		 * bundle's file tree (scripts/references/...) — each file one click away.
-		 * The panel reads what is ON DISK; the registry (invocation policy, publish
-		 * gates) is the machine's surface and is deliberately not consulted here.
+		 * A skill's STORED-CONTENT view (5.24.0: ONE renderer for ONE store).
+		 * Every skill is a host bundle; the SKILL.md body renders plus the file
+		 * tree (scripts/references/...) — each file one click away. The panel
+		 * reads what is ON DISK; the registry (invocation policy, publish gates)
+		 * is the machine's surface and is deliberately not consulted here.
 		 * `sel` is navigation state owned by the parent (the same reasoning as the
 		 * library tab: a local useState would be untestable under the UI shim).
 		 */
-		function HostSkillView({ data, name, onBack, sel, onSel, fixtures }) {
+		function SkillBundleView({ data, name, onBack, sel, onSel, fixtures }) {
 			const d = data?.data;
 			const files = d?.files ?? [];
 			const fileUrl = sel ? `${API}/skillfile?name=${enc(name)}&file=${enc(sel)}` : null;
@@ -1231,8 +1184,9 @@ window.__ModuleLoader__.load({
 			// read). A null url returns an idle state — the hooks stay unconditional.
 			const onSkills = view.kind === 'zone' && view.zone === 'skills';
 			const skillLib = useApi(onSkills ? `${API}/skills?v=${tick}` : null, fixtures);
-			const hostSkill = useApi(view.kind === 'hostskill' ? `${API}/skill?name=${enc(view.name)}&kind=host` : null, fixtures);
-			const memSkill = useApi(view.kind === 'memskill' ? `${API}/skill?name=${enc(view.name)}&kind=memory` : null, fixtures);
+			// 5.24.0: one store, one endpoint — a bundle opens the same way from
+			// both library tabs; `tab` rides along so 返回 lands where you came from.
+			const bundleSkill = useApi(view.kind === 'bundle' ? `${API}/skill?name=${enc(view.name)}` : null, fixtures);
 			// Write actions go through the memory_skill TOOL channel (not a bespoke
 			// API): the panel posts the same arguments the model would, so every
 			// guard the tool has (safeSlug, atomic write, link lint, index sync)
@@ -1305,7 +1259,7 @@ window.__ModuleLoader__.load({
 			const navigate = (target) => openFile(target.zone, target.name);
 			const back = () => {
 				if (view.kind === 'file' && view.zone) setView({ kind: 'zone', zone: view.zone });
-				else if (view.kind === 'hostskill' || view.kind === 'memskill') setView({ kind: 'zone', zone: 'skills', tab: 'memory' });
+				else if (view.kind === 'bundle') setView({ kind: 'zone', zone: 'skills', tab: view.tab === 'host' ? 'host' : 'memory' });
 				else setView({ kind: 'overview' });
 			};
 
@@ -1316,7 +1270,7 @@ window.__ModuleLoader__.load({
 			const fileText = opened ? (opened.zone === '' ? indexText : fileRes.data?.text ?? null) : null;
 			const kind = !opened ? null : opened.zone === '' ? 'index' : opened.zone === 'functions' ? 'functions' : opened.zone === 'insights' ? 'insights' : opened.zone === 'capabilities' ? 'capabilities' : opened.zone === 'skills' ? 'skills' : 'daily';
 
-			const activeKey = view.kind === 'overview' ? 'overview' : view.kind === 'zone' ? view.zone : view.kind === 'hostskill' || view.kind === 'memskill' ? 'skills' : view.zone === '' ? 'index' : view.zone;
+			const activeKey = view.kind === 'overview' ? 'overview' : view.kind === 'zone' ? view.zone : view.kind === 'bundle' ? 'skills' : view.zone === '' ? 'index' : view.zone;
 
 			const onKeyDown = (e) => {
 				const tag = e.target?.tagName;
@@ -1357,15 +1311,14 @@ window.__ModuleLoader__.load({
 					// The toggle is navigation: switching sides is a setView, not a
 					// local useState — so both halves are reachable in a render test.
 					onTab: (t) => setView({ kind: 'zone', zone: 'skills', tab: t }),
-					onOpenMemory: (name) => setView({ kind: 'memskill', name }),
-					onOpenHost: (name) => setView({ kind: 'hostskill', name }),
+					onOpenMemory: (name) => setView({ kind: 'bundle', name, tab: 'memory' }),
+					onOpenHost: (name) => setView({ kind: 'bundle', name, tab: 'host' }),
 					onToggle: (name, next) => { void skillAction({ action: next, name }); },
 					onDelete: (name) => { if (window.confirm(`删除技能「${name}」？文件与索引行都会被移除，git 是唯一档案。`)) void skillAction({ action: 'delete', name }); },
 					actMsg,
 					filter, setFilter,
 				});
-			else if (view.kind === 'hostskill') main = h(HostSkillView, { data: hostSkill, name: view.name, onBack: back, sel: view.file ?? null, onSel: (f) => setView({ kind: 'hostskill', name: view.name, file: f }), fixtures });
-			else if (view.kind === 'memskill') main = h(MemorySkillView, { data: memSkill, name: view.name, onBack: back });
+			else if (view.kind === 'bundle') main = h(SkillBundleView, { data: bundleSkill, name: view.name, onBack: back, sel: view.file ?? null, onSel: (f) => setView({ kind: 'bundle', name: view.name, tab: view.tab, file: f }), fixtures });
 			else if (view.kind === 'zone') main = h(ZoneList, { zone: view.zone, rows: rowsOf(view.zone), sort, setSort, filter, setFilter, onOpen: openFile });
 			else if (fileText) main = h(Reader, { view, text: fileText, meta: fileMeta, kind, root: ws.root, onBack: back, onNavigate: navigate });
 			else main = h('div', { className: 'dmo-empty' }, fileRes.loading ? '读取文件…' : fileRes.error ? `读取失败：${fileRes.error}` : '文件为空。');

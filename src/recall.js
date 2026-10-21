@@ -55,9 +55,17 @@ export function matchIndexRows(indexText, userTokens, limit = 3, usage) {
 		// index written by either generation recalls identically — a mixed root
 		// (new rows written by this version, old rows still in the 4-column
 		// shape) must not silently lose recall coverage.
-		const href = cells.map((c) => /\(([^)\s]+\.md)\)/.exec(c)?.[1]).find((h) => /^(functions|insights|skills|capabilities)\//.test(h ?? ''));
+		// 5.24.0: a skill row links to its HOST bundle (<...>/<name>/SKILL.md) —
+		// an absolute file URL, so the location can be any configured skill root
+		// (the real one is <dshHome>/skills, but tests inject a temp dir and the
+		// row must still be recognized). A SKILL.md href IS a skill, whatever its
+		// parent directories are called; the legacy `skills/<name>.md` form is
+		// accepted too so an old root keeps recalling.
+		const anyHref = cells.map((c) => /\(([^)\s]+\.md)\)/.exec(c)?.[1]).find(Boolean);
+		const isSkillHref = Boolean(anyHref) && (/^skills\//.test(anyHref) || /(?:^|\/)SKILL\.md$/.test(anyHref));
+		const href = anyHref && (isSkillHref || /^(functions|insights|capabilities)\//.test(anyHref)) ? anyHref : undefined;
 		if (!href) continue;
-		const zone = href.startsWith('skills/') ? 'skill' : href.startsWith('insights/') ? 'insight' : href.startsWith('functions/') ? 'function' : null;
+		const zone = isSkillHref ? 'skill' : href.startsWith('insights/') ? 'insight' : href.startsWith('functions/') ? 'function' : null;
 		if (!zone) continue;
 		// A skill row carries its lifecycle in a status cell. Only ACTIVE skills
 		// are recallable — a candidate is an unverified procedure and must not
@@ -66,7 +74,10 @@ export function matchIndexRows(indexText, userTokens, limit = 3, usage) {
 		// 4-column and the 3-column shape).
 		const statusCell = cells.find((c) => /^(candidate|active|retired)$/.test(c));
 		if (zone === 'skill' && statusCell && statusCell !== 'active') continue;
-		const name = href.split('/').pop().replace(/\.md$/, '');
+		// The skill's identity is its BUNDLE DIRECTORY name, not the SKILL.md leaf.
+		const name = zone === 'skill'
+			? (href.split('/').filter(Boolean).slice(-2)[0] ?? '')
+			: href.split('/').pop().replace(/\.md$/, '');
 		candidates.push({
 			name,
 			summary: cells[1],

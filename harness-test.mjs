@@ -38,6 +38,8 @@ const section = registered.find((r) => r.__section)?.__section;
 console.log('section:', section?.name, '| bytes:', section?.text.length, '| mentions fold:', section.text.includes('memory_fold'));
 
 const root = await mkdtemp(path.join(tmpdir(), 'dsh-memfo-'));
+// Skills now live in the host catalog; tests MUST NOT touch the real one.
+const skillRoot = await mkdtemp(path.join(tmpdir(), 'dsh-skills-'));
 const exec = {};
 const statExists = async (p) => { try { await (await import('node:fs/promises')).stat(p); return true; } catch { return false; } };
 // Second apply with an explicit root: this instance's tools and pre-step
@@ -47,7 +49,7 @@ const statExists = async (p) => { try { await (await import('node:fs/promises'))
 // so adding a tool never silently shifts the window.
 // `newFeatureGraceDays: 0` disables the cold-memory grace window so the
 // temperature rule can be asserted deterministically (see 11d for the grace).
-const disposer2 = mod.apply(fakeCtx, { memoryRoot: root, newFeatureGraceDays: 0 });
+const disposer2 = mod.apply(fakeCtx, { memoryRoot: root, skillRoot, newFeatureGraceDays: 0  });
 const tools2 = Object.fromEntries(
 	registered.filter((r) => r?.name && r.execute).map((t) => [t.name, t]),
 );
@@ -444,7 +446,7 @@ ok(w6.warnings.some((x) => x.includes('疑似与已有功能域')), `dedupe warn
 
 // 11d) grace period: a brand-new feature file has had no chance to be
 // backlinked, so the default window suppresses the cold flag for it.
-mod.apply(fakeCtx, { memoryRoot: root });
+mod.apply(fakeCtx, { memoryRoot: root, skillRoot  });
 const tools3 = Object.fromEntries(
 	registered.filter((r) => r?.name && r.execute).slice(-11).map((t) => [t.name, t]),
 );
@@ -675,7 +677,7 @@ for (const [dir, label] of [[projA, 'A'], [projB, 'B']]) {
 	await mkdir(path.join(dir, 'functions'), { recursive: true });
 	await writeFile(path.join(dir, 'functions', `${label}功能.md`), '# x\n', 'utf8');
 }
-mod.apply(fakeCtx, { memoryRoot: root, federation: { root: fedRoot, projects: [{ key: 'proj-a', root: projA }, { key: 'proj-b', root: projB }] } });
+mod.apply(fakeCtx, { memoryRoot: root, skillRoot, federation: { root: fedRoot, projects: [{ key: 'proj-a', root: projA }, { key: 'proj-b', root: projB }] } });
 const FED = Object.fromEntries(registered.filter((r) => r?.name && r.execute).slice(-11).map((t) => [t.name, t]));
 ok(typeof FED.memory_federation?.execute === 'function', 'memory_federation registered');
 const synced = await FED.memory_federation.execute({ action: 'sync' }, exec);
@@ -705,7 +707,7 @@ await writeFile(path.join(fedRoot, 'MEMORY.md'), fedIndex2 + '\n- 参考：[不�
 const check4 = await FED.memory_federation.execute({ action: 'check' }, exec);
 ok(check4.findings.some((f) => f.rule === 'F2'), 'F2 flags a dangling federation link');
 // unconfigured federation -> explicit error, not silence
-mod.apply(fakeCtx, { memoryRoot: root });
+mod.apply(fakeCtx, { memoryRoot: root, skillRoot  });
 // Name-keyed (not count-based): adding a tool must never shift this window.
 const NOFED = Object.fromEntries(registered.filter((r) => r?.name && r.execute).map((t) => [t.name, t]));
 let fedThrew = null;
@@ -936,7 +938,7 @@ ok(!sk1.candidates.some((c) => c.href === 'functions/弱信号域.md'), 'nominat
 const skCry = await T.memory_skill.execute(
 	{
 		action: 'crystallize',
-		name: '分离延迟重启',
+		name: 'detached-restart',
 		summary: '会话跑在宿主内时用分离进程延迟杀旧起新',
 		when: '需要让 DSH server 半新代码生效、而当前会话正运行在该宿主里时',
 		procedure: ['写独立脚本：Start-Sleep 数秒 → Stop-Process 旧 PID → 启动 start-web.cmd', '会话内以分离后台任务启动脚本并立即结束当前回合', '刷新页面确认新 PID 启动时间晚于新提交'],
@@ -946,7 +948,7 @@ const skCry = await T.memory_skill.execute(
 	},
 	exec,
 );
-ok(skCry.created && skCry.status === 'candidate' && skCry.file.replace(/\\/g, '/').includes('skills/分离延迟重启.md'), 'crystallize writes a candidate skill file');
+ok(skCry.created && skCry.status === 'candidate' && skCry.file.replace(/\\/g, '/').endsWith('detached-restart/SKILL.md'), 'crystallize writes a candidate skill bundle');
 const skText = await readFile(skCry.file, 'utf8');
 ok(skText.includes('## 调用步骤') && /^\s*1[.、]/m.test(skText), 'skill body has numbered procedure steps');
 ok(skText.includes('../functions/分离延迟重启.md'), 'skill backlinks its evidence source');
@@ -957,7 +959,7 @@ ok(skText.includes('../functions/分离延迟重启.md'), 'skill backlinks its e
 const skBare = await T.memory_skill.execute(
 	{
 		action: 'crystallize',
-		name: '裸来源技能',
+		name: 'bare-source-skill',
 		summary: '验证裸 slug 回链',
 		when: '回归裸来源时',
 		procedure: ['步骤一：打开文件', '步骤二：确认回链'],
@@ -976,40 +978,40 @@ ok(!skBareText.includes('](../测试功能.md)'), 'no zone-less bare href surviv
 	ok(!cSk.results.some((r) => r.rule === 'R10' && r.level === 'FAIL' && r.message.includes('裸来源技能')), 'crystallized skill links resolve (no R10)');
 }
 // The frontmatter router (skill-creator lesson): description carries the WHEN.
-ok(/^---\nname: 分离延迟重启\n/m.test(skText) && /^description: "当.*时使用本技能/m.test(skText), 'skill file is frontmatter-shaped with a router description');
+ok(/^---\nname: detached-restart\n/m.test(skText) && /^description: "当.*时使用本技能/m.test(skText), 'skill file is frontmatter-shaped with a router description');
 ok(skText.includes('agent_created: true') && skText.includes('status: candidate'), 'frontmatter carries agent_created + status');
 // 5.23.0 — the skill-creator workflow is MANDATORY for crystallizing: the
 // discipline text must say so (the model reads it every session), the tool
 // description must name the six steps, and the template must carry the
 // 程序体 pointer section (one body, the host bundle, not two).
 ok(mod.DISCIPLINE_TEXT.includes('skill-creator') && mod.DISCIPLINE_TEXT.includes('quick_validate.py') && mod.DISCIPLINE_TEXT.includes('init_skill.py'), 'the discipline text mandates the skill-creator workflow');
-ok(/init_skill\.py/.test(T.memory_skill.description) && /Quality Bar/.test(T.memory_skill.description) && /registration channel/i.test(T.memory_skill.description), 'the tool description names the skill-creator steps and the registration-channel role');
-ok(skText.includes('## 程序体（唯一来源）') && skText.includes('skill-creator'), 'the template carries the 程序体 pointer section');
-// A supplied bundlePath lands in that section verbatim (the artifact is the
-// authority; the pointer must name it, not gesture).
+ok(/init_skill\.py/.test(T.memory_skill.description) && /Quality Bar/.test(T.memory_skill.description) && /host bundle/i.test(T.memory_skill.description), 'the tool description names the skill-creator steps and the one-storage rule');
+// 5.24.0: a skill IS the host bundle — no bundlePath arg, no pointer section.
+ok(!('bundlePath' in (T.memory_skill.parameters ?? {})) && !('hostName' in (T.memory_skill.parameters ?? {})), 'obsolete skill fields are gone (bundlePath/hostName)');
 const skBundle = await T.memory_skill.execute(
-	{ action: 'crystallize', name: '带包技能', summary: 'bundlePath 回归', when: '包路径回归', procedure: ['一', '二'], verification: '路径落入程序体节', sources: ['测试功能'], bundlePath: '~/.dsh/skills/带包技能/' },
+	{ action: 'crystallize', name: 'bundle-path-skill', summary: '包路径回归', when: '包路径回归', procedure: ['一', '二'], verification: '写入宿主包', sources: ['测试功能'] },
 	exec,
 );
-const bundleText = await readFile(skBundle.file, 'utf8');
-ok(bundleText.includes('~/.dsh/skills/带包技能/'), 'bundlePath is written into the 程序体 section');
+ok(skBundle.file.replace(/\\/g, '/').endsWith('bundle-path-skill/SKILL.md'), 'crystallize writes into the host bundle layout');
 const skIdx = await T.memory_read.execute({ kind: 'index' }, exec);
-ok(rowsFor(skIdx.content, '分离延迟重启').length === 1 && skIdx.content.includes('skills/分离延迟重启.md'), 'skill row lands in the index table');
+ok(rowsFor(skIdx.content, 'detached-restart').length === 1 && /detached-restart\/SKILL\.md/.test(skIdx.content), 'skill row lands in the index table (bundle path)');
 // A crystallized area must drop out of nomination (support is now filed).
 const sk2 = await T.memory_skill.execute({ action: 'candidates' }, exec);
 ok(!sk2.candidates.some((c) => c.href === 'functions/分离延迟重启.md'), 'already-crystallized area is not re-nominated');
 // Recall gate: candidate is NOT recallable, active is, retired is not.
-const qTok = mod.tokensOf('分离延迟重启 宿主');
+// The skill's identity is its kebab bundle name now, so the query tokens must
+// match that name (the summary still carries the Chinese wording).
+const qTok = mod.tokensOf('detached restart 宿主');
 const rowsCand = mod.matchIndexRows(skIdx.content, qTok);
 ok(!rowsCand.some((r) => r.zone === 'skill'), 'candidate skill is filtered out of recall');
-const skAct = await T.memory_skill.execute({ action: 'activate', name: '分离延迟重启', note: '真实任务照做成功（本会话）' }, exec);
+const skAct = await T.memory_skill.execute({ action: 'activate', name: 'detached-restart', note: '真实任务照做成功（本会话）' }, exec);
 ok(skAct.status === 'active', 'activate flips lifecycle to active');
 const idxAfterAct = (await T.memory_read.execute({ kind: 'index' }, exec)).content;
 const rowsActive = mod.matchIndexRows(idxAfterAct, qTok);
-ok(rowsActive.some((r) => r.zone === 'skill' && r.href === 'skills/分离延迟重启.md'), 'active skill is recallable');
+ok(rowsActive.some((r) => r.zone === 'skill' && r.name === 'detached-restart'), 'active skill is recallable (identified by bundle dir name)');
 const actMsgText = mod.buildRecallMessage(rowsActive).content[0].text;
 ok(actMsgText.includes('⭐ 已结晶技能') && actMsgText.includes('按步骤走'), 'recall message marks the active skill with a do-not-rederive hint');
-const skRet = await T.memory_skill.execute({ action: 'retire', name: '分离延迟重启', note: '宿主改为热重载，程序失效' }, exec);
+const skRet = await T.memory_skill.execute({ action: 'retire', name: 'detached-restart', note: '宿主改为热重载，程序失效' }, exec);
 ok(skRet.status === 'retired', 'retire flips lifecycle to retired');
 const idxAfterRet = (await T.memory_read.execute({ kind: 'index' }, exec)).content;
 ok(!mod.matchIndexRows(idxAfterRet, mod.tokensOf('分离延迟重启 宿主')).some((r) => r.zone === 'skill'), 'retired skill leaves recall');
@@ -1031,12 +1033,12 @@ ok(skThrew === 3, `crystallize/activate validate their inputs (${skThrew}/3)`);
 // would be a dangling pointer the next recall trusts. Also refuses a name that
 // is not there (400, not a silent success).
 await T.memory_skill.execute(
-	{ action: 'crystallize', name: '待删技能', summary: '删除断言', when: '删除回归', procedure: ['一', '二'], verification: '文件与行俱消', sources: ['测试功能'] },
+	{ action: 'crystallize', name: 'to-delete-skill', summary: '删除断言', when: '删除回归', procedure: ['一', '二'], verification: '文件与行俱消', sources: ['测试功能'] },
 	exec,
 );
-const delOk = await T.memory_skill.execute({ action: 'delete', name: '待删技能' }, exec);
+const delOk = await T.memory_skill.execute({ action: 'delete', name: 'to-delete-skill' }, exec);
 ok(delOk.status === 'deleted' && delOk.items.length === 0, 'delete reports the terminal status');
-const gone = !(await statExists(path.join(root, 'skills', '待删技能.md')));
+const gone = !(await statExists(path.join(skillRoot, 'to-delete-skill/SKILL.md')));
 ok(gone, 'the skill file is gone');
 const idxAfterDel = await readFile(path.join(root, 'MEMORY.md'), 'utf8');
 ok(!idxAfterDel.includes('| [待删技能]'), 'the index row is gone with it');
@@ -1047,31 +1049,20 @@ try {
 	delThrew = true;
 }
 ok(delThrew, 'deleting a missing skill throws');
+// 5.24.0 — skills live ONLY as host bundles. A file left in the memory root's
+// skills/ is a second body for the same skill, so the audit flags it for
+// removal instead of validating its shape (the old R20 field audit moved to
+// skill-creator's quick_validate.py, which the bundle itself must pass).
 await mkdir(path.join(root, 'skills'), { recursive: true });
-await writeFile(path.join(root, 'skills', '空壳技能.md'), '# 技能：空壳技能\n\n> 状态：weird · 首次结晶：2026-10-19\n\n## 调用步骤\n\n- \n', 'utf8');
+await writeFile(path.join(root, 'skills', 'legacy-layout.md'), '---\nname: legacy-layout\nagent_created: true\nstatus: active\n---\n\n# 旧布局残留\n', 'utf8');
 const cSk = await T.memory_check.execute({}, exec);
-const r20 = cSk.results.filter((r) => r.rule === 'R20' || r.rule === 'R20e');
-ok(r20.some((r) => r.message.includes('状态「weird」非法')), 'R20 flags an illegal status');
-ok(r20.some((r) => r.message.includes('调用步骤')), 'R20 flags an empty procedure');
-ok(r20.some((r) => r.message.includes('何时使用')), 'R20 flags a missing trigger section');
-// Pointer form (5.19.0): a skill whose procedure lives in a host bundle is
-// COMPLETE without numbered steps here — but ONLY when it names the bundle
-// (hostName + a 「## 程序体」 section). A pointer WITHOUT the section is still
-// an empty shell, and frontmatter whenToUse satisfies the router check.
-await writeFile(
-	path.join(root, 'skills', '指针技能.md'),
-	'---\nname: 指针技能\ndescription: 程序体在宿主包\nwhenToUse: "需要指针回归时"\nhostName: pointer-skill\nagent_created: true\nscope: global\nstatus: active\n---\n\n# 指针技能\n\n## 程序体（唯一来源）\n\n- 宿主目录包：`~/.dsh/skills/pointer-skill/`\n',
-	'utf8',
-);
-const cPtr = await T.memory_check.execute({}, exec);
-ok(!cPtr.results.some((r) => r.rule === 'R20' && r.message.includes('指针技能')), 'pointer form with bundle reference passes R20');
-await writeFile(
-	path.join(root, 'skills', '伪指针.md'),
-	'---\nname: 伪指针\ndescription: 有 hostName 但没有程序体节\nwhenToUse: "伪指针回归"\nhostName: fake-pointer\nagent_created: true\nscope: global\nstatus: active\n---\n\n# 伪指针\n\n没有程序体节，也没有步骤。\n',
-	'utf8',
-);
-const cFake = await T.memory_check.execute({}, exec);
-ok(cFake.results.some((r) => r.rule === 'R20' && r.message.includes('伪指针') && r.message.includes('调用步骤')), 'hostName alone without a 程序体 section is still an empty shell');
+const r20 = cSk.results.filter((r) => r.rule === 'R20');
+ok(r20.some((r) => r.message.includes('旧布局残留')), 'R20 flags a leftover memory-root skill file');
+ok(r20.some((r) => r.message.includes('宿主目录包')), 'the leftover warning names the real storage location');
+await rm(path.join(root, 'skills'), { recursive: true, force: true });
+// The obsolete pointer machinery is gone for good: no field can resurrect a
+// second body, and the tool schema no longer offers the knobs.
+ok(!('hostName' in T.memory_skill.parameters) && !('bundlePath' in T.memory_skill.parameters), 'the pointer-era fields are gone from the schema');
 
 // 24) host skill bridge + scope metadata (5.17.0). The core lesson this encodes
 // is the same as 5.16.3's: a compat path MUST be exercised with the legacy
@@ -1101,12 +1092,12 @@ ok(cFake.results.some((r) => r.rule === 'R20' && r.message.includes('伪指针')
 		},
 	};
 	const fakeCtx = { get: (n) => (n === 'skills' ? fakeRegistry : undefined) };
-	const bridgeHandle = bridge.registerMemorySkillBridge(fakeCtx, { skillsDir: path.join(root, 'skills') });
+	const bridgeHandle = bridge.registerMemorySkillBridge(fakeCtx, { skillsDir: skillRoot });
 	ok(!!bridgeHandle && providers.length === 1, 'bridge registers exactly one provider on a host WITH the skill service');
-	// The publish gate end-to-end: candidate -> invisible, active+hostName ->
-	// visible, retired -> gone, and NO hostName never publishes whatever its
-	// status.
-	const pubName = '桥接技能';
+	// 5.24.0 publish gate: a bundle is published iff it is OURS (agent_created)
+	// AND active. There is no hostName knob any more — the bundle directory name
+	// IS the host name, so "crystallized" and "publishable" finally agree.
+	const pubName = 'bridge-test-skill';
 	await T.memory_skill.execute(
 		{
 			action: 'crystallize',
@@ -1116,7 +1107,6 @@ ok(cFake.results.some((r) => r.rule === 'R20' && r.message.includes('伪指针')
 			procedure: ['步骤一', '步骤二'],
 			verification: 'list 可见',
 			sources: ['测试功能'],
-			hostName: 'bridge-test-skill',
 			scope: 'project',
 			scopeProject: 'demo-project',
 		},
@@ -1124,36 +1114,31 @@ ok(cFake.results.some((r) => r.rule === 'R20' && r.message.includes('伪指针')
 	);
 	const provider = providers[0];
 	const listed = await provider.list({});
-	ok(listed.every((c) => c.name !== 'bridge-test-skill'), 'candidate is NOT published to the host');
+	ok(listed.every((c) => c.name !== pubName), 'candidate is NOT published to the host');
 	await T.memory_skill.execute({ action: 'activate', name: pubName, note: '桥接回归跑通' }, exec);
 	const listed2 = await provider.list({});
-	const row = listed2.find((c) => c.name === 'bridge-test-skill');
-	ok(!!row && row.invocation.modelInvocable === true && row.source === 'custom' && row.rank > 600, 'active+hostName publishes with rank above bundled (user wins ties)');
+	const row = listed2.find((c) => c.name === pubName);
+	ok(!!row && row.invocation.modelInvocable === true && row.source === 'custom' && row.rank > 600, 'an active owned bundle publishes with rank above bundled (user wins ties)');
 	const def = await provider.get(row, {});
-	ok(def?.content.includes('步骤一') && def.name === 'bridge-test-skill' && def.resourceBase?.kind === 'directory', 'provider.get loads the live body for the winning candidate');
+	ok(def?.content.includes('步骤一') && def.name === pubName && def.resourceBase?.kind === 'directory', 'provider.get loads the live body for the winning candidate');
+	ok(def.resourceBase.path.replace(/\\/g, '/').endsWith(`${pubName}`), 'resourceBase points at the skill\'s OWN directory');
 	await T.memory_skill.execute({ action: 'retire', name: pubName, note: '桥接测试完' }, exec);
 	const listed3 = await provider.list({});
-	ok(!listed3.some((c) => c.name === 'bridge-test-skill'), 'retire un-publishes in real time (no cache)');
+	ok(!listed3.some((c) => c.name === pubName), 'retire un-publishes in real time (no cache)');
 	// get() re-checks: a retire between list and get must not still load.
-	const stale = { locator: path.join(root, 'skills', `${pubName}.md`), name: 'bridge-test-skill' };
+	const stale = { locator: path.join(skillRoot, pubName, 'SKILL.md'), name: pubName };
 	ok((await provider.get(stale, {})) === undefined, 'get() rejects a skill retired after discovery');
-	// No hostName => never published, even active (internal-recall-only skills).
-	const privName = '内部技能';
+	// Scope in the template (G1/G2): written, parseable, and READ by the filter.
+	const privName = 'internal-only-skill';
 	await T.memory_skill.execute(
-		{ action: 'crystallize', name: privName, summary: '不注册宿主', when: '内部用', procedure: ['一', '二'], verification: '不进宿主', sources: ['测试功能'] },
+		{ action: 'crystallize', name: privName, summary: '内部作用域回归', when: '内部用', procedure: ['一', '二'], verification: '作用域可读', sources: ['测试功能'] },
 		exec,
 	);
 	await T.memory_skill.execute({ action: 'activate', name: privName }, exec);
-	ok((await provider.list({})).every((c) => c.name !== privName), 'a skill without hostName stays out of the host catalog');
-	// Scope + whenToUse in the template (G1/G2): written, parseable, audited.
-	const privText = await readFile(path.join(root, 'skills', `${privName}.md`), 'utf8');
-	ok(privText.includes('scope: global') && privText.includes('whenToUse:'), 'template writes scope default and whenToUse');
-	ok(privText.includes('scope_project') === false, 'global scope carries no scope_project');
-	// R20s audit (skill_scope.py mirror): an OWNED skill missing scope WARNs;
-	// project without scope_project WARNs; a bad hostName WARNs (R20h).
-	await writeFile(path.join(root, 'skills', '缺作用域.md'), '---\nname: 缺作用域\ndescription: d\nagent_created: true\nstatus: candidate\n---\n\n## 何时使用\n\n- x\n\n## 调用步骤\n\n1. a\n2. b\n', 'utf8');
-	await writeFile(path.join(root, 'skills', '缺项目.md'), '---\nname: 缺项目\ndescription: d\nagent_created: true\nscope: project\nstatus: candidate\n---\n\n## 何时使用\n\n- x\n\n## 调用步骤\n\n1. a\n2. b\n', 'utf8');
-	await writeFile(path.join(root, 'skills', '坏名.md'), '---\nname: 坏名\ndescription: d\nagent_created: true\nscope: global\nhostName: Bad_Name\nstatus: candidate\n---\n\n## 何时使用\n\n- x\n\n## 调用步骤\n\n1. a\n2. b\n', 'utf8');
+	const privText = await readFile(path.join(skillRoot, privName, 'SKILL.md'), 'utf8');
+	ok(privText.includes('scope: global') && privText.includes('agent_created: true') && privText.includes('status: active'), 'template writes agent_created/status/scope');
+	ok(!privText.includes('scope_project'), 'global scope carries no scope_project');
+	ok(!privText.includes('hostName') && !privText.includes('whenToUse:'), 'the template no longer emits the obsolete fields');
 	// Re-crystallize KEEPS the lifecycle (the 5.17.0 thorn): activating then
 	// improving must not silently demote.
 	const keepCry = await T.memory_skill.execute(
@@ -1162,34 +1147,27 @@ ok(cFake.results.some((r) => r.rule === 'R20' && r.message.includes('伪指针')
 	);
 	ok(keepCry.status === 'active', 're-crystallization keeps status=active');
 	ok(keepCry.warnings.some((w) => w.includes('生命周期保留')), 'keeping the lifecycle is visible in the receipt');
-	const cBridge = await T.memory_check.execute({}, exec);
-	const r20s = cBridge.results.filter((r) => r.rule === 'R20s' || r.rule === 'R20h');
-	ok(r20s.some((r) => r.message.includes('缺作用域')), 'R20s: owned skill without scope WARNs (skill_scope.py parity)');
-	ok(r20s.some((r) => r.message.includes('缺项目') && r.message.includes('scope_project')), 'R20s: project scope without scope_project WARNs');
-	ok(r20s.some((r) => r.rule === 'R20h' && r.message.includes('坏名')), 'R20h: non-kebab hostName WARNs before the host ignores it');
-	ok(!r20s.some((r) => r.message.includes('空壳技能')), 'hand-managed (non-owned) files are not scope-WARNed');
-	// The scope field must have a CONSUMER, not just a writer+auditor (the day's
-	// theme: a written-but-unread field is dead). skillAppliesToProject is the
-	// reader — pure-function floors first, then the tool's project filter.
+	// The scope field must have a CONSUMER, not just a writer (the day's theme:
+	// a written-but-unread field is dead). skillAppliesToProject is the reader.
 	ok(bridge.skillAppliesToProject({ scope: 'global' }, 'any') === true, 'global applies to every project');
 	ok(bridge.skillAppliesToProject({ scope: 'project', scope_project: 'alpha' }, 'alpha') === true, 'project matches its own key');
 	ok(bridge.skillAppliesToProject({ scope: 'project', scope_project: 'alpha' }, 'beta') === false, 'project excludes other keys');
 	ok(bridge.skillAppliesToProject({}, 'alpha') === false, 'missing scope is NOT definitely applicable');
 	ok(bridge.skillAppliesToProject({ scope: 'global' }) === true, 'no project key disables the filter');
-	// A project-scoped, host-published skill end-to-end through the tool:
+	// A project-scoped skill end-to-end through the tool's project filter.
 	await T.memory_skill.execute(
-		{ action: 'crystallize', name: '甲项目技能', summary: '只适用甲', when: '甲项目', procedure: ['一', '二'], verification: '路由过滤', sources: ['测试功能'], scope: 'project', scopeProject: 'alpha-proj', hostName: 'alpha-only-skill' },
+		{ action: 'crystallize', name: 'alpha-project-skill', summary: '只适用甲', when: '甲项目', procedure: ['一', '二'], verification: '路由过滤', sources: ['测试功能'], scope: 'project', scopeProject: 'alpha-proj' },
 		exec,
 	);
-	await T.memory_skill.execute({ action: 'activate', name: '甲项目技能' }, exec);
+	await T.memory_skill.execute({ action: 'activate', name: 'alpha-project-skill' }, exec);
 	const listAlpha = await T.memory_skill.execute({ action: 'list', project: 'alpha-proj' }, exec);
-	ok(listAlpha.items.some((i) => i.name === '甲项目技能'), 'the project filter keeps its own project skill');
-	const item = listAlpha.items.find((i) => i.name === '甲项目技能');
+	ok(listAlpha.items.some((i) => i.name === 'alpha-project-skill'), 'the project filter keeps its own project skill');
+	const item = listAlpha.items.find((i) => i.name === 'alpha-project-skill');
 	ok(item.scope === 'project' && item.published === true, 'list READS BACK scope + published (bridge gate parity)');
 	const listBeta = await T.memory_skill.execute({ action: 'list', project: 'beta-proj' }, exec);
-	ok(!listBeta.items.some((i) => i.name === '甲项目技能'), 'the project filter drops another project\'s skill');
+	ok(!listBeta.items.some((i) => i.name === 'alpha-project-skill'), 'the project filter drops another project\'s skill');
 	ok(listBeta.items.some((i) => i.name === privName && i.scope === 'global'), 'global skills survive every project filter');
-	ok(!listBeta.items.some((i) => i.name === '缺作用域'), 'an unscoped owned skill is not counted as applicable');
+	ok(!listBeta.items.some((i) => i.name === 'missing-scope-skill'), 'an unscoped skill is not counted as applicable');
 }
 await rm(root, { recursive: true, force: true });
 console.log(failures === 0 ? 'ALL PASS' : `${failures} FAILURES`);

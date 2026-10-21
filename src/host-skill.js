@@ -47,9 +47,13 @@ export function parseSkillText(text) {
 	return { fields, body: text.slice(m[0].length).trim() };
 }
 
-/** The publish gate: active lifecycle AND a legal host name. */
+/**
+ * The publish gate: this plugin OWNS the bundle (agent_created) and it is live
+ * (status active). The bundle directory name is the host name, validated by the
+ * host provider itself, so no separate name check is needed here.
+ */
 function publishable(fields) {
-	return fields.status === 'active' && isSkillName(fields.hostName ?? '');
+	return /^(?:true|1)$/i.test(String(fields.agent_created ?? '')) && fields.status === 'active';
 }
 
 /**
@@ -90,16 +94,21 @@ export function registerMemorySkillBridge(ctx, { skillsDir }) {
 	if (!registry || typeof registry.registerProvider !== 'function') return undefined;
 
 	const dir = skillsDir;
+	// 5.24.0: skills ARE host bundles (<root>/<kebab-name>/SKILL.md). The bridge
+	// no longer publishes a memory-root copy — it reads the same store the host
+	// filesystem provider reads, and only decides which of those bundles are
+	// OURS-and-live (agent_created + status active). The bundle dir name is the
+	// host name; there is no separate hostName field.
 	const readPublishable = async () => {
-		let names = [];
+		let entries = [];
 		try {
-			names = (await readdir(dir)).filter((n) => n.endsWith('.md'));
+			entries = await readdir(dir, { withFileTypes: true });
 		} catch {
 			return [];
 		}
 		const out = [];
-		for (const f of names.sort()) {
-			const file = path.join(dir, f);
+		for (const e of entries.filter((x) => x.isDirectory()).sort((a, b) => a.name.localeCompare(b.name))) {
+			const file = path.join(dir, e.name, 'SKILL.md');
 			let text;
 			try {
 				text = await readFile(file, 'utf8');
@@ -108,7 +117,7 @@ export function registerMemorySkillBridge(ctx, { skillsDir }) {
 			}
 			const { fields, body } = parseSkillText(text);
 			if (!publishable(fields) || !fields.description) continue;
-			out.push({ file, fields, body });
+			out.push({ file, dirName: e.name, fields, body });
 		}
 		return out;
 	};
@@ -118,10 +127,9 @@ export function registerMemorySkillBridge(ctx, { skillsDir }) {
 		async list(options) {
 			options?.signal?.throwIfAborted?.();
 			const found = await readPublishable();
-			return found.map(({ file, fields, body }) => ({
-				name: fields.hostName,
+			return found.map(({ file, dirName, fields, body }) => ({
+				name: dirName,
 				description: fields.description,
-				...(fields.whenToUse ? { whenToUse: fields.whenToUse } : {}),
 				path: file,
 				invocation: { modelInvocable: true, userInvocable: true },
 				source: 'custom',
@@ -129,7 +137,6 @@ export function registerMemorySkillBridge(ctx, { skillsDir }) {
 				rank: MEMORY_SKILL_RANK,
 				locator: file,
 				_body: body,
-				_when: fields.whenToUse,
 				_summary: fields.description,
 			}));
 		},
@@ -142,16 +149,18 @@ export function registerMemorySkillBridge(ctx, { skillsDir }) {
 			if (text === undefined) return undefined;
 			const { fields, body } = parseSkillText(text);
 			if (!publishable(fields)) return undefined;
+			const dirName = path.basename(path.dirname(String(candidate.locator)));
 			return {
-				name: fields.hostName,
+				name: dirName,
 				description: fields.description,
-				...(fields.whenToUse ? { whenToUse: fields.whenToUse } : {}),
 				path: String(candidate.locator),
 				content: body,
 				invocation: { modelInvocable: true, userInvocable: true },
 				source: 'custom',
 				provider: PROVIDER_NAME,
-				resourceBase: { kind: 'directory', path: dir },
+				// The skill's OWN directory: relative paths it mentions (scripts/…)
+				// resolve against the bundle, which is what the reader expects.
+				resourceBase: { kind: 'directory', path: path.dirname(String(candidate.locator)) },
 			};
 		},
 	};

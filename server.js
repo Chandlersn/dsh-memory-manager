@@ -19,7 +19,7 @@
  *
  * @module dsh-memory-manager
  */
-import { readFile, writeFile, rename, unlink, mkdir, readdir, stat, appendFile } from 'node:fs/promises';
+import { readFile, writeFile, rename, unlink, rm, mkdir, readdir, stat, appendFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import * as path from 'node:path';
 import { homedir } from 'node:os';
@@ -50,7 +50,7 @@ import { isSkillName, registerMemorySkillBridge, parseSkillText, isPublishable, 
 import { resolveDshRoot, setHostRoot, loadHost, defineTool, createUserMessage } from './src/host.js';
 import {
 	name, inject, DEFAULTS, FUNC_TABLE_HEADING, INSIGHT_TABLE_HEADING, CAP_TABLE_HEADING,
-	CAP_TABLE_HEADER, FUNC_TABLE_HEADER, INSIGHT_TABLE_HEADER, SKILL_DIR, SKILL_STATUSES,
+	CAP_TABLE_HEADER, FUNC_TABLE_HEADER, INSIGHT_TABLE_HEADER,
 	SKILL_TABLE_HEADING, SKILL_TABLE_HEADER, SKILL_NOMINATE, CAP_DIR, FED_TABLE_HEADING,
 	FED_TABLE_HEADER, FED_CONSENSUS_HEADING, DAILY_SECTION, DAILY_OPEN_SECTION, RESULT_LABEL,
 	GUARD_MARK, GUARD_LINE, MAX_BLOCK_CHARS, MAX_ROW_SUMMARY_CHARS, MAX_PRINCIPLE_CHARS,
@@ -396,51 +396,17 @@ async function runHealthCheck(root, opts) {
 			} else if (zone === 'insights') {
 				insightTexts.push(text);
 			} else if (zone === 'skills') {
-				// R20 (fields mirror lantern skill-creator's quick_validate: a skill is
-				// a CALLABLE procedure, so its frontmatter router + the executable
-				// sections must be present and its lifecycle legal). status: reads the
-				// frontmatter first, tolerating the pre-5.12 `> 状态：` head.
-				const sSlug = f.replace(/\.md$/, '');
+				// 5.24.0: skills no longer live in the memory root — they are host
+				// bundles under <dshHome>/skills/<name>/. A file here is a LEFTOVER
+				// from the old layout: it would be a second body for a skill that
+				// also exists as a bundle, so flag it for removal instead of
+				// validating its shape.
+				add('WARN', 'R20', `skills/${f} 是旧布局残留（技能现为宿主目录包 ${'<dshHome>/skills/<name>/SKILL.md'}）：删除本文件，正文以宿主包为准`);
+				const owned = /^(?:true|1)$/i.test(String(parseSkillText(stripped).fields.agent_created ?? ''));
 				const sStatus = (stripped.match(/^status:\s*([a-z]+)/m) ?? stripped.match(/^> 状态：([a-z]+)/m) ?? [])[1];
-				if (!sStatus) add('WARN', 'R20', `skills/${f} 缺少 status（frontmatter 或旧「> 状态：」）：召回无法判断可否信任`);
-				else if (!SKILL_STATUSES.includes(sStatus)) add('WARN', 'R20', `skills/${f} 状态「${sStatus}」非法（应为 ${SKILL_STATUSES.join('/')}）`);
-				// The router: a skill without a description/trigger never fires — same
-				// failure quick_validate flags for a missing description field.
-				const hasDesc = /^description:\s*"?([^"\n]+)"?/m.test(stripped) || /^>\s*摘要：\s*\S/m.test(stripped);
-				if (!hasDesc) add('WARN', 'R20', `skills/${f} 缺 description/摘要：没有路由说明的技能不会被命中`);
-				// Scope audit (memory-function-org skill_scope.py, 5.17.0): an owned
-				// (agent_created) skill without scope is a cross-project recall risk —
-				// a procedure proven in project A silently fires in project B. Only
-				// owned skills WARN; hand-managed files get nothing (the script's rule).
-				const owned = /agent_created:\s*(?:true|1)/.test(stripped);
-				const scopeM = (stripped.match(/^scope:\s*([a-z]+)/m) ?? [])[1];
-				if (owned && !scopeM) add('WARN', 'R20s', `skills/${f} 自有技能缺 scope 字段：重结晶补一次（memory_skill 已支持 scope/scopeProject），global=跨项目通用 / project=须带 scope_project`);
-				else if (scopeM === 'project' && !/^scope_project:\s*\S/m.test(stripped)) add('WARN', 'R20s', `skills/${f} scope=project 但缺 scope_project：项目归属未知，路由无法判定适用性`);
-				// hostName, when present, must satisfy the Host's name grammar or the
-				// provider silently ignores the skill at discovery ("ignored: invalid
-				// skill name") — a broken promise, cheaper caught here than in logs.
-				const hostM = (stripped.match(/^hostName:\s*(\S+)/m) ?? [])[1];
-				if (hostM && !isSkillName(hostM)) add('WARN', 'R20h', `skills/${f} hostName「${hostM}」不是 kebab-case：宿主目录会忽略它，改成小写-连字符形式`);
-				if (sStatus !== 'retired') {
-					// Pointer form (5.19.0): a memory skill whose PROCEDURE lives in a
-					// host bundle (hostName + a 「## 程序体」 pointer section) is
-					// complete — duplicating the steps here would be a second source
-					// to drift. The pointer must name the bundle, not just gesture.
-					const isPointer = Boolean(hostM) && /## 程序体/.test(stripped);
-					const steps = (/## 调用步骤\s*\n([\s\S]*?)(?=\n## |$)/.exec(stripped) ?? [])[1] ?? '';
-					const numbered = (steps.match(/^\s*1[.、]/gm) ?? []).length;
-					if (!numbered && !isPointer) add('WARN', 'R20', `skills/${f} 「调用步骤」没有编号步骤：技能必须可直接执行，空壳请补全或 retire（程序体在宿主目录包的指针形态请写「## 程序体」节并带 hostName）`);
-					const when = (stripped.match(/## 何时使用\s*\n+-\s*(.+)/) ?? [])[1];
-					// whenToUse in frontmatter carries the trigger for pointer-form
-					// files too — either surface satisfies the router check.
-					const whenFm = (stripped.match(/^whenToUse:\s*"([^"]+)"/m) ?? [])[1];
-					if (!when && !whenFm) add('WARN', 'R20', `skills/${f} 「何时使用」为空：没有触发条件的技能永远不会被命中`);
-				}
-				// R20e: the index row's 状态 cell must agree with the file status, or the
-				// recall filter (which reads the index) trusts the wrong lifecycle.
-				const rowM = new RegExp(`^\\|\\s*${sSlug.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\|[^\\n]*\\|\\s*(candidate|active|retired)\\s*\\|`, 'm').exec(memText);
-				if (sStatus && rowM && rowM[1] !== sStatus) {
-					add('WARN', 'R20e', `技能「${sSlug}」索引行状态 ${rowM[1]} 与文件 status ${sStatus} 不一致：召回只放行 active，确认哪边是现状`);
+				if (owned && sStatus) {
+					const rowM = new RegExp(`^\\|\\s*\\[?${f.replace(/\.md$/, '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'm').exec(memText);
+					if (rowM) add('WARN', 'R20e', `技能「${f.replace(/\.md$/, '')}」的索引行仍指向旧记忆根文件：改成宿主包路径或删除该行`);
 				}
 			}
 			scanForSecrets(text, `${zone}/${f}`, add);
@@ -588,7 +554,7 @@ function memoryReadTool(opts) {
 				type: 'string',
 				required: true,
 				enum: ['index', 'function', 'insight', 'capability', 'skill', 'daily'],
-				description: 'index=MEMORY.md; function=functions/<name>.md; insight=insights/<name>.md; capability=capabilities/<name>.md (CLI/MCP ledger); skill=skills/<name>.md (crystallized procedure); daily=YYYY-MM-DD.md (latest when date omitted).',
+				description: 'index=MEMORY.md; function=functions/<name>.md; insight=insights/<name>.md; capability=capabilities/<name>.md (CLI/MCP ledger); skill=<skillRoot>/<name>/SKILL.md (the host bundle — one store, no memory-root copy); daily=YYYY-MM-DD.md (latest when date omitted).',
 			},
 			name: {
 				type: 'string',
@@ -638,8 +604,42 @@ function memoryReadTool(opts) {
 				const text = await readIfExists(p);
 				return { found: text !== undefined, path: p, content: text ?? '', listing: [] };
 			}
-			if (args.kind === 'function' || args.kind === 'insight' || args.kind === 'capability' || args.kind === 'skill') {
-				const dir = path.join(root, args.kind === 'function' ? 'functions' : args.kind === 'insight' ? 'insights' : args.kind === 'skill' ? SKILL_DIR : CAP_DIR);
+			if (args.kind === 'skill') {
+				// 5.24.0: a skill is a host bundle <skillRoot>/<name>/SKILL.md —
+				// memory_read follows the same single store the panel and the host
+				// tool read. Listing = bundles that actually carry a SKILL.md.
+				const dir = opts.skillRoot ? path.resolve(opts.skillRoot) : path.join(dshHome(), 'skills');
+				const listBundles = async () => {
+					const listing = [];
+					let entries = [];
+					try {
+						entries = await readdir(dir, { withFileTypes: true });
+					} catch {
+						return listing;
+					}
+					for (const e of entries.filter((x) => x.isDirectory()).sort((a, b) => a.name.localeCompare(b.name))) {
+						const fp = path.join(dir, e.name, 'SKILL.md');
+						try {
+							const st = await stat(fp);
+							listing.push({ name: `${e.name}/SKILL.md`, bytes: st.size, mtime: st.mtime.toISOString() });
+						} catch {
+							/* not a bundle (no SKILL.md) — skip */
+						}
+					}
+					return listing;
+				};
+				if (!args.name) {
+					const listing = await listBundles();
+					return { found: listing.length > 0, path: dir, content: '', listing };
+				}
+				const sName = oneLine(args.name).trim();
+				const p = path.join(dir, sName, 'SKILL.md');
+				const text = await readIfExists(p);
+				if (text === undefined) return { found: false, path: p, content: '', listing: await listBundles() };
+				return { found: true, path: p, content: text, listing: [] };
+			}
+			if (args.kind === 'function' || args.kind === 'insight' || args.kind === 'capability') {
+				const dir = path.join(root, args.kind === 'function' ? 'functions' : args.kind === 'insight' ? 'insights' : CAP_DIR);
 				if (!args.name) {
 					const listing = await listMdDir(dir);
 					return { found: listing.length > 0, path: dir, content: '', listing };
@@ -651,7 +651,11 @@ function memoryReadTool(opts) {
 					const listing = await listMdDir(dir);
 					return { found: false, path: p, content: '', listing };
 				}
-				await appendUsage(root, { href: `${args.kind === 'function' ? 'functions' : 'insights'}/${slug}.md`, kind: 'read' });
+				// The usage href must name the zone that was ACTUALLY read — this
+				// once mapped every capability read onto insights/, polluting the
+				// usage ledger that drives nomination.
+				const hrefZone = args.kind === 'function' ? 'functions' : args.kind === 'insight' ? 'insights' : 'capabilities';
+				await appendUsage(root, { href: `${hrefZone}/${slug}.md`, kind: 'read' });
 				return { found: true, path: p, content: text, listing: [] };
 			}
 			// daily
@@ -750,7 +754,7 @@ function memorySearchTool(opts) {
 			const after = normBound(args.after, 'after');
 			const before = normBound(args.before, 'before');
 			if (after && before && after > before) throw new Error(`after ${after} 晚于 before ${before}：区间为空`);
-			const hits = await searchMemory(root, q, { zone, limit, after, before });
+			const hits = await searchMemory(root, q, { zone, limit, after, before, skillRoot: opts.skillRoot });
 			return { count: hits.length, hits };
 		},
 	});
@@ -1109,13 +1113,10 @@ function skillTemplate(name, f) {
 		'---',
 		`name: ${name}`,
 		`description: "${f.description}"`,
-		`whenToUse: "${f.when.replace(/"/g, "'")}"`,
-		// Host interoperability (5.17.0): the filesystem provider only admits
-		// kebab-case names, and a Chinese slug can never be one. hostName is the
-		// OPTIONAL address the skill takes in the host catalog; without it the
-		// skill still works through our own recall but is never registered to
-		// ctx.skills. (isSkillName in src/host-skill.js validates it.)
-		...(f.hostName ? [`hostName: ${f.hostName}`] : []),
+		// `agent_created: true` is what makes this bundle OURS: the panel's
+		// 结晶技能 tab is exactly the bundles carrying it, and the host provider
+		// uses `status` to decide whether the skill is live. No hostName field —
+		// the bundle DIRECTORY name already is the kebab host name.
 		'agent_created: true',
 		// Scope metadata (memory-function-org §技能作用域元数据): an owned skill
 		// MUST carry scope — the audit WARNs without it, and cross-project recall
@@ -1138,13 +1139,7 @@ function skillTemplate(name, f) {
 		'',
 		'## 调用步骤',
 		'',
-		// Pointer form (bundlePath given): the steps are the HOST bundle's body.
-		// Duplicating them here would be a second body to drift — exactly what
-		// "程序体（唯一来源）" forbids. Without a bundle the steps ARE the body,
-		// so they stay verbatim.
-		f.bundlePath
-			? `- 见权威版 \`${f.bundlePath}SKILL.md\` 的 Procedure 节（本文件只留登记与证据，不复制程序）。`
-			: f.steps.map((s, i) => `${i + 1}. ${s}`).join('\n'),
+		f.steps.map((s, i) => `${i + 1}. ${s}`).join('\n'),
 		'',
 		'## 前提与坑',
 		'',
@@ -1153,16 +1148,6 @@ function skillTemplate(name, f) {
 		'## 验证方式',
 		'',
 		`- ${f.verification}`,
-		'',
-		// The procedure's AUTHORITATIVE body lives in the skill-creator bundle
-		// (host skills dir), never duplicated here: one program, one body. This
-		// section is the pointer — R20's pointer form (hostName + 程序体) reads
-		// it, and the discipline text names it the registration channel.
-		'## 程序体（唯一来源）',
-		'',
-		f.bundlePath
-			? `- 权威版：\`${f.bundlePath}\`（skill-creator 产物：SKILL.md + scripts/；用 skill-creator 的 quick_validate.py 校验、package_skill.py 打包）`
-			: '- 权威版：待按 skill-creator 流程产出（skill 工具加载 ~/.dsh/skills/skill-creator/ → init_skill.py 建目录包 → 祈使句编辑 → quick_validate.py/package_skill.py 校验打包 → 真实任务实战），产物路径回填本行',
 		'',
 		'## 证据来源',
 		'',
@@ -1390,7 +1375,7 @@ function memorySkillTool(opts, hooks = {}) {
 	return defineTool({
 		name: 'memory_skill',
 		description:
-			'Crystallize a REPEATED, CONFIRMED operation into a callable procedure under skills/ (the missing “use” step of the data flow: record → distill → promote → display → USE). actions: candidates = which areas the usage signals nominate (pure aggregation: >=6 uses, >=1 confirmation, correction rate <20%, not already crystallized) — call it periodically and decide; crystallize = write skills/<name>.md from an area\'s proven steps (YOU write the procedure, the tool files and indexes it, status=candidate); activate/retire = lifecycle transitions (activate only after the procedure was actually followed successfully; retire when the environment changed, the file stays as history); delete = remove the file and its index row (git is the only archive); list/read = what skills exist / full text. A skill file answers “do it exactly like THIS” — distinct from capabilities/ (“what tool exists”) and insights/ (“what principle holds”). A crystallized skill carries scope (global/project) and, with a kebab-case hostName, is published to the host skill catalog once active so the `skill` tool can load it directly. WRITING the procedure MUST follow the skill-creator skill (load it via the `skill` tool: ~/.dsh/skills/skill-creator/): Step1 concrete examples → Step2 plan reusable contents → Step3 init_skill.py → Step4 imperative-style editing → Step5 quick_validate.py + package_skill.py → Step6 real-task iteration, with its Quality Bar applied (description <=80 words with a when-to-use trigger, use/do-not-use triggers, imperative style, machine-checkable rules, no dangling links, size budgets). This tool is the REGISTRATION channel; the procedure\'s authoritative body is the skill-creator artifact (host bundle) — keep one body, not two.',
+			'Crystallize a REPEATED, CONFIRMED operation into a callable procedure (the missing “use” step of the data flow: record → distill → promote → display → USE). A skill IS a host bundle under <dshHome>/skills/<kebab-name>/SKILL.md — the same directory the host `skill` tool loads and the panel shows; there is no memory-root copy. actions: candidates = which areas the usage signals nominate (pure aggregation: >=6 uses, >=1 confirmation, correction rate <20%, not already crystallized) — call it periodically and decide; crystallize = write that bundle from an area\'s proven steps (status=candidate); activate/retire = lifecycle transitions (activate only after the procedure was actually followed successfully; retire when the environment changed, the file stays as history); delete = remove the bundle and its index row (git is the only archive); list/read = what skills exist / full text. A skill answers “do it exactly like THIS” — distinct from capabilities/ (“what tool exists”) and insights/ (“what principle holds”). Scope (global/project) is the only metadata beyond the bundle name; the name itself is the kebab host name. WRITING the procedure MUST follow the skill-creator skill (load it via the `skill` tool: ~/.dsh/skills/skill-creator/): Step1 concrete examples → Step2 plan reusable contents → Step3 init_skill.py → Step4 imperative-style editing → Step5 quick_validate.py + package_skill.py → Step6 real-task iteration, with its Quality Bar applied (description <=80 words with a when-to-use trigger, use/do-not-use triggers, imperative style, machine-checkable rules, no dangling links, size budgets).',
 		parameters: {
 			action: { type: 'string', required: true, enum: ['candidates', 'crystallize', 'activate', 'retire', 'list', 'read', 'delete'], description: 'candidates=看提名；crystallize=结晶一份技能；activate/retire=生命周期；delete=删除技能文件与索引行（不可恢复，git 是档案）；list/read=查。' },
 			project: { type: 'string', description: 'list 可选：按项目 key 过滤（skill_scope --route 语义）——global 技能全保留，project 技能只留 scope_project 匹配的，无 scope 的不计入确定适用。' },
@@ -1404,8 +1389,6 @@ function memorySkillTool(opts, hooks = {}) {
 			scope: { type: 'string', enum: ['global', 'project'], description: '可选：技能作用域（原 memory-function-org 纪律：自有技能必须带 scope）。缺省 global=跨项目通用；project=只适用于某一项目，此时应同时给 scopeProject。' },
 			scopeProject: { type: 'string', description: 'scope=project 时必填：项目目录名/key（如 toolbox-login），召回与路由据此判适用性。' },
 			scopeNotes: { type: 'string', description: '可选：一句话说明适用条件（何时在哪些项目用）。' },
-			hostName: { type: 'string', description: '可选：本技能在宿主 skill 体系里的注册名（kebab-case，如 detached-restart）。给了就随 active 进宿主 ctx.skills 目录、被 skill 工具直接调用；不给则只走本插件召回。' },
-			bundlePath: { type: 'string', description: '可选：skill-creator 产出的权威目录包路径（如 ~/.dsh/skills/detached-restart/）。给了就写进「## 程序体（唯一来源）」节作为程序体指针；结晶后应按 skill-creator 流程产出并回填。' },
 			note: { type: 'string', description: 'activate/retire 可选：一句话依据（哪次成功验证 / 环境怎么变了）。' },
 		},
 		output: {
@@ -1479,7 +1462,7 @@ function memorySkillTool(opts, hooks = {}) {
 				const verb = v.action === 'crystallize' ? '已结晶技能' : v.action === 'activate' ? '已激活技能' : v.action === 'retire' ? '已退役技能' : '已删除技能';
 				const lines = [`${verb}：${v.file}（status=${v.status}）`];
 				for (const w of v.warnings) lines.push(`⚠ ${w}`);
-				if (v.action === 'crystallize') lines.push('ℹ 程序体已登记。权威正文请按 skill-creator 流程产出（用 `skill` 工具加载 ~/.dsh/skills/skill-creator/：init_skill.py 建目录包 → 祈使句编辑 → quick_validate.py/package_skill.py 校验打包 → 真实任务实战），产物放宿主目录包、本文件留证据链指针；之后按真实任务跑通一次，用 memory_skill(activate) 转正，pre-step 会优先提示命中技能。');
+				if (v.action === 'crystallize') lines.push(`ℹ 技能目录包已写入 ${path.dirname(p)}。请按 skill-creator 流程打磨正文（skill 工具加载 ~/.dsh/skills/skill-creator/：规划内容 → 祈使句编辑 → scripts 配套 → quick_validate.py 校验）；按真实任务跑通一次后用 memory_skill(activate) 转正，pre-step 会优先提示命中技能。`);
 				if (v.action === 'delete') lines.push('ℹ 文件与索引行已删除，宿主目录同步失效；历史只能从 git 恢复。');
 				return [{ type: 'text', text: lines.join('\n') }];
 			},
@@ -1487,39 +1470,59 @@ function memorySkillTool(opts, hooks = {}) {
 		presentCall: (args) => ({ card: 'generic', title: `Memory skill: ${args.action ?? ''}${args.name ? ` ${args.name}` : ''}`, kind: 'other', rawInput: args }),
 		async execute(args, exec) {
 			const root = resolveRoot(opts);
-			const dir = path.join(root, SKILL_DIR);
+			// ONE storage location (5.24.0): skills live as host bundles
+			// (<dshHome>/skills/<kebab-name>/SKILL.md), the same directory the host
+			// `skill` tool loads. There is no memory-root copy and no pointer file —
+			// a skill is one bundle, edited in place.
+			// `opts.skillRoot` exists so TESTS can point this at a temp dir: without
+			// it the suite writes into the real user skill catalog (it did, once).
+			const dir = opts.skillRoot ? path.resolve(opts.skillRoot) : path.join(dshHome(), 'skills');
 			const warnings = [];
+			const bundleOf = (n) => path.join(dir, n, 'SKILL.md');
 			const listAll = async (projectKey) => {
 				let names = [];
 				try {
-					names = (await readdir(dir)).filter((n) => n.endsWith('.md'));
+					const entries = await readdir(dir, { withFileTypes: true });
+					names = entries.filter((e) => e.isDirectory()).map((e) => e.name);
 				} catch {
 					/* no skills yet */
 				}
 				const items = [];
-				for (const f of names.sort()) {
-					const text = (await readIfExists(path.join(dir, f))) ?? '';
-					// ONE parser now: the same frontmatter reader the host bridge
-					// uses, so what `list` reports (scope, published) can never drift
-					// from what the provider actually advertises. The legacy head
-					// format ("> 状态：x", no frontmatter) still resolves through the
-					// regex fallbacks.
+				for (const n of names.sort()) {
+					const text = (await readIfExists(bundleOf(n))) ?? '';
+					if (!text) continue;
+					// ONE parser: the same frontmatter reader the host bridge uses, so
+					// what `list` reports can never drift from what the provider
+					// advertises.
 					const { fields, body } = parseSkillText(text);
 					const status = fields.status ?? (body.match(/^> 状态：([a-z]+)/m) ?? [])[1] ?? 'candidate';
 					const summary = (body.match(/^>\s*摘要：(.+)$/m) ?? [])[1]?.trim() || fields.description || '（无摘要）';
 					const scope = fields.scope ?? 'unknown';
-					// `published` reads isPublishable — the bridge's own gate. scope
-					// finally has a consumer: the project filter below.
 					if (projectKey && !skillAppliesToProject(fields, projectKey)) continue;
-					const st = await stat(path.join(dir, f));
-					items.push({ name: f.replace(/\.md$/, ''), status, summary, updated: st.mtime.toISOString(), scope, published: isPublishable(fields) });
+					const st = await stat(bundleOf(n));
+					// `published` = this plugin owns it and it is active; the host
+					// publishes exactly the active ones. Ownership is a FRONTMATTER
+					// fact (see the /skills note: a body regex misreads skill-creator).
+					const owned = /^(?:true|1)$/i.test(String(fields.agent_created ?? ''));
+					items.push({
+						name: n,
+						status,
+						summary,
+						updated: st.mtime.toISOString(),
+						scope,
+						owned,
+						published: owned && status === 'active',
+					});
 				}
 				return items;
 			};
 			const syncIndexRow = async (item) => {
 				const indexPath = path.join(root, 'MEMORY.md');
 				let indexText = (await readIfExists(indexPath)) ?? memoryIndexTemplate();
-				const row = `| [${item.name}](${SKILL_DIR}/${item.name}.md) | ${item.summary} | ${item.status} |`;
+				// The row points at the HOST bundle path (absolute), because there is
+				// no memory-root copy to link to any more.
+				const href = `file:///${path.join(dir, item.name, 'SKILL.md').replace(/\\/g, '/')}`;
+				const row = `| [${item.name}](${href}) | ${item.summary} | ${item.status} |`;
 				indexText = upsertIndexRow(indexText, SKILL_TABLE_HEADING, SKILL_TABLE_HEADER, item.name, row);
 				await writeText(indexPath, indexText);
 				// Every write that lands (crystallize/activate/retire all funnel here)
@@ -1531,7 +1534,7 @@ function memorySkillTool(opts, hooks = {}) {
 				const all = await listAll();
 				const skillSources = [];
 				for (const it of all) {
-					const text = (await readIfExists(path.join(dir, `${it.name}.md`))) ?? '';
+					const text = (await readIfExists(bundleOf(it.name))) ?? '';
 					// evidence links are written as (../functions/x.md); normalize to
 					// the usage-href form (functions/x.md) so nomination can compare.
 					for (const m of text.matchAll(/\((?:\.\.\/)?((?:functions|insights)\/[^)#]+)\)/g)) skillSources.push(m[1]);
@@ -1543,11 +1546,17 @@ function memorySkillTool(opts, hooks = {}) {
 				const project = oneLine(args.project ?? '');
 				return { action: 'list', items: await listAll(project || undefined), warnings };
 			}
-			const name = safeSlug(args.name);
-			const p = path.join(dir, `${name}.md`);
+			// A skill's name IS its host bundle directory name, so it must satisfy
+			// the host grammar (kebab-case). safeSlug is the MEMORY-file slug rule
+			// (it allows CJK and forbids dots) — using it here would reject every
+			// legal host name and accept illegal ones.
+			const name = oneLine(args.name ?? '').trim();
+			if (!name) throw new Error('name is required: the skill bundle directory name (kebab-case)');
+			if (!isSkillName(name)) throw new Error(`技能名必须是 kebab-case（宿主语法 ^[a-z0-9]+(-[a-z0-9]+)*$），收到：${name}`);
+			const p = bundleOf(name);
 			if (args.action === 'read') {
 				const text = await readIfExists(p);
-				if (text === undefined) throw new Error(`技能台账里没有 ${name}（先 memory_skill(crystallize)，或 candidates 看提名）`);
+				if (text === undefined) throw new Error(`技能库里没有 ${name}（先 memory_skill(crystallize)，或 candidates 看提名）`);
 				return { action: 'read', file: p, items: [], content: text, warnings };
 			}
 			if (args.action === 'crystallize') {
@@ -1586,8 +1595,8 @@ function memorySkillTool(opts, hooks = {}) {
 					warnings.push('scope=project 但没给 scopeProject：项目归属未知，路由/审计会按未知作用域处理（补 scopeProject=<项目目录名>）');
 				}
 				const scopeNotes = oneLine(args.scopeNotes ?? '');
-				const hostName = oneLine(args.hostName ?? '').toLowerCase();
-				if (hostName && !isSkillName(hostName)) throw new Error(`hostName 必须是 kebab-case（宿主 isSkillName 语法 ^[a-z0-9]+(-[a-z0-9]+)*$），收到：${hostName}`);
+				// (name already validated as kebab-case at the entry — it is the
+				// bundle directory name, i.e. the host name.)
 				// Re-crystallization KEEPS the lifecycle: activating then improving a
 				// skill must not silently demote it to candidate (the status line and
 				// the ⭐ recall gate both read it).
@@ -1600,9 +1609,6 @@ function memorySkillTool(opts, hooks = {}) {
 				const description = `当${when}时使用本技能：${summary}`.replace(/"/g, "'");
 				const srcLines = srcs.map((s) => {
 					if (s.includes('](')) return `- ${s}`; // an authored markdown link passes through
-					// One place builds the (label, href) pair: the label is the bare
-					// filename, the href keeps its zone folder — chained regexes here
-					// dropped the .md once too often and made every backlink dangle.
 					const rel = s.trim().replace(/^\.\.?\//, '').replace(/\.md$/i, '');
 					const label = rel.replace(/^(?:functions|insights|capabilities|skills)\//, '');
 					return `- [${label}.md](../${rel}.md)`;
@@ -1624,17 +1630,16 @@ function memorySkillTool(opts, hooks = {}) {
 					scope,
 					scopeProject,
 					scopeNotes,
-					hostName,
-					// The skill-creator artifact (host bundle) when the procedure has
-					// one; otherwise the template writes the TODO pointer line.
-					bundlePath: oneLine(args.bundlePath ?? ''),
 					steps,
 					pitfalls: oneLine(args.pitfalls ?? ''),
 					verification,
 					srcLines,
 					priorUse,
 				});
-				await mkdir(dir, { recursive: true });
+				// Write the BUNDLE: <dshHome>/skills/<name>/SKILL.md. The directory is
+				// the host's discovery unit, so the tool creates exactly what the host
+				// (and the panel) reads — one storage location, no memory-root copy.
+				await mkdir(path.dirname(p), { recursive: true });
 				await writeText(p, body);
 				const st = await stat(p);
 				const item = { name, status: priorStatus, summary, updated: st.mtime.toISOString() };
@@ -1667,13 +1672,19 @@ function memorySkillTool(opts, hooks = {}) {
 				return { action: args.action, file: p, status: to, items: [item], warnings };
 			}
 			if (args.action === 'delete') {
-				// Full lifecycle close: remove the file AND its index row, then
-				// invalidate the host catalog (a published skill must disappear from
-				// the host catalog in the same breath). Unlike retire, the history
-				// is gone — git is the archive, as with every delete.
+				// Full lifecycle close (5.24.0): a skill IS a bundle directory, so
+				// delete removes the WHOLE bundle — not just SKILL.md (a lone
+				// scripts/ left behind would be an orphan no tool manages). The index
+				// row goes with it and the host catalog is refreshed in the same
+				// breath, because a deleted skill must not stay loadable. Guard: this
+				// plugin may delete only the bundles IT owns (agent_created) — an
+				// installed skill belongs to its own source (package manager, git).
 				const text = await readIfExists(p);
-				if (text === undefined) throw new Error(`技能台账里没有 ${name}`);
-				await unlink(p);
+				if (text === undefined) throw new Error(`技能库里没有 ${name}`);
+				if (!/^(?:true|1)$/i.test(String(parseSkillText(text).fields.agent_created ?? ''))) {
+					throw new Error(`${name} 不是本插件结晶的技能（缺 agent_created），删除请走它自己的来源渠道`);
+				}
+				await rm(path.dirname(p), { recursive: true, force: true });
 				const indexPath = path.join(root, 'MEMORY.md');
 				const idxText = await readIfExists(indexPath);
 				if (idxText !== undefined) {
@@ -2324,12 +2335,20 @@ function indexRowsOf(indexText) {
 		if (cells.length < 2 || !cells[1]) continue;
 		// Column-agnostic, like matchIndexRows: the 4-column generation kept the
 		// link in cell 3, the current one bakes it into cell 1. Both must resolve
-		// so a mixed-shape root keeps working.
-		const href = cells.map((c) => /\(([^)\s]+\.md)\)/.exec(c)?.[1]).find((h) => /^(functions|insights|skills|capabilities)\//.test(h ?? ''));
+		// so a mixed-shape root keeps working. 5.24.0: a skill row links to its
+		// HOST bundle (file:///.../skills/<name>/SKILL.md), so both href shapes
+		// are accepted and the skill's identity is its bundle directory name.
+		const anyHref = cells.map((c) => /\(([^)\s]+\.md)\)/.exec(c)?.[1]).find(Boolean);
+		// A SKILL.md href IS a skill regardless of its parent dirs (the skill root
+		// is configurable — the real one is <dshHome>/skills, tests inject a temp
+		// dir); the legacy `skills/<name>.md` form stays accepted.
+		const isSkillHref = Boolean(anyHref) && (/^skills\//.test(anyHref) || /(?:^|\/)SKILL\.md$/.test(anyHref));
+		const href = anyHref && (isSkillHref || /^(functions|insights|capabilities)\//.test(anyHref)) ? anyHref : undefined;
 		if (!href) continue;
-		const zone = href.startsWith('skills/') ? 'skill' : href.startsWith('insights/') ? 'insight' : href.startsWith('functions/') ? 'function' : null;
+		const zone = isSkillHref ? 'skill' : href.startsWith('insights/') ? 'insight' : href.startsWith('functions/') ? 'function' : null;
 		if (!zone) continue;
-		out.push({ name: href.split('/').pop().replace(/\.md$/, ''), summary: cells[1], href, zone });
+		const name = zone === 'skill' ? (href.split('/').filter(Boolean).slice(-2)[0] ?? '') : href.split('/').pop().replace(/\.md$/, '');
+		out.push({ name, summary: cells[1], href, zone });
 	}
 	return out;
 }
@@ -2365,7 +2384,7 @@ function decisionRepairTargets(usageItems, { minCorrections = 2, minBadRate = 0.
  * tag, everything else in a file attributes to the head 「截至」 date, a daily
  * log to its filename, and a file with no date at all falls back to mtime.
  */
-async function searchMemory(root, rawQuery, { zone = 'all', limit = 20, after = '', before = '' } = {}) {
+async function searchMemory(root, rawQuery, { zone = 'all', limit = 20, after = '', before = '', skillRoot = '' } = {}) {
 	const q = String(rawQuery ?? '').trim().toLowerCase();
 	if (q.length < 2) return [];
 	const tokens = tokensOf(q);
@@ -2374,6 +2393,19 @@ async function searchMemory(root, rawQuery, { zone = 'all', limit = 20, after = 
 	if (zones.includes('index')) files.push({ zone: 'index', name: 'MEMORY.md', file: path.join(root, 'MEMORY.md') });
 	for (const z of ['functions', 'insights', 'capabilities', 'skills']) {
 		if (!zones.includes(z)) continue;
+		// 5.24.0: skills search their host bundles (<name>/SKILL.md), the memory
+		// root no longer holds a skills/ directory.
+		if (z === 'skills') {
+			const sdir = skillRoot || path.join(dshHome(), 'skills');
+			let dirs = [];
+			try {
+				dirs = (await readdir(sdir, { withFileTypes: true })).filter((e) => e.isDirectory()).map((e) => e.name).sort();
+			} catch {
+				/* no bundles */
+			}
+			for (const d of dirs) files.push({ zone: 'skills', name: `${d}/SKILL.md`, file: path.join(sdir, d, 'SKILL.md') });
+			continue;
+		}
 		let names = [];
 		try {
 			names = (await readdir(path.join(root, z))).filter((n) => n.endsWith('.md')).sort();
@@ -2619,19 +2651,19 @@ const DISCIPLINE_TEXT = [
 	'- **第 1 层 · 功能域（memory_write）**：从每日原始记录中**归纳汲取**功能划分——一次实质工作 = 一个 functions/<功能域>.md 迭代块（蒸馏结论：动因/改动/判据/待观察 各一句）。`summary` 是本块的一句话概括；功能域该新建还是并入既有的，判断依据就是每日记录里反复出现的主题。',
 	'- **第 2 层 · 创新思想（memory_insight）**：从功能划分中**再提取**可迁移原则（会重套的、不绑定单一功能机制的），回链来源功能域；取代旧思想传 `supersedes`。',
 	'- **第 3 层 · 索引与总览（memory_index）**：**整合层**——功能域稳定后（有 ≥2 个迭代块，或用户可感知为独立主题时）用 memory_index 把它收进 MEMORY.md 索引；索引行摘要 = 从各迭代块的概括中提炼的"这个功能是什么"。索引是展示与检索的派生物，不与单次写入强绑。',
-	'- **第 4 层 · 技能（memory_skill）**：**使用环收口**——一个被反复重跑且被确认的操作，应结晶为 skills/<技能>.md 的可调用程序（何时使用/步骤/坑/验证），下次命中直接照做，不再现场推导。何时结晶：`memory_skill(candidates)` 给出机械提名（≥6 次使用 + ≥1 次确认 + 纠正率<20%，来自 .usage.jsonl），**提名≠结晶**——是否成文由你判断证据是否连贯。**成文必须走 skill-creator 流程**（宿主技能目录 `~/.dsh/skills/skill-creator/`，其描述命中即用 `skill` 工具加载）：Step1 具体用例 → Step2 规划可复用内容 → Step3 `init_skill.py` 初始化目录包 → Step4 祈使句式编辑 → Step5 `quick_validate.py` + `package_skill.py` 校验打包 → Step6 真实任务实战迭代；Quality Bar 逐条过（description ≤80 词且带 when-to-use、use/do-not-use 触发、祈使句式、规则配机器可检脚本、无死链、体积预算）。本插件的 `memory_skill(crystallize)` 是**登记通道**（落记忆侧文件 + 索引行 + 宿主发布），程序体权威版以 skill-creator 产物（宿主目录包）为准；两处不一致时改记忆侧指向目录包，不要让同一份程序存在两份正文。生命周期 candidate→active（真实任务照做成功过才转正）→retired（环境变了留档）。召回只放行 active 技能并标注 ⭐；技能=怎么做（程序），capability=有什么工具，insight=什么原则——三者别混。结晶时标 `scope`（global=跨项目通用 / project=须带 scopeProject=<项目名>），跨项目复用前先核对作用域；想让宿主 `skill` 工具直接调用，给一个 kebab-case 的 `hostName`（active 后自动发布进宿主目录，中文 slug 宿主不认）。',
+	'- **第 4 层 · 技能（memory_skill）**：**使用环收口**——一个被反复重跑且被确认的操作，应结晶为可调用程序（何时使用/步骤/坑/验证），下次命中直接照做，不再现场推导。**技能就是一个宿主目录包**：`<dshHome>/skills/<kebab-name>/SKILL.md`（+ 可选 scripts/references/assets），与宿主 `skill` 工具、面板技能库读的是同一份——没有记忆根副本、没有指针文件。何时结晶：`memory_skill(candidates)` 给出机械提名（≥6 次使用 + ≥1 次确认 + 纠正率<20%，来自 .usage.jsonl），**提名≠结晶**——是否成文由你判断证据是否连贯。**成文必须走 skill-creator 流程**（`~/.dsh/skills/skill-creator/`，其描述命中即用 `skill` 工具加载）：Step1 具体用例 → Step2 规划可复用内容 → Step3 `init_skill.py` 初始化目录包 → Step4 祈使句式编辑 → Step5 `quick_validate.py` + `package_skill.py` 校验打包 → Step6 真实任务实战迭代；Quality Bar 逐条过（description ≤80 词且带 when-to-use、use/do-not-use 触发、祈使句式、规则配机器可检脚本、无死链、体积预算）。生命周期 candidate→active（真实任务照做成功过才转正）→retired（环境变了留档），写在 frontmatter `status`；`agent_created: true` 标记本插件自有（面板据此区分「结晶技能」与「系统技能」）。技能名必须 kebab-case（它同时是宿主目录名）。召回只放行 active 技能并标注 ⭐；技能=怎么做（程序），capability=有什么工具，insight=什么原则——三者别混。结晶时标 `scope`（global=跨项目通用 / project=须带 scopeProject=<项目名>），跨项目复用前先核对作用域。',
 	'- **层级定义（道/法/术/器，按普适程度分）**：**器**=指向内容的指针与检索面（MEMORY.md 双表+面板）；**术**=一个功能域"怎么做"的完整迭代史（functions/，判据"我会不会再跑一次这个操作"）；**法**=从具体操作提炼的可套原则（insights/，判据"换个项目/领域还成立吗"）；**道**=跨域都必须遵守的约束（MEMORY.md 共识区，判据"违反了会不会出事故"）。**放错层的三个信号**：① 在功能域里翻到普适断言 → 该升到 insights；② 同一句话想写进两个功能域 → 该升到 insights；③ 一条"原则"每次都要附带操作步骤才能用 → 该降回 functions。**反例**：索引行里写推导过程；迭代块里写"以后所有项目都应该……"；原则写成"1. 先运行 X；2. 再执行 Y"；把某次技术选型记成共识。',
 	'- **先查后写**：涉及"项目里怎么做 / 为什么这么做 / 环境常量"时，先 `memory_read kind=index`（行内摘要判断相关性，再打开对应文件）；只记得片段、说不清在哪个域或哪天时用 `memory_search`（全库排序检索，返回命中的分区/文件/行号/小节/片段）。**动手前先查 `memory_capability`**：外部 CLI / MCP / 已装软件都在 `capabilities/` 台账里，能省下一整轮摸索。不要凭空重推已有结论。',
 	'- **用到的外部工具要登记**：只有**项目外部**的工具才进台账——第三方 CLI / MCP / 已装软件，且调用它需要摸索（确切命令、前提、踩过的坑）。不登记：harness 自带工具（shell/文件/网络等，模型本来就会）、本项目自己的脚本与 API（那是 functions/ 迭代块）。台账按工具一文件、就地更新——**不是流水账，是索引**。下次同类任务先 `action=list`，不要重新摸索同一个工具。',
 	'- **蒸馏不搬过程**：迭代块只写结论；逐条实现清单、调试经过属于每日原始层与会话/代码。块 >900 字或概括 >110 字写入告警，体检 R14 复查。',
-	'- **经验三分**：会**重跑**的操作进 functions/；会**重套**的原则用 memory_insight 进 insights/；**反复重跑且被验证**的操作程序用 memory_skill 结晶进 skills/；跨功能共识与环境常量只在 MEMORY.md。',
+	'- **经验三分**：会**重跑**的操作进 functions/；会**重套**的原则用 memory_insight 进 insights/；**反复重跑且被验证**的操作程序用 memory_skill 结晶为宿主技能目录包（`<dshHome>/skills/<kebab>/`，`agent_created: true` 是归属标记）；跨功能共识与环境常量只在 MEMORY.md。',
 	'- **使用信号让记忆自己排序**：召回命中与 memory_read 会自动记信号；用户纠正/明确认可时用 `memory_usage(action=record, kind=correction|positive)` 记一笔（这是分层判断里唯一不能自动获得的信号）。`memory_usage(action=report)` 给出 实验/专项/通用 建议；某域近 7 天纠正率 >40% 时体检 R18 报熔断——先重构再追加。',
 	'- **守护型**：低频但高价值的记忆（安全审计、关键踩坑、兜底规则）用 `memory_write(guard=true)` 标记，体检的冷记忆规则会跳过它——不要因为"很久没写"就删掉兜底经验。',
 	'- **项目归属**：涉及特定项目的记忆，在功能域 slug 或正文里注明项目名（如 `toolbox-login`）。功能域多到单根过大时，可启用**联邦模式**（`federation: { root, projects }`）：项目真相源留在各项目记忆根，`memory_federation` 负责刷副本与跨项目索引，项目细节不上升。',
 	'- **收缩机制**：功能文件超 30KB 用 `memory_fold` 折叠最旧块；MEMORY.md 超线按 ### 子分区拆分；重命名/合并用 `memory_rename`（自动改写引用并验证死链清零）。',
 	'- **密钥防线**：凭据（API key / token / 私钥 / JWT）绝不进记忆——插件写入口在落盘前把凭据形态替换成 `[REDACTED:kind]` 并在回执点名；每日原始层不经插件，直接写文件时请自律（体检 R21 兜底报告，身份证/手机号只告警不改写）。留「调用形态 + 前提从哪里领」，不留密钥本体。',
 	'- 批量改动记忆后跑 `memory_check` 体检。',
-	'- 归属口诀：会**重跑**的操作（术·functions/）、会**重套**的原则（法·insights/）、**反复跑通且验证**的程序（技能·skills/）、违反即出事故的约束（道·共识区）、指向内容的指针（器·索引与面板）；原始过程永远只留在每日记录。',
+	'- 归属口诀：会**重跑**的操作（术·functions/）、会**重套**的原则（法·insights/）、**反复跑通且验证**的程序（技能·宿主目录包 `<dshHome>/skills/`，靠 frontmatter `agent_created` 与外来安装包区分）、违反即出事故的约束（道·共识区）、指向内容的指针（器·索引与面板）；原始过程永远只留在每日记录。',
 ].join('\n');
 
 // ---------------------------------------------------------------------------
@@ -2673,10 +2705,27 @@ function htmlPage(res, status, title, body) {
 }
 
 /** Zone file counts for the rail badges (directory listing only, no reads). */
-async function zoneCounts(root) {
+async function zoneCounts(root, skillRoot = '') {
 	const count = async (dir, test) => {
 		try {
 			return (await readdir(dir)).filter(test).length;
+		} catch {
+			return 0;
+		}
+	};
+	const countBundles = async (dir) => {
+		try {
+			const ents = await readdir(dir, { withFileTypes: true });
+			let n = 0;
+			for (const e of ents.filter((x) => x.isDirectory())) {
+				try {
+					await stat(path.join(dir, e.name, 'SKILL.md'));
+					n++;
+				} catch {
+					/* not a bundle */
+				}
+			}
+			return n;
 		} catch {
 			return 0;
 		}
@@ -2685,7 +2734,9 @@ async function zoneCounts(root) {
 		functions: await count(path.join(root, 'functions'), (n) => n.endsWith('.md')),
 		insights: await count(path.join(root, 'insights'), (n) => n.endsWith('.md')),
 		capabilities: await count(path.join(root, 'capabilities'), (n) => n.endsWith('.md')),
-		skills: await count(path.join(root, 'skills'), (n) => n.endsWith('.md')),
+		// 5.24.0: skills are host bundles — the badge counts directories that
+		// actually carry a SKILL.md.
+		skills: await countBundles(skillRoot || path.join(dshHome(), 'skills')),
 		daily: await count(root, (n) => /^\d{4}-\d{2}-\d{2}\.md$/.test(n)),
 	};
 }
@@ -2717,7 +2768,7 @@ function memoryPanelApi(opts) {
 					}
 				}
 				const signalCount = (await readIfExists(usagePath(root)))?.split('\n').filter((l) => l.trim()).length ?? 0;
-				return json(res, 200, [{ ...health, title: '全局记忆', path: joinDshHome(), counts: await zoneCounts(root), usage: { signalCount, layers: layerCounts, hotspots: hotspots.slice(0, 5) } }]);
+				return json(res, 200, [{ ...health, title: '全局记忆', path: joinDshHome(), counts: await zoneCounts(root, opts.skillRoot), usage: { signalCount, layers: layerCounts, hotspots: hotspots.slice(0, 5) } }]);
 			}
 			if (seg === 'file') {
 				const name = url.searchParams.get('name');
@@ -2815,37 +2866,23 @@ function memoryPanelApi(opts) {
 				}
 			}
 			if (seg === 'skills') {
-				const ourDir = path.join(root, SKILL_DIR);
-				const memory = [];
-				let ourNames = [];
-				try {
-					ourNames = (await readdir(ourDir)).filter((n) => n.endsWith('.md'));
-				} catch {
-					/* no crystallized skills yet */
-				}
-				for (const n of ourNames.sort()) {
-					const fp = path.join(ourDir, n);
-					const text = (await readIfExists(fp)) ?? '';
-					const { fields } = parseSkillText(text);
-					memory.push({
-						name: n.replace(/\.md$/, ''),
-						hostName: fields.hostName || '',
-						description: fields.description || fields.whenToUse || '',
-						status: fields.status ?? 'candidate',
-						scope: fields.scope || '',
-						scopeProject: fields.scope_project || '',
-						published: isPublishable(fields),
-						kind: 'memory',
-						dir: ourDir,
-						files: [{ rel: '', name: n, bytes: (await stat(fp)).size }],
-					});
-				}
+				// ONE storage location (5.24.0): every skill is a host bundle under
+				// the user skills roots. The two tabs are a VIEW of that one store,
+				// split by provenance — `agent_created: true` means this plugin
+				// crystallized it (结晶技能), anything else is an installed/system
+				// skill (系统技能). No memory-root copy, no pointer file: the panel
+				// shows the bundle itself, which is also the body the host loads.
 				const hostDshHome = dshHome();
 				const agentsHome = process.env.DSH_AGENTS_HOME || path.join(homedir(), '.agents');
-				const hostRoots = [
-					{ dir: path.join(hostDshHome, 'skills'), source: 'user-dsh' },
-					{ dir: path.join(agentsHome, 'skills'), source: 'user-agents' },
-				];
+				// A test-injected skillRoot replaces the whole scan (tests must never
+				// list or touch the real user catalog).
+				const hostRoots = opts.skillRoot
+					? [{ dir: path.resolve(opts.skillRoot), source: 'user-dsh' }]
+					: [
+							{ dir: path.join(hostDshHome, 'skills'), source: 'user-dsh' },
+							{ dir: path.join(agentsHome, 'skills'), source: 'user-agents' },
+						];
+				const memory = [];
 				const host = [];
 				const seenDirs = new Set();
 				for (const r of hostRoots) {
@@ -2856,7 +2893,6 @@ function memoryPanelApi(opts) {
 						continue; // root absent
 					}
 					for (const e of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-						// Directory bundle: <root>/<name>/SKILL.md
 						if (!e.isDirectory()) continue;
 						const dir2 = path.join(r.dir, e.name);
 						const key = path.resolve(dir2);
@@ -2879,25 +2915,31 @@ function memoryPanelApi(opts) {
 							}
 						};
 						await walk('');
-						host.push({
+						// OWNERSHIP is a frontmatter fact, never a body scan:
+						// skill-creator's own text contains the literal string
+						// `agent_created: true` (it documents the field), so a
+						// whole-text regex would claim every installed skill.
+						const owned = /^(?:true|1)$/i.test(String(fields.agent_created ?? ''));
+						const row = {
 							name: fields.name || e.name,
 							description: fields.description || '',
 							source: r.source,
-							kind: 'host',
+							kind: owned ? 'memory' : 'host',
 							dir: dir2,
 							files,
-						});
+							...(owned ? { status: fields.status ?? 'candidate', scope: fields.scope || '', scopeProject: fields.scope_project || '' } : {}),
+						};
+						(owned ? memory : host).push(row);
 					}
 				}
+				memory.sort((a, b) => a.name.localeCompare(b.name));
 				host.sort((a, b) => a.name.localeCompare(b.name));
 				return json(res, 200, { memory, host });
 			}
-			// One stored skill's main file: either a memory single-file skill or a
-			// host bundle's SKILL.md — resolved by the SERVER from known roots, the
-			// request only names the skill. No paths travel from the client.
+			// One stored skill's bundle: the SERVER resolves it from the known roots;
+			// the request only names the skill directory. No paths travel in.
 			if (seg === 'skill') {
 				const nameParam = (url.searchParams.get('name') ?? '').trim();
-				const kind = url.searchParams.get('kind') === 'memory' ? 'memory' : 'host';
 				if (!nameParam || /[\\/]|\.\./.test(nameParam)) return json(res, 400, { error: 'invalid skill name' });
 				// The file list travels WITH the body: the panel's detail view needs
 				// it, and re-deriving it client-side would mean the client knowing
@@ -2917,12 +2959,10 @@ function memoryPanelApi(opts) {
 					await walk('');
 					return files;
 				};
-				if (kind === 'memory') {
-					const text = await readIfExists(path.join(root, SKILL_DIR, `${nameParam}.md`));
-					if (text === undefined) return json(res, 404, { error: 'skill not found' });
-					return json(res, 200, { name: nameParam, kind, text, files: [{ rel: '', name: `${nameParam}.md`, bytes: byteLen(text) }] });
-				}
-				const dir2 = path.join(dshHome(), 'skills', nameParam);
+				// One bundle, one location (5.24.0): no memory-root branch any more.
+				// The bundle dir name IS the skill name (kebab), so the request names
+				// a directory under a known root and the server resolves the rest.
+				const dir2 = path.join(opts.skillRoot ? path.resolve(opts.skillRoot) : path.join(dshHome(), 'skills'), nameParam);
 				const text = await readIfExists(path.join(dir2, 'SKILL.md'));
 				if (text === undefined) return json(res, 404, { error: 'skill not found' });
 				let files = [];
@@ -2931,7 +2971,15 @@ function memoryPanelApi(opts) {
 				} catch {
 					/* bundle dir vanished mid-read — body still answers */
 				}
-				return json(res, 200, { name: nameParam, kind, text, files });
+				const { fields } = parseSkillText(text);
+				const owned = /^(?:true|1)$/i.test(String(fields.agent_created ?? ''));
+				return json(res, 200, {
+					name: nameParam,
+					kind: owned ? 'memory' : 'host',
+					text,
+					files,
+					...(owned ? { status: fields.status ?? 'candidate', scope: fields.scope || '' } : {}),
+				});
 			}
 			// One stored file inside a host skill bundle (scripts/references/...):
 			// the request names skill + relative file; the server re-resolves the
@@ -2941,13 +2989,37 @@ function memoryPanelApi(opts) {
 				const rel = (url.searchParams.get('file') ?? '').trim();
 				if (!nameParam || /[\\/]|\.\./.test(nameParam)) return json(res, 400, { error: 'invalid skill name' });
 				if (!rel || rel.includes('..') || rel.startsWith('/') || rel.startsWith('\\') || /[\\]/.test(rel)) return json(res, 400, { error: 'invalid file path' });
-				const text = await readIfExists(path.join(dshHome(), 'skills', nameParam, rel));
+				const text = await readIfExists(path.join(opts.skillRoot ? path.resolve(opts.skillRoot) : path.join(dshHome(), 'skills'), nameParam, rel));
 				if (text === undefined) return json(res, 404, { error: 'file not found' });
 				return json(res, 200, { name: nameParam, file: rel, text });
 			}
 			if (seg === 'list') {
 				const zone = url.searchParams.get('zone');
 				if (!['functions', 'insights', 'capabilities', 'skills', 'daily'].includes(zone)) return json(res, 400, { error: 'invalid zone' });
+				// 5.24.0: skills are host bundles, not memory-root files. The panel
+				// skill zone IS the library endpoint (/skills); /list?zone=skills
+				// keeps answering with bundle SKILL.md rows so an older caller
+				// reading the list zone still gets real rows.
+				if (zone === 'skills') {
+					const sdir = opts.skillRoot ? path.resolve(opts.skillRoot) : path.join(dshHome(), 'skills');
+					const rows = [];
+					let ents = [];
+					try {
+						ents = await readdir(sdir, { withFileTypes: true });
+					} catch {
+						/* no bundles yet */
+					}
+					for (const e of ents.filter((x) => x.isDirectory())) {
+						try {
+							const st = await stat(path.join(sdir, e.name, 'SKILL.md'));
+							rows.push({ name: `${e.name}/SKILL.md`, bytes: st.size, mtime: st.mtime.toISOString() });
+						} catch {
+							/* not a bundle */
+						}
+					}
+					rows.sort((a, b) => String(b.mtime).localeCompare(String(a.mtime)));
+					return json(res, 200, { files: rows });
+				}
 				const dir = zone === 'daily' ? root : path.join(root, zone);
 				let names = [];
 				try {
@@ -2982,7 +3054,7 @@ function memoryPanelApi(opts) {
 				// one further down.
 				const zoneParam = url.searchParams.get('zone');
 				const zone = ['functions', 'insights', 'capabilities', 'skills', 'daily'].includes(zoneParam) ? zoneParam : 'all';
-				const hits = await searchMemory(root, q, { zone, limit: 60 });
+				const hits = await searchMemory(root, q, { zone, limit: 60, skillRoot: opts.skillRoot });
 				return json(res, 200, { hits });
 			}
 			htmlPage(
@@ -3014,6 +3086,9 @@ export function apply(ctx, config) {
 
 	const opts = {
 		memoryRoot: typeof config?.memoryRoot === 'string' && config.memoryRoot.trim() ? config.memoryRoot.trim() : undefined,
+		// Where skill bundles live. Defaults to <dshHome>/skills (the host's own
+		// user skill root); tests override it so they never touch the real catalog.
+		skillRoot: typeof config?.skillRoot === 'string' && config.skillRoot.trim() ? config.skillRoot.trim() : undefined,
 		maxIndexBytes: Number.isFinite(config?.maxIndexBytes) ? config.maxIndexBytes : DEFAULTS.maxIndexBytes,
 		maxIndexHardBytes: Number.isFinite(config?.maxIndexHardBytes) ? config.maxIndexHardBytes : DEFAULTS.maxIndexHardBytes,
 		maxFunctionBytes: Number.isFinite(config?.maxFunctionBytes) ? config.maxFunctionBytes : DEFAULTS.maxFunctionBytes,
@@ -3047,7 +3122,12 @@ export function apply(ctx, config) {
 	// does NOT list 'skills': waiting on it would break hosts that never mount
 	// dsh-skill, and the bridge needs no startup guarantee (it reads disk on
 	// every list()).
-	const skillBridge = registerMemorySkillBridge(ctx, { skillsDir: path.join(resolveRoot(opts), SKILL_DIR) });
+	// The bridge publishes from the SAME store the host scans (5.24.0): the
+	// bundles under <dshHome>/skills. It is now a thin adapter over that store
+	// (status→published), not a second location.
+	const skillBridge = registerMemorySkillBridge(ctx, {
+		skillsDir: opts.skillRoot ? path.resolve(opts.skillRoot) : path.join(dshHome(), 'skills'),
+	});
 	// The panel's skill library reads the SAME registry the host tool resolves
 	// against (bridge.registry); on a host without the skill service it stays
 	// undefined and /skills answers hostDegraded rather than erroring.

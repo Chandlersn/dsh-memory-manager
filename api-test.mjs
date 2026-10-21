@@ -9,8 +9,9 @@
  * the harness install is not discoverable from this process (see README).
  */
 import path from 'node:path';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { mkdir, writeFile, readFile, stat } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, stat, rm } from 'node:fs/promises';
 
 const mod = await import(new URL('./server.js', import.meta.url).href);
 
@@ -129,28 +130,27 @@ ok(file.status === 200 || file.status === 404, `read MEMORY.md (${file.status})`
 if (file.status === 200) ok(JSON.parse(file.body).text.includes('记忆管理'), 'MEMORY.md content');
 else console.log('    （全局根尚未建档——正常，等首次 memory_write 建立）');
 
-// --- skill library (5.20.0 storage scan) --------------------------------------
-// The endpoint scans DISK (memory single-file skills + host bundle roots), NOT
-// the registry — the panel shows what is stored; invocation policy stays the
-// machine's surface. Two paths still covered: this fakeCtx has no skill
-// service at all (irrelevant now — storage scan never touches the registry),
-// and the real host roots on this machine carry real bundles.
+// --- skill library (5.24.0: ONE storage — host bundles) ----------------------
+// Skills live only as bundles under <dshHome>/skills/<kebab>/SKILL.md. The two
+// groups are a VIEW of that one store: `agent_created` bundles are ours
+// (结晶技能), everything else is an installed skill (系统技能).
 const skillLib = await call('/api/memory-org/skills');
 ok(skillLib.status === 200, `/skills answers 200 (${skillLib.status})`);
 const sl = JSON.parse(skillLib.body);
-ok(Array.isArray(sl.memory) && Array.isArray(sl.host), 'skills payload splits memory + host groups');
+ok(Array.isArray(sl.memory) && Array.isArray(sl.host), 'skills payload splits crystallized + system groups');
 ok(!('hostDegraded' in sl), 'no hostDegraded field: a missing root just means no bundles there');
-const sepRow = (sl.memory ?? []).find((s) => s.name === '分离延迟重启');
-ok(!!sepRow, 'crystallized skill from the real root appears in the memory group');
+const sepRow = (sl.memory ?? []).find((s) => s.name === 'detached-restart');
+ok(!!sepRow, 'our crystallized bundle appears in the crystallized group');
 if (sepRow) {
-	const SK = ['name', 'status', 'published', 'scope', 'description', 'kind', 'files'];
+	const SK = ['name', 'status', 'scope', 'description', 'kind', 'files'];
 	const missSK = SK.filter((k) => !(k in sepRow));
-	ok(missSK.length === 0, `memory skill row carries its panel fields (missing: ${missSK.join(',') || 'none'})`);
-	ok(sepRow.kind === 'memory' && Array.isArray(sepRow.files) && sepRow.files.length === 1, 'a memory skill stores exactly its own file');
+	ok(missSK.length === 0, `crystallized row carries its panel fields (missing: ${missSK.join(',') || 'none'})`);
+	ok(sepRow.kind === 'memory' && Array.isArray(sepRow.files) && sepRow.files.some((f) => f.rel === 'SKILL.md'), 'a crystallized skill is a bundle with SKILL.md');
+	ok(sepRow.files.some((f) => f.rel === 'scripts/restart-relay.mjs'), 'the bundle file tree carries its scripts');
 }
 // Host rows are STORAGE bundles: dir bundles with their real file trees.
 const scRow = (sl.host ?? []).find((s) => s.name === 'skill-creator');
-ok(!!scRow && scRow.kind === 'host', 'the installed skill-creator bundle is listed');
+ok(!!scRow && scRow.kind === 'host', 'the installed skill-creator bundle is listed as a system skill');
 if (scRow) {
 	ok(scRow.source === 'user-dsh', `host row carries its root source (${scRow.source})`);
 	ok(Array.isArray(scRow.files) && scRow.files.some((f) => f.rel === 'SKILL.md') && scRow.files.some((f) => f.rel === 'scripts/quick_validate.py'), `bundle file tree includes SKILL.md + scripts (${scRow.files.length} files)`);
@@ -161,14 +161,15 @@ if (scRow) {
 	ok(!scRow.files.some((f) => /(^|\/)node_modules\//.test(f.rel)), 'the file tree excludes node_modules');
 }
 // /skill reads a STORED main file; kind picks the root; traversal is a 400.
-const memBody = await call(`/api/memory-org/skill?name=${encoded('分离延迟重启')}&kind=memory`);
-ok(memBody.status === 200 && JSON.parse(memBody.body).text.includes('程序体'), 'memory skill body reads from storage');
+const memBody = await call(`/api/memory-org/skill?name=detached-restart`);
+ok(memBody.status === 200 && JSON.parse(memBody.body).text.includes('Procedure'), 'crystallized skill body reads from its bundle');
+ok(JSON.parse(memBody.body).kind === 'memory', 'an agent_created bundle reports kind=memory');
 const badName = await call(`/api/memory-org/skill?name=${encoded('../server')}`);
 ok(badName.status === 400, 'skill route rejects traversal in the name');
-const missHost = await call('/api/memory-org/skill?name=ghost-skill&kind=host');
-ok(missHost.status === 404, 'an unknown host bundle is 404');
-// /skillfile reads a stored RESOURCE inside a host bundle; rel paths are
-// validated (no .., no backslash) and resolved server-side from the root.
+const missHost = await call('/api/memory-org/skill?name=ghost-skill');
+ok(missHost.status === 404, 'an unknown bundle is 404');
+// /skillfile reads a stored RESOURCE inside a bundle; rel paths are validated
+// (no .., no backslash) and resolved server-side from the root.
 const pyFile = await call(`/api/memory-org/skillfile?name=skill-creator&file=${encoded('scripts/quick_validate.py')}`);
 ok(pyFile.status === 200 && JSON.parse(pyFile.body).text.includes('validate_skill'), 'a stored resource file reads through /skillfile');
 const badRel = await call(`/api/memory-org/skillfile?name=skill-creator&file=${encoded('../quick_validate.py')}`);
@@ -178,48 +179,48 @@ ok(badRel2.status === 400, 'skillfile rejects backslashes in the relative path')
 // --- panel write channel (5.21.0) --------------------------------------------
 // The only mutating route. It runs the memory_skill tool's real executor, so
 // the same guards hold; crystallize is deliberately NOT reachable here.
+// These assertions use a THROWAWAY bundle and never touch the user's real
+// skills: the earlier version retired/activated/deleted a live skill, which is
+// exactly the kind of side effect a test must not have.
 const getOnly = await call('/api/memory-org/skill-action');
 ok(getOnly.status === 405, 'skill-action is POST-only');
 const badAct = await post('/api/memory-org/skill-action', { action: 'crystallize', name: 'x' });
 ok(badAct.status === 400, 'crystallize is not reachable from the panel (model judgement)');
 const noName = await post('/api/memory-org/skill-action', { action: 'activate' });
-ok(noName.status === 400, 'a missing/invalid name is rejected (safeSlug guard still in force)');
-// A real lifecycle round trip on the real root, then restore the prior state:
-// the assertion is the ROUND TRIP (retire -> list shows retired -> activate ->
-// list shows active again), not just a 200.
-const before = (await call('/api/memory-org/skills')).body;
-const sepBefore = JSON.parse(before).memory.find((s) => s.name === '分离延迟重启');
-const prior = sepBefore?.status;
-if (prior === 'active') {
-	const ret = await post('/api/memory-org/skill-action', { action: 'retire', name: '分离延迟重启' });
-	ok(ret.status === 200 && JSON.parse(ret.body).status === 'retired', 'panel retire returns the new status');
-	const afterRet = JSON.parse((await call('/api/memory-org/skills')).body).memory.find((s) => s.name === '分离延迟重启');
-	ok(afterRet.status === 'retired' && afterRet.published === false, 'a retired skill leaves the published set');
-	const act = await post('/api/memory-org/skill-action', { action: 'activate', name: '分离延迟重启' });
-	ok(act.status === 200 && JSON.parse(act.body).status === 'active', 'panel activate restores it');
-	const afterAct = JSON.parse((await call('/api/memory-org/skills')).body).memory.find((s) => s.name === '分离延迟重启');
-	ok(afterAct.status === 'active' && afterAct.published === true, 'reactivated skill re-enters the published set');
-} else {
-	ok(true, `lifecycle round trip skipped (prior status=${prior})`);
-}
-// delete: create a throwaway skill, delete it, and prove BOTH the file and the
-// index row are gone (the row must not linger as a dangling pointer). The skill
-// is planted directly (not via the tool) so the delete path is tested alone.
-await mkdir(path.join(root, 'skills'), { recursive: true });
+ok(noName.status === 400, 'a missing name is rejected');
+const badSlug = await post('/api/memory-org/skill-action', { action: 'activate', name: 'Bad_Name' });
+ok(badSlug.status === 400, 'a non-kebab name is rejected (it is a bundle dir name)');
+// A real lifecycle round trip, on a bundle this test plants and removes itself.
+const probe = 'api-probe-skill';
+// The host user skill root (where bundles live now) — the SAME helper the
+// plugin uses, so the test and the running code agree on the location.
+const { dshHome } = await import(new URL('./src/util.js', import.meta.url).href);
+const probeDir = path.join(dshHome(), 'skills', probe);
+await mkdir(probeDir, { recursive: true });
 await writeFile(
-	path.join(root, 'skills', '待删技能.md'),
-	'---\nname: 待删技能\ndescription: 删除断言用的临时技能\nagent_created: true\nscope: global\nstatus: active\n---\n\n# 待删技能\n\n## 何时使用\n\n- x\n\n## 调用步骤\n\n1. a\n2. b\n',
+	path.join(probeDir, 'SKILL.md'),
+	`---\nname: ${probe}\ndescription: "当面板写通道回归时使用本技能：临时探针"\nagent_created: true\nscope: global\nstatus: active\n---\n\n# ${probe}\n\n## 何时使用\n\n- x\n\n## 调用步骤\n\n1. a\n2. b\n`,
 	'utf8',
 );
-const del = await post('/api/memory-org/skill-action', { action: 'delete', name: '待删技能' });
-ok(del.status === 200, 'panel delete succeeds');
-const fileGone = await stat(path.join(root, 'skills', '待删技能.md')).then(() => false, () => true);
-ok(fileGone, 'the skill file is gone');
-const rowGone = !JSON.parse((await call('/api/memory-org/skills')).body).memory.some((s) => s.name === '待删技能');
-ok(rowGone, 'its index row is gone too');
-const idxText = await readFile(path.join(root, 'MEMORY.md'), 'utf8');
-ok(!idxText.includes('| [待删技能]'), 'MEMORY.md carries no dangling row for the deleted skill');
-const delMissing = await post('/api/memory-org/skill-action', { action: 'delete', name: '不存在的技能xyz' });
+try {
+	const ret = await post('/api/memory-org/skill-action', { action: 'retire', name: probe });
+	ok(ret.status === 200 && JSON.parse(ret.body).status === 'retired', 'panel retire returns the new status');
+	const afterRet = JSON.parse((await call('/api/memory-org/skills')).body).memory.find((s) => s.name === probe);
+	ok(afterRet.status === 'retired', 'a retired bundle reports its new lifecycle');
+	const act = await post('/api/memory-org/skill-action', { action: 'activate', name: probe });
+	ok(act.status === 200 && JSON.parse(act.body).status === 'active', 'panel activate restores it');
+	const afterAct = JSON.parse((await call('/api/memory-org/skills')).body).memory.find((s) => s.name === probe);
+	ok(afterAct.status === 'active', 'reactivated bundle reports active again');
+	const del = await post('/api/memory-org/skill-action', { action: 'delete', name: probe });
+	ok(del.status === 200, 'panel delete succeeds');
+	const fileGone = await stat(path.join(probeDir, 'SKILL.md')).then(() => false, () => true);
+	ok(fileGone, 'the bundle file is gone');
+	const idxText = await readFile(path.join(root, 'MEMORY.md'), 'utf8');
+	ok(!idxText.includes(probe), 'MEMORY.md carries no dangling row for the deleted skill');
+} finally {
+	await rm(probeDir, { recursive: true, force: true });
+}
+const delMissing = await post('/api/memory-org/skill-action', { action: 'delete', name: 'no-such-skill-xyz' });
 ok(delMissing.status === 400, 'deleting a missing skill is a 400, not a 500');
 
 // --- overview / counts -------------------------------------------------------
