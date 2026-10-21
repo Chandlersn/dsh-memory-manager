@@ -144,10 +144,10 @@ memory/
 | `memory_insight` | 从功能划分中提取可迁移原则到 `insights/`，回链来源功能域，支持 `supersedes` 取代旧思想；写入时过「跨域 ≥2 来源 / 不可降级 / ≤200 字」三道软闸门 |
 | `memory_fold` | 功能文件超 30KB 时把最旧迭代块折叠成"早期演化"段（保留结论与全部日期标签） |
 | `memory_rename` | 重命名 / 合并功能域，自动改写所有引用并验证死链清零 |
-| `memory_check` | 体检：索引体积、缺摘要、孤儿文件、反向链接、日期乱序、死链、冷记忆、头部守卫、路径存活、块/行过详（R14）、重复行/表（R15）、纠正率熔断（R18）、共识条目无依据/过长/假跨域（R19）、技能可执行性与生命周期（R20/R20e） |
+| `memory_check` | 体检：索引体积、缺摘要、孤儿文件、反向链接、日期乱序、死链、冷记忆、头部守卫、路径存活、块/行过详（R14）、重复行/表（R15）、纠正率熔断（R18）、共识条目无依据/过长/假跨域（R19）、旧布局残留与索引行-包状态对照（R20/R20e）、宿主包死链（R10 扫 bundle） |
 | `memory_usage` | **使用信号**：`record` 记一次纠正/认可（召回与读取由插件自动记）；`report` 按窗口聚合，给出 实验/专项/通用 的分层建议（只建议，不自动移动文件） |
 | `memory_federation` | **联邦模式**（可选）：`sync` 把各项目 `MEMORY.md` 复制进联邦层 `sources/` 并重建项目索引表；`check` 体检 F1–F5（索引存在、链接可解析、项目/副本齐全、无孤儿副本、绝对路径存活） |
-| `memory_skill` | **技能结晶层**（数据流缺的"用"这一步）：`candidates` 用使用信号机械提名（≥6 用 + ≥1 认可 + 纠正率<20%，纯聚合不自动写）；`crystallize` 把反复跑通的操作写成 `skills/<名>.md` 可调用程序（何时使用/步骤/坑/验证 + frontmatter 路由）；`activate`/`retire` 生命周期（candidate→active→retired，只有 active 进召回）；`list`/`read` 查 |
+| `memory_skill` | **技能结晶层**（数据流缺的"用"这一步）：`candidates` 用使用信号机械提名（≥6 用 + ≥1 认可 + 纠正率<20%，纯聚合不自动写）；`crystallize` 把反复跑通的操作写成宿主技能目录包 `<dshHome>/skills/<kebab>/SKILL.md`（何时使用/步骤/坑/验证 + frontmatter 路由；重结晶前把旧正文存档 `.history/`）；`activate`/`retire` 生命周期（candidate→active→retired，只有 active 进召回；转正需使用/认可以外证据或显式 note 承担）；`delete` 删整包（仅限自有）；`list`/`read` 查 |
 
 系统提示里会注入一段纪律说明；`agent/pre-step` 钩子按用户输入与索引行的词元重合度打分，
 把命中的索引行作为一条 `recall` 消息注入。打分是 **RRF 融合**的两路排序：

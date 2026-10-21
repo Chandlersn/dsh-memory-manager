@@ -10,15 +10,34 @@
 import { appendFile, mkdir } from 'node:fs/promises';
 import * as path from 'node:path';
 import { readIfExists } from './util.js';
+import { redactSecrets } from './secrets.js';
 
 export function usagePath(root) {
 	return path.join(root, '.usage.jsonl');
 }
 
+/**
+ * One canonical identity per skill in the ledger (5.27.0): the index row links
+ * to the host bundle with an absolute file:/// URL, the tools and the activate
+ * gate speak the relative `skills/<name>/SKILL.md` form — without folding, the
+ * SAME skill would accumulate signals under two hrefs and each reader would
+ * see half the evidence. Everything else passes through untouched.
+ */
+export function canonicalHref(href) {
+	const m = /(?:^|[\\/])skills[\\/]+([^\\/]+)[\\/]+SKILL\.md$/i.exec(String(href ?? ''));
+	return m ? `skills/${m[1]}/SKILL.md` : String(href ?? '');
+}
+
 export async function appendUsage(root, entry) {
 	try {
 		await mkdir(root, { recursive: true });
-		await appendFile(usagePath(root), `${JSON.stringify({ t: new Date().toISOString(), ...entry })}\n`, 'utf8');
+		// REDACT HERE TOO (5.27.0): util.js calls writeText "the single choke
+		// point" for credentials, but this path appends directly — a note like
+		// "the token leaked here" used to land in .usage.jsonl as plaintext, and
+		// R21 never scans the dot-file. Same tier-1 rule as every other writer.
+		const folded = { ...entry, href: canonicalHref(entry.href) };
+		if (typeof folded.note === 'string') folded.note = redactSecrets(folded.note).text;
+		await appendFile(usagePath(root), `${JSON.stringify({ t: new Date().toISOString(), ...folded })}\n`, 'utf8');
 	} catch {
 		/* usage logging must never break a step or a tool call */
 	}
@@ -37,7 +56,10 @@ export async function readUsage(root, days = 30) {
 			const e = JSON.parse(s);
 			const t = Date.parse(e.t);
 			if (!Number.isFinite(t) || t < cutoff) continue;
-			out.push({ ...e, ms: t });
+			// Fold on READ as well as write: pre-fold lines in an existing ledger
+			// (and recall lines written with the absolute bundle href) aggregate
+			// under one identity, so evidence is never split across two hrefs.
+			out.push({ ...e, href: canonicalHref(e.href), ms: t });
 		} catch {
 			/* skip corrupt line */
 		}
@@ -55,11 +77,16 @@ export function summarizeUsage(entries) {
 	for (const e of entries) {
 		const href = String(e.href ?? '').trim();
 		if (!href) continue;
-		const cur = map.get(href) ?? { href, recalls: 0, reads: 0, corrections: 0, positives: 0, last: 0 };
+		const cur = map.get(href) ?? { href, recalls: 0, reads: 0, corrections: 0, positives: 0, lifecycle: 0, last: 0 };
 		if (e.kind === 'recall') cur.recalls++;
 		else if (e.kind === 'read') cur.reads++;
 		else if (e.kind === 'correction') cur.corrections++;
 		else if (e.kind === 'positive') cur.positives++;
+		// Lifecycle stamps (crystallize/activate/retire) belong to the LEDGER, not
+		// to the skill body (the user's ruling: a skill stays the current
+		// procedure; dated logs grow without bound). They count as neither uses
+		// nor verdicts — pure provenance.
+		else if (e.kind === 'lifecycle') cur.lifecycle++;
 		if (e.kind === 'correction' || e.kind === 'positive') {
 			const seq = verdicts.get(href) ?? [];
 			seq.push({ kind: e.kind, ms: e.ms });

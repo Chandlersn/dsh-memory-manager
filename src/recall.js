@@ -7,6 +7,21 @@
  */
 import { insightTrust } from './usage.js';
 
+/**
+ * The identity of a skill index row from its href (5.27.0, SHARED by recall and
+ * the server's panel row reader — the two index parsers must agree on names, or
+ * one view clicks what the other cannot find):
+ *   file:///.../<name>/SKILL.md  → <name>   (the bundle directory)
+ *   skills/<name>.md (legacy)    → <name>   (the file basename)
+ * The previous server-side `slice(-2)[0]` gave 'skills' for the legacy form.
+ */
+export function skillNameOf(href) {
+	const segs = String(href ?? '').replace(/\\/g, '/').split('/').filter(Boolean);
+	const leaf = segs[segs.length - 1] ?? '';
+	if (/^SKILL\.md$/i.test(leaf)) return segs[segs.length - 2] ?? '';
+	return leaf.replace(/\.md$/i, '');
+}
+
 /** Extract meaningful tokens: CJK bigrams + latin words, minus stopwords. */
 export function tokensOf(text) {
 	const t = String(text ?? '').toLowerCase();
@@ -72,12 +87,20 @@ export function matchIndexRows(indexText, userTokens, limit = 3, usage) {
 		// shadow the reasoning it was distilled from. The status cell is the one
 		// holding exactly one of the three lifecycle words (works for both the
 		// 4-column and the 3-column shape).
+		// FAIL-CLOSED (5.27.0, adversarial audit): the old condition was
+		// `statusCell && statusCell !== 'active'` — a skill row WITHOUT a status
+		// cell (hand-edited, legacy shape) defaulted to trusted and entered recall
+		// as ⭐ "follow it, do not re-derive". Missing evidence is evidence of
+		// nothing; the bundle-vs-row agreement is re-checked by the health lint
+		// (R20e), so the row must prove 'active' to fire.
 		const statusCell = cells.find((c) => /^(candidate|active|retired)$/.test(c));
-		if (zone === 'skill' && statusCell && statusCell !== 'active') continue;
-		// The skill's identity is its BUNDLE DIRECTORY name, not the SKILL.md leaf.
-		const name = zone === 'skill'
-			? (href.split('/').filter(Boolean).slice(-2)[0] ?? '')
-			: href.split('/').pop().replace(/\.md$/, '');
+		if (zone === 'skill' && statusCell !== 'active') continue;
+		// The skill's identity: a bundle href ends <name>/SKILL.md (take the
+		// parent directory); the LEGACY `skills/<name>.md` form takes the file
+		// basename. The old slice(-2)[0] gave 'skills' for two-segment legacy
+		// hrefs — every legacy row then shared one bogus name and name-hit
+		// scoring matched nothing real (audit finding; tested with a legacy row).
+		const name = zone === 'skill' ? skillNameOf(href) : href.split('/').pop().replace(/\.md$/, '');
 		candidates.push({
 			name,
 			summary: cells[1],

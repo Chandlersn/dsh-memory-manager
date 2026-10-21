@@ -38,16 +38,16 @@ import { createRequire } from 'node:module';
 //   host.js      — DSH install discovery and lazy Host binding
 import {
 	localDateStr, normDate, oneLine, charLen, readIfExists, writeText, statExists, safeSlug,
-	splitIterationBlocks, dshHome, joinDshHome, resolveRoot, appendBlock, countHeadingDate,
+	splitIterationBlocks, dshHome, joinDshHome, resolveRoot, appendBlock, countHeadingDate, withPathLock,
 } from './src/util.js';
 import { usagePath, appendUsage, readUsage, summarizeUsage, insightTrust, trustLineFor, refreshTrustLine } from './src/usage.js';
 import {
 	memoryIndexTemplate, functionFileTemplate, dailyTemplate, insightTemplate, sepOf,
 	upsertIndexRow, appendUnderHeading, resolveOpenItems, refreshSummarySection, replaceSection,
-	dropIndexRow,
+	dropIndexRow, rowSlug,
 } from './src/markdown.js';
 import { selfReload, isReloading } from './src/reload.js';
-import { tokensOf, matchIndexRows, buildRecallMessage } from './src/recall.js';
+import { tokensOf, matchIndexRows, buildRecallMessage, skillNameOf } from './src/recall.js';
 import { redactSecrets, scanSecrets } from './src/secrets.js';
 import { isSkillName, registerMemorySkillBridge, parseSkillText, isPublishable, skillAppliesToProject, PROVIDER_NAME } from './src/host-skill.js';
 import { resolveDshRoot, setHostRoot, loadHost, defineTool, createUserMessage } from './src/host.js';
@@ -436,6 +436,50 @@ async function runHealthCheck(root, opts) {
 		}
 	}
 
+	// THE BUNDLE STORE JOINED THE LINT (5.27.0, adversarial audit): since 5.24.0
+	// skills live OUTSIDE the memory root, so the zone walk above never sees
+	// them — their evidence links dangled un-checked, and their lifecycle agreed
+	// with nobody. Two checks per bundle: (a) R10 over its SKILL.md links
+	// (resolved against the bundle dir); (b) the index row vs frontmatter status
+	// — recall reads the ROW (fail-closed), publish and the panel read the FILE,
+	// so a silent drift is a lifecycle with two truths.
+	{
+		const sdir = opts.skillRoot ? path.resolve(opts.skillRoot) : path.join(dshHome(), 'skills');
+		// find a skill's row status cell in MEMORY.md (undefined = no row; null =
+		// a row without a lifecycle cell). Same href recognition as recall, same
+		// name extraction (skillNameOf) — one grammar for both index parsers.
+		const rowStatusOf = (name) => {
+			for (const raw of memText.split('\n')) {
+				const s = raw.trim();
+				if (!s.startsWith('|')) continue;
+				const cells = s.replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
+				const href = cells.map((c) => /\(([^)\s]+\.md)\)/.exec(c)?.[1]).find(Boolean);
+				if (!href || !(/(?:^|\/)skills\/[^/]+\/SKILL\.md$/.test(href) || /^skills\//.test(href))) continue;
+				if (skillNameOf(href) !== name) continue;
+				return cells.find((c) => /^(candidate|active|retired)$/.test(c)) ?? null;
+			}
+			return undefined;
+		};
+		let bundles = [];
+		try {
+			bundles = (await readdir(sdir, { withFileTypes: true })).filter((e) => e.isDirectory() && e.name !== '.history');
+		} catch {
+			/* no skill store yet */
+		}
+		for (const e of bundles) {
+			const bp = path.join(sdir, e.name, 'SKILL.md');
+			const btext = await readIfExists(bp);
+			if (btext === undefined) continue;
+			await checkLinks(btext, bp, root, add);
+			if (!/^(?:true|1)$/i.test(String(parseSkillText(btext).fields.agent_created ?? ''))) continue;
+			const bstatus = (btext.match(/^status:\s*([a-z]+)/m) ?? [])[1] ?? 'candidate';
+			const rs = rowStatusOf(e.name);
+			if (rs === undefined) add('WARN', 'R20e', `技能「${e.name}」有包无索引行：召回只认索引行，跑一次 memory_skill(activate/retire) 或 memory_index 补行`);
+			else if (rs === null) add('WARN', 'R20e', `技能「${e.name}」索引行缺状态格：召回按 fail-closed 不放行，补 candidate/active/retired`);
+			else if (rs !== bstatus) add('WARN', 'R20e', `技能「${e.name}」索引行状态 ${rs} 与包 frontmatter ${bstatus} 不一致：召回信行、发布信文件，确认哪边是现状`);
+		}
+	}
+
 	try {
 		for (const f of await readdir(root)) {
 			if (!/^\d{4}-\d{2}-\d{2}\.md$/.test(f)) continue;
@@ -658,6 +702,9 @@ function memoryReadTool(opts) {
 				const p = path.join(dir, sName, 'SKILL.md');
 				const text = await readIfExists(p);
 				if (text === undefined) return { found: false, path: p, content: '', listing: await listBundles() };
+				// Reading a skill IS a use signal (the activate evidence gate reads
+				// it; canonicalHref folds it onto the bundle identity).
+				await appendUsage(root, { href: `skills/${sName}/SKILL.md`, kind: 'read' });
 				return { found: true, path: p, content: text, listing: [] };
 			}
 			if (args.kind === 'function' || args.kind === 'insight' || args.kind === 'capability') {
@@ -901,9 +948,14 @@ function memoryUsageTool(opts) {
 			const warnings = [];
 			if (args.action === 'record') {
 				const href = oneLine(args.href);
-				if (!/^(functions|insights)\/[^/]+\.md$/.test(href) && !/^\d{4}-\d{2}-\d{2}\.md$/.test(href)) {
-					throw new Error('href 必须是 functions/<名>.md、insights/<名>.md 或 YYYY-MM-DD.md');
+				// 5.27.0: a skill's own bundle is recordable too — the activate
+				// evidence gate reads positives on `skills/<name>/SKILL.md`, and until
+				// now the contract REJECTED exactly that href (hit twice in practice).
+				const skillM = /^skills\/([^/]+)\/SKILL\.md$/.exec(href);
+				if (!/^(functions|insights|capabilities)\/[^/]+\.md$/.test(href) && !/^\d{4}-\d{2}-\d{2}\.md$/.test(href) && !skillM) {
+					throw new Error('href 必须是 functions/<名>.md、insights/<名>.md、capabilities/<名>.md、skills/<技能>/SKILL.md 或 YYYY-MM-DD.md');
 				}
+				if (skillM && !isSkillName(skillM[1])) throw new Error(`技能名必须是 kebab-case，收到：${skillM[1]}`);
 				const kind = ['correction', 'positive', 'recall', 'read'].includes(args.kind) ? args.kind : null;
 				if (!kind) throw new Error('kind 必须是 correction / positive / recall / read');
 				await appendUsage(root, { href, kind, note: oneLine(args.note ?? '') || undefined });
@@ -1038,6 +1090,7 @@ function memoryFederationTool(opts) {
 					if (!next.includes(FED_TABLE_HEADING)) next = federationIndexText(rows);
 				}
 				await writeText(indexPath, next);
+				opts.dropRecallCaches?.();
 			} else {
 				// F1: federation index exists
 				const idxText = await readIfExists(indexPath);
@@ -1130,6 +1183,20 @@ async function listMdDir(dir) {
  * provider); the harness drift-guard compares it against the real package.
  */
 
+/**
+ * The usage-href list a skill's own evidence cites: its frontmatter `sources:`
+ * normalized to zone paths (functions/x.md). Pure — the activate evidence gate
+ * reads it to check whether the DISTILLATION SOURCE has use signals (a proven
+ * area crystallized late still deserves promotion).
+ */
+export function srcsOfExisting(text) {
+	const m = (text.match(/^sources:\s*\[([^\]]*)\]/m) ?? [])[1] ?? '';
+	return m
+		.split(',')
+		.map((s) => s.trim().replace(/^['"]|['"]$/g, ''))
+		.filter((s) => /^(functions|insights|capabilities)\//.test(s));
+}
+
 function skillTemplate(name, f) {
 	return [
 		'---',
@@ -1175,10 +1242,10 @@ function skillTemplate(name, f) {
 		'',
 		...f.srcLines,
 		'',
-		'## 使用记录',
-		'',
-		`- ${f.date} 结晶（${f.status}）`,
-		...(f.priorUse ?? []),
+		// NO 使用记录/迭代日志 section (the user's ruling, 5.27.0): every
+		// activate/retire appended a line here — the body grew with use while a
+		// skill must stay the CURRENT procedure. Lifecycle lives in `status:`
+		// alone; history belongs to the memory layer (functions/ blocks).
 		'',
 	].join('\n');
 }
@@ -1355,12 +1422,17 @@ function memoryCapabilityTool(opts) {
 			}
 			// Keep the index row in sync: the capability table is the "what can I
 			// use" lookup surface, and a ledger nobody indexes is a ledger nobody
-			// finds.
+			// finds. Shares the MEMORY.md writer lock (audit #3).
 			const indexPath = path.join(root, 'MEMORY.md');
-			let indexText = (await readIfExists(indexPath)) ?? memoryIndexTemplate();
-			const row = `| [${name}](${CAP_DIR}/${name}.md) | ${summary} |`;
-			indexText = upsertIndexRow(indexText, CAP_TABLE_HEADING, CAP_TABLE_HEADER, name, row);
-			await writeText(indexPath, indexText);
+			await withPathLock(indexPath, async () => {
+				let indexText = (await readIfExists(indexPath)) ?? memoryIndexTemplate();
+				const row = `| [${name}](${CAP_DIR}/${name}.md) | ${summary} |`;
+				indexText = upsertIndexRow(indexText, CAP_TABLE_HEADING, CAP_TABLE_HEADER, name, row);
+				await writeText(indexPath, indexText);
+				// Fresh index: the just-written row must be recallable on the next
+				// step, not up to 10s later (audit #10).
+				opts.dropRecallCaches?.();
+			});
 			const st = await stat(p);
 			return {
 				action: 'record',
@@ -1484,7 +1556,13 @@ function memorySkillTool(opts, hooks = {}) {
 				const verb = v.action === 'crystallize' ? '已结晶技能' : v.action === 'activate' ? '已激活技能' : v.action === 'retire' ? '已退役技能' : '已删除技能';
 				const lines = [`${verb}：${v.file}（status=${v.status}）`];
 				for (const w of v.warnings) lines.push(`⚠ ${w}`);
-				if (v.action === 'crystallize') lines.push(`ℹ 技能目录包已写入 ${path.dirname(p)}。请按 skill-creator 流程打磨正文（skill 工具加载 ~/.dsh/skills/skill-creator/：规划内容 → 祈使句编辑 → scripts 配套 → quick_validate.py 校验）；按真实任务跑通一次后用 memory_skill(activate) 转正，pre-step 会优先提示命中技能。`);
+				// The bundle path comes from v.file, never from execute's `p` —
+				// render is a SIBLING of execute, that name is out of its scope
+				// (an adversarial audit caught exactly this: the host calls render
+				// after every success, a ReferenceError here makes the host reject
+				// a disk write that DID land — silent-write + rejected-receipt,
+				// the 5.11.3 lesson recurring through an untested projection path).
+				if (v.action === 'crystallize') lines.push(`ℹ 技能目录包已写入 ${path.dirname(String(v.file ?? ''))}。请按 skill-creator 流程打磨正文（skill 工具加载 ~/.dsh/skills/skill-creator/：规划内容 → 祈使句编辑 → scripts 配套 → quick_validate.py 校验）；按真实任务跑通一次后用 memory_skill(activate) 转正，pre-step 会优先提示命中技能。`);
 				if (v.action === 'delete') lines.push('ℹ 文件与索引行已删除，宿主目录同步失效；历史只能从 git 恢复。');
 				return [{ type: 'text', text: lines.join('\n') }];
 			},
@@ -1540,13 +1618,22 @@ function memorySkillTool(opts, hooks = {}) {
 			};
 			const syncIndexRow = async (item) => {
 				const indexPath = path.join(root, 'MEMORY.md');
-				let indexText = (await readIfExists(indexPath)) ?? memoryIndexTemplate();
-				// The row points at the HOST bundle path (absolute), because there is
-				// no memory-root copy to link to any more.
-				const href = `file:///${path.join(dir, item.name, 'SKILL.md').replace(/\\/g, '/')}`;
-				const row = `| [${item.name}](${href}) | ${item.summary} | ${item.status} |`;
-				indexText = upsertIndexRow(indexText, SKILL_TABLE_HEADING, SKILL_TABLE_HEADER, item.name, row);
-				await writeText(indexPath, indexText);
+				// ONE lock for every MEMORY.md writer (audit #3): this row sync,
+				// memory_index, capability record, skill delete and memory_rename all
+				// read-modify-write the same file; serialized, no writer ever computes
+				// from a snapshot another has already replaced.
+				await withPathLock(indexPath, async () => {
+					let indexText = (await readIfExists(indexPath)) ?? memoryIndexTemplate();
+					// The row points at the HOST bundle path (absolute), because there is
+					// no memory-root copy to link to any more.
+					const href = `file:///${path.join(dir, item.name, 'SKILL.md').replace(/\\/g, '/')}`;
+					const row = `| [${item.name}](${href}) | ${item.summary} | ${item.status} |`;
+					indexText = upsertIndexRow(indexText, SKILL_TABLE_HEADING, SKILL_TABLE_HEADER, item.name, row);
+					await writeText(indexPath, indexText);
+				});
+				// The recall cache must drop so the fresh skill row is recallable at
+				// once (audit #10).
+				opts.dropRecallCaches?.();
 				// Every write that lands (crystallize/activate/retire all funnel here)
 				// refreshes the host catalog — one choke point, no per-action miss.
 				publish();
@@ -1557,9 +1644,12 @@ function memorySkillTool(opts, hooks = {}) {
 				const skillSources = [];
 				for (const it of all) {
 					const text = (await readIfExists(bundleOf(it.name))) ?? '';
-					// evidence links are written as (../functions/x.md); normalize to
-					// the usage-href form (functions/x.md) so nomination can compare.
-					for (const m of text.matchAll(/\((?:\.\.\/)?((?:functions|insights)\/[^)#]+)\)/g)) skillSources.push(m[1]);
+					// Read the CANONICAL frontmatter sources, not body links: 5.27.0
+					// rewrote evidence links to absolute file:/// (they no longer
+					// matched the old `../` regex), and parsing the field is immune to
+					// how the links happen to be spelled. If nomination read nothing,
+					// a crystallized area would be re-nominated forever.
+					for (const h0 of srcsOfExisting(text)) skillSources.push(h0);
 				}
 				const candidates = nominateSkillCandidates(items, skillSources);
 				return { action: 'candidates', candidates, items: [], warnings };
@@ -1619,12 +1709,20 @@ function memorySkillTool(opts, hooks = {}) {
 				const scopeNotes = oneLine(args.scopeNotes ?? '');
 				// (name already validated as kebab-case at the entry — it is the
 				// bundle directory name, i.e. the host name.)
+				// OWNERSHIP GATE (5.27.0, from the adversarial audit): crystallize
+				// overwrites the whole file, so it may only do that to a bundle this
+				// plugin owns. A hand-installed skill is not ours to rewrite; the
+				// delete path had this guard and crystallize did not — the asymmetry
+				// was the bug.
+				if (existing !== undefined && !/^(?:true|1)$/i.test(String(parseSkillText(existing).fields.agent_created ?? ''))) {
+					throw new Error(`${name} 已存在且不是本插件结晶的技能（frontmatter 无 agent_created）：不覆盖外来技能，请换名或先由它的来源渠道管理`);
+				}
 				// Re-crystallization KEEPS the lifecycle: activating then improving a
 				// skill must not silently demote it to candidate (the status line and
 				// the ⭐ recall gate both read it).
 				const priorStatus = created ? 'candidate' : ((existing.match(/^status:\s*([a-z]+)/m) ?? existing.match(/^> 状态：([a-z]+)/m) ?? [])[1] ?? 'candidate');
 				if (!created) {
-					warnings.push(`技能已存在：本次为整体重结晶（覆盖正文与程序），使用记录已并入新文件头部，生命周期保留为 ${priorStatus}，旧版演进靠 git/人工留存`);
+					warnings.push(`技能已存在：本次为整体重结晶（覆盖正文与程序），生命周期保留为 ${priorStatus}；旧版已存进 .history/（见下）`);
 				}
 				// Router field (the skill-creator lesson): the frontmatter description
 				// decides WHEN the skill fires, so it embeds the trigger, third-person.
@@ -1633,15 +1731,14 @@ function memorySkillTool(opts, hooks = {}) {
 					if (s.includes('](')) return `- ${s}`; // an authored markdown link passes through
 					const rel = s.trim().replace(/^\.\.?\//, '').replace(/\.md$/i, '');
 					const label = rel.replace(/^(?:functions|insights|capabilities|skills)\//, '');
-					return `- [${label}.md](../${rel}.md)`;
+					// ABSOLUTE link into the memory root (5.27.0): the bundle lives at
+					// <dshHome>/skills/<name>/, NOT under the memory root — the old
+					// `../functions/x.md` resolved to <dshHome>/skills/functions/x.md,
+					// a path that never exists (the audit caught R10 blind to it,
+					// because the health check only walks the memory root). Same
+					// strategy as the index row href.
+					return `- [${label}.md](file:///${path.join(root, rel + '.md').replace(/\\/g, '/')})`;
 				});
-				// Carry the old 使用记录 across a re-crystallization: the lifecycle
-				// history belongs to the skill, not to one version of its body.
-				let priorUse = [];
-				if (existing !== undefined) {
-					const rec = (existing.match(/## 使用记录\s*\n([\s\S]*?)(?=\n## |$)/) ?? [])[1];
-					priorUse = (rec ?? '').split('\n').map((l) => l.trim()).filter((l) => l.startsWith('- '));
-				}
 				const body = skillTemplate(name, {
 					status: priorStatus,
 					date,
@@ -1656,13 +1753,27 @@ function memorySkillTool(opts, hooks = {}) {
 					pitfalls: oneLine(args.pitfalls ?? ''),
 					verification,
 					srcLines,
-					priorUse,
 				});
 				// Write the BUNDLE: <dshHome>/skills/<name>/SKILL.md. The directory is
 				// the host's discovery unit, so the tool creates exactly what the host
 				// (and the panel) reads — one storage location, no memory-root copy.
 				await mkdir(path.dirname(p), { recursive: true });
+				// THE ARCHIVE IS REAL (5.27.0): receipts used to promise "old version
+				// kept by git" while <dshHome>/skills is not a repository on this
+				// machine — an overwrite that claimed a safety net which did not
+				// exist. Keep the superseded body ourselves, append-only, before
+				// replacing it. One slot per day: same-day re-crystallizes keep the
+				// FIRST snapshot (the oldest full body is the useful baseline; the
+				// latest is already live on disk).
+				if (existing !== undefined) {
+					const histDir = path.join(dir, '.history');
+					await mkdir(histDir, { recursive: true });
+					const histFile = path.join(histDir, `${name}-${date}.md`);
+					if (await statExists(histFile)) warnings.push(`.history/${name}-${date}.md 已存在：保留首份快照，本次覆盖不再重复存档`);
+					else await writeFile(histFile, existing, 'utf8');
+				}
 				await writeText(p, body);
+				await appendUsage(root, { href: `skills/${name}/SKILL.md`, kind: 'lifecycle', note: created ? `结晶（${priorStatus}）` : `重结晶（保留 ${priorStatus}）` });
 				const st = await stat(p);
 				const item = { name, status: priorStatus, summary, updated: st.mtime.toISOString() };
 				await syncIndexRow(item);
@@ -1670,23 +1781,49 @@ function memorySkillTool(opts, hooks = {}) {
 			}
 			if (args.action === 'activate' || args.action === 'retire') {
 				const text = await readIfExists(p);
-				if (text === undefined) throw new Error(`技能台账里没有 ${name}`);
+				if (text === undefined) throw new Error(`技能库里没有 ${name}`);
+				if (!/^(?:true|1)$/i.test(String(parseSkillText(text).fields.agent_created ?? ''))) {
+					throw new Error(`${name} 不是本插件结晶的技能（缺 agent_created）：生命周期归它的来源渠道管`);
+				}
 				const to = args.action === 'activate' ? 'active' : 'retired';
 				// frontmatter `status:` is canonical; tolerate the pre-5.12 head form.
-				const cur = (text.match(/^status:\s*([a-z]+)/m) ?? text.match(/^> 状态：([a-z]+)/m) ?? [])[1] ?? 'candidate';
+				const cur = (text.match(/^status:\s*([a-z]+)/m) ?? text.match(/^> 状态：[a-z]+/m) ?? [])[1] ?? 'candidate';
 				const note = oneLine(args.note ?? '');
 				if (cur === to) throw new Error(`${name} 已是 ${to}`);
 				if (to === 'retired' && cur === 'candidate') warnings.push('candidate 直接 retired：未经使用即放弃，确认是否应保留观察');
+				// EVIDENCE GATE (5.27.0): promotion to active — the one state that
+				// enters recall as ⭐ "follow it, do not re-derive" and publishes to
+				// the host — must point at SOME use signal: a positive/read on the
+				// skill itself, or on the area it was distilled from. "Activate only
+				// after the procedure was actually followed" used to be prose only;
+				// the model can still carry it explicitly with `note` (recorded into
+				// the usage ledger — the body stays the current procedure).
+				if (to === 'active') {
+					const usageItems = summarizeUsage(await readUsage(root));
+					const own = usageItems.find((u) => u.href === `skills/${name}/SKILL.md`);
+					const fromArea = srcsOfExisting(text).some((h0) => {
+						const u = usageItems.find((x) => x.href === h0);
+						return u && (u.positives > 0 || u.reads > 0);
+					});
+					if (!((own && (own.positives > 0 || own.recalls > 0)) || fromArea) && !note) {
+						throw new Error(`把 ${name} 转正需要证据：它（或来源功能域）还没有任何使用/认可以外信号。真跑通过就在 note 里写清哪次任务跑通（会记进台账），或先 memory_usage(record) 记一笔认可`);
+					}
+					if (!((own && (own.positives > 0 || own.recalls > 0)) || fromArea) && note) {
+						warnings.push('转正仅凭 note 声明（无机械使用信号）：note 已记入 .usage.jsonl 供事后审计');
+					}
+				}
 				const date = localDateStr();
 				// Update whichever status marker the file actually carries so the two
 				// formats never both survive on one file.
 				let next = text;
 				if (/^status:/m.test(next)) next = next.replace(/^status:\s*[a-z]+/m, `status: ${to}`);
 				else next = next.replace(/^> 状态：[a-z]+/m, `> 状态：${to}`);
-				const entry = `- ${date} ${args.action === 'activate' ? '✅ 激活' : '⛔ 退役'}${note ? `：${note}` : ''}`;
-				const appended = appendUnderHeading(next, '## 使用记录', entry);
-				next = appended.text;
+				// NO append to the body (5.27.0, the user's ruling): a dated 使用记录
+				// line per lifecycle flip grew the skill file with use, while a skill
+				// must stay the CURRENT procedure. `status:` is the only lifecycle
+				// surface; the timestamped event goes to the usage ledger instead.
 				await writeText(p, next);
+				await appendUsage(root, { href: `skills/${name}/SKILL.md`, kind: 'lifecycle', note: `${args.action}${note ? `：${note}` : ''}` });
 				const st = await stat(p);
 				const sumM = next.match(/^>\s*摘要：(.+)$/m) ?? next.match(/^description:\s*"?([^"\n]+)"?/m);
 				const item = { name, status: to, summary: sumM ? sumM[1].trim() : name, updated: st.mtime.toISOString() };
@@ -1708,11 +1845,14 @@ function memorySkillTool(opts, hooks = {}) {
 				}
 				await rm(path.dirname(p), { recursive: true, force: true });
 				const indexPath = path.join(root, 'MEMORY.md');
-				const idxText = await readIfExists(indexPath);
-				if (idxText !== undefined) {
-					const without = dropIndexRow(idxText, SKILL_TABLE_HEADING, SKILL_TABLE_HEADER, name);
-					if (without !== idxText) await writeText(indexPath, without);
-				}
+				await withPathLock(indexPath, async () => {
+					const idxText = await readIfExists(indexPath);
+					if (idxText !== undefined) {
+						const without = dropIndexRow(idxText, SKILL_TABLE_HEADING, SKILL_TABLE_HEADER, name);
+						if (without !== idxText) await writeText(indexPath, without);
+					}
+				});
+				opts.dropRecallCaches?.();
 				publish();
 				return { action: 'delete', file: p, status: 'deleted', items: [], warnings };
 			}
@@ -2266,36 +2406,51 @@ function memoryRenameTool(opts) {
 			// 2) rewrite every reference across the memory root. Four spellings
 			// exist: index link `functions/<from>.md`, bare sibling links
 			// `](<from>.md)` inside functions/, `functions/<from>.md` prose, and
-			// the index row's first cell `| <from> |`.
+			// the index row — BOTH name spellings: a bare cell `| from |` (legacy)
+			// and a link cell `[from](functions/from.md)` (every row since 5.15.0).
+			// The rewrite works on rowSlug semantics, not `| from |` string noise:
+			// the audit caught the old pass leaving `| [from](functions/to.md) |`
+			// behind — href renamed, label forgotten — and because R15 counts rows
+			// by rowSlug, the absorbed row and the target row then looked like two
+			// DIFFERENT entries, so the duplicate was invisible to every lint.
 			const rewritten = [];
-			const rewriteIn = async (fp) => {
-				const before = await readIfExists(fp);
-				if (before === undefined) return;
+			const renameRowCells = (l) => {
+				// Only table rows get label surgery; prose is handled by the splits.
+				if (!l.trim().startsWith('|')) return l;
+				return l
+					.split(`[${from}.md](`).join(`[${to}.md](`)
+					.split(`[${from}](`).join(`[${to}](`);
+			};
+			const rewriteOne = (before) => {
 				let after = before
 					// Label + href pairs first (both spellings), then bare prose.
 					.split(`[${from}.md](${from}.md)`).join(`[${to}.md](${to}.md)`)
 					.split(`[${from}.md](functions/${from}.md)`).join(`[${to}.md](functions/${to}.md)`)
 					.split(`](${from}.md)`).join(`](${to}.md)`)
 					.split(`](functions/${from}.md)`).join(`](functions/${to}.md)`)
+					// file:/// memory-root hrefs (5.27.0 evidence links).
+					.split(`/functions/${from}.md`).join(`/functions/${to}.md`)
 					.split(`functions/${from}.md`).join(`functions/${to}.md`)
+					// A link LABEL is `[from](…)` — never matched by `| from |`.
+					.split(`[${from}](`).join(`[${to}](`)
 					.split(`| ${from} |`).join(`| ${to} |`);
+				// Cells still holding the old LABEL text after the exact-pattern pass
+				// (e.g. `[from](functions/to.md)` from a half-rewritten row).
+				after = after.split('\n').map(renameRowCells).join('\n');
 				if (merging) {
-					// A merged source's index row must go; the target row remains.
-					// Order matters: the replace above already renamed the source row's
-					// first cell to `to` (the replacement `| ${from} |` runs before this
-					// filter), so match by the pre-rename spelling is impossible here.
-					// Identify the stale row instead by its href: it still points at the
-					// now-deleted `functions/${from}.md`… which the replace ALSO renamed.
-					// The only stable trait left is the row's position: it sits in the
-					// SAME table as the target's row and carries a different summary.
-					// Simplest correct move: drop rows whose first cell is `to` beyond
-					// the first occurrence — the kept one is whichever appears first.
+					// The absorbed domain's row now carries the TARGET slug (labels
+					// were rewritten above) — dedupe by rowSlug: keep the first row
+					// whose slug is `to`, drop every later one.
 					const lines = after.split('\n');
 					let seenTarget = false;
 					const cleaned = lines.filter((l) => {
 						if (!l.startsWith('|')) return true;
-						const cell0 = l.split('|')[1]?.trim();
-						if (cell0 === to) {
+						if (rowSlug(l) === to || rowSlug(l) === from) {
+							// from-labels can survive inside non-canonical cells; treat
+							// either as the absorbed row.
+							const isTarget = rowSlug(l) === to;
+							if (rowSlug(l) === from) return false; // legacy cell nobody rewrote
+							if (!isTarget) return true;
 							if (seenTarget) return false; // extra row created by the rename
 							seenTarget = true;
 						}
@@ -2303,12 +2458,21 @@ function memoryRenameTool(opts) {
 					});
 					after = cleaned.join('\n');
 				}
+				return after;
+			};
+			const rewriteIn = async (fp) => {
+				const before = await readIfExists(fp);
+				if (before === undefined) return;
+				const after = rewriteOne(before);
 				if (after !== before) {
 					await writeText(fp, after);
 					rewritten.push(path.relative(root, fp).split(path.sep).join('/'));
 				}
 			};
-			await rewriteIn(path.join(root, 'MEMORY.md'));
+			// MEMORY.md is shared with five other writers — rename passes through the
+			// same lock (its per-file rewrite is a full read-modify-write).
+			await withPathLock(path.join(root, 'MEMORY.md'), () => rewriteIn(path.join(root, 'MEMORY.md')));
+			opts.dropRecallCaches?.();
 			for (const zone of ['functions', 'insights']) {
 				let names = [];
 				try {
@@ -2611,40 +2775,47 @@ function memoryIndexTool(opts) {
 				warnings.push(`索引行摘要 ${charLen(summary)} 字 > ${MAX_ROW_SUMMARY_CHARS}：摘要是一句话，细节留在功能文件`);
 			}
 			const indexPath = path.join(root, 'MEMORY.md');
-			let indexText = (await readIfExists(indexPath)) ?? memoryIndexTemplate();
-			// Row presence check is shape-agnostic: the name cell may be plain
-			// text (legacy 4-column rows) or a link (current rows).
-			const rowExists = indexText.split('\n').some((l) => {
-				if (!l.trim().startsWith('|')) return false;
-				const first = l.trim().replace(/^\|/, '').split('|')[0].trim();
-				return first === name || first === `[${name}](${zone === 'insights' ? 'insights' : 'functions'}/${name}.md)`;
+			// The whole presence-check → build-row → upsert → write sequence runs
+			// under the shared MEMORY.md writer lock (audit #3): a concurrent row
+			// write must never be computed-over. `created` reports what THIS write
+			// observed when it held the lock — which is the honest answer.
+			const { created, indexBytes } = await withPathLock(indexPath, async () => {
+				const indexText = (await readIfExists(indexPath)) ?? memoryIndexTemplate();
+				// Row presence check is shape-agnostic: the name cell may be plain
+				// text (legacy 4-column rows) or a link (current rows).
+				const rowExists = indexText.split('\n').some((l) => {
+					if (!l.trim().startsWith('|')) return false;
+					const first = l.trim().replace(/^\|/, '').split('|')[0].trim();
+					return first === name || first === `[${name}](${zone === 'insights' ? 'insights' : 'functions'}/${name}.md)`;
+				});
+				let row;
+				if (zone === 'insights') {
+					const srcs = (Array.isArray(args.sources) ? args.sources : []).map((s) => safeSlug(s)).filter((s) => s !== name);
+					if (!srcs.length) throw new Error('zone=insights requires sources: the theme must name the areas it was distilled from');
+					row = `| [${name}](insights/${name}.md) | ${summary}（来源：${srcs.map((s) => `[${s}.md](functions/${s}.md)`).join('、')}） |`;
+					if (!(await statExists(path.join(root, 'insights', `${name}.md`)))) {
+						warnings.push(`insights/${name}.md 尚不存在——索引行先建了，记得用 memory_insight 沉淀文件本体`);
+					}
+				} else {
+					row = `| [${name}](functions/${name}.md) | ${summary} |`;
+					if (!(await statExists(path.join(root, 'functions', `${name}.md`)))) {
+						warnings.push(`functions/${name}.md 尚不存在——索引行先建了，记得用 memory_write 落第一个迭代块`);
+					}
+				}
+				const nextText = upsertIndexRow(
+					indexText,
+					zone === 'insights' ? INSIGHT_TABLE_HEADING : FUNC_TABLE_HEADING,
+					zone === 'insights' ? INSIGHT_TABLE_HEADER : FUNC_TABLE_HEADER,
+					name,
+					row,
+					zone === 'functions' && typeof args.group === 'string' && args.group.trim() ? oneLine(args.group).slice(0, 20) : undefined,
+				);
+				await writeText(indexPath, nextText);
+				return { created: !rowExists, indexBytes: byteLen(nextText) };
 			});
-			const created = !rowExists;
-
-			let row;
-			if (zone === 'insights') {
-				const srcs = (Array.isArray(args.sources) ? args.sources : []).map((s) => safeSlug(s)).filter((s) => s !== name);
-				if (!srcs.length) throw new Error('zone=insights requires sources: the theme must name the areas it was distilled from');
-				row = `| [${name}](insights/${name}.md) | ${summary}（来源：${srcs.map((s) => `[${s}.md](functions/${s}.md)`).join('、')}） |`;
-				if (!(await statExists(path.join(root, 'insights', `${name}.md`)))) {
-					warnings.push(`insights/${name}.md 尚不存在——索引行先建了，记得用 memory_insight 沉淀文件本体`);
-				}
-			} else {
-				row = `| [${name}](functions/${name}.md) | ${summary} |`;
-				if (!(await statExists(path.join(root, 'functions', `${name}.md`)))) {
-					warnings.push(`functions/${name}.md 尚不存在——索引行先建了，记得用 memory_write 落第一个迭代块`);
-				}
-			}
-			indexText = upsertIndexRow(
-				indexText,
-				zone === 'insights' ? INSIGHT_TABLE_HEADING : FUNC_TABLE_HEADING,
-				zone === 'insights' ? INSIGHT_TABLE_HEADER : FUNC_TABLE_HEADER,
-				name,
-				row,
-				zone === 'functions' && typeof args.group === 'string' && args.group.trim() ? oneLine(args.group).slice(0, 20) : undefined,
-			);
-			await writeText(indexPath, indexText);
-			const indexBytes = byteLen(indexText);
+			// The row just written must be recallable on the NEXT step, not after the
+			// 10s cache TTL (audit #10).
+			opts.dropRecallCaches?.();
 			if (indexBytes > opts.maxIndexBytes) {
 				warnings.push(`MEMORY.md ${indexBytes}B > ${opts.maxIndexBytes}B 舒适线：压缩各行摘要，或把功能表拆成 ### 子分区`);
 			}
@@ -2767,11 +2938,28 @@ async function zoneCounts(root, skillRoot = '') {
  * Build the panel API handler. The memory root is global and always resolved
  * server-side, so a request can never widen it: there is deliberately no
  * client-supplied `?path=`.
+ * SECURITY (5.27.0, from the adversarial audit): the host webServer dispatches
+ * registered routes with NO auth middleware — the fence is a service plugins
+ * must pull themselves (`connection.requestRejection`, the Host/Origin +
+ * login-token gate dsh-host-open-in-app and the inspector use). Without it,
+ * any local process and any cross-site form/no-cors fetch could delete skills,
+ * trigger reloads, and (via DNS rebinding) read the whole memory store. So:
+ * every request passes the fence when the host offers `connection`; when it
+ * does not, the MUTATING routes refuse (501) and reads stay — a host without
+ * the connection service is a host where we cannot tell caller from stranger,
+ * so writes are off, never guessed-open.
  */
-function memoryPanelApi(opts) {
+const PANEL_WRITE_SEGS = new Set(['skill-action', 'reload']);
+function memoryPanelApi(opts, connection) {
 	return async (req, res) => {
 		const url = new URL(req.url, 'http://localhost');
 		const seg = url.pathname.slice('/api/memory-org'.length).replace(/^\//, '');
+		if (connection && typeof connection.requestRejection === 'function') {
+			const rejection = connection.requestRejection(req);
+			if (rejection !== undefined) return json(res, rejection, { error: 'unauthorized' });
+		} else if (PANEL_WRITE_SEGS.has(seg)) {
+			return json(res, 501, { error: '宿主未提供 connection 服务，无法核验调用方——写路由已禁用' });
+		}
 		const root = resolveRoot(opts);
 		try {
 			if (seg === 'overview') {
@@ -2810,6 +2998,9 @@ function memoryPanelApi(opts) {
 					indexBytes,
 					indexComfortBytes: opts.maxIndexBytes,
 					indexHardBytes: opts.maxIndexHardBytes,
+					// The swap's TERMINAL outcome (not just "it started") so the
+					// panel can tell success from a swallowed rollback.
+					lastReload: globalThis[Symbol.for('dsh-memory-manager.last-reload')] ?? null,
 				};
 				return json(res, 200, [{ ...health, title: '全局记忆', path: joinDshHome(), counts: await zoneCounts(root, opts.skillRoot), usage: { signalCount, layers: layerCounts, hotspots: hotspots.slice(0, 5) }, env }]);
 			}
@@ -2909,9 +3100,25 @@ function memoryPanelApi(opts) {
 				// exactly the way selfReload probes it.
 				if (!opts.canReload) return json(res, 501, { error: '本宿主不支持热重启（没有 loader/registry），请重启进程' });
 				if (isReloading()) return json(res, 409, { error: '已有热重启在跑' });
+				// COOLDOWN (5.27.0): every swap disposes and re-registers the whole
+				// fiber — a caller hammering POST put the host through teardown
+				// windows back to back (the audit's self-DoS). The stamp is taken at
+				// ACCEPTANCE, not at completion: the swap is deferred (and detached),
+				// so a completion-only marker would wave through a burst of requests
+				// fired before the first swap even began. The marker lives on
+				// globalThis because a module-level counter would reset with every
+				// fresh evaluation this very route triggers.
+				const accKey = Symbol.for('dsh-memory-manager.last-reload-accepted');
+				const lastAccepted = globalThis[accKey] ?? 0;
+				const since = Date.now() - lastAccepted;
+				if (since < 15_000) return json(res, 429, { error: `距上次受理仅 ${Math.round(since / 1000)}s（冷却 15s）`, retryAfterMs: 15_000 - since });
+				globalThis[accKey] = Date.now();
 				json(res, 202, { note: 'hot reload started', version: opts.version });
 				setTimeout(() => {
-					opts.reload().catch(() => {});
+					// The outcome is NOT swallowed (it used to be .catch(()=>{}) — the
+					// panel believed every 202). selfReload now publishes its terminal
+					// result to the global marker; log failures for the operator.
+					opts.reload().catch((e) => console.warn?.(`memory-manager: reload crashed: ${e?.message ?? e}`));
 				}, 150);
 				return;
 			}
@@ -2920,7 +3127,11 @@ function memoryPanelApi(opts) {
 				const body = await readBody(req);
 				const action = String(body?.action ?? '');
 				if (!['activate', 'retire', 'delete'].includes(action)) return json(res, 400, { error: `action must be activate|retire|delete (got ${action})` });
-				const skill = memorySkillTool(opts);
+				// Same hook the registered tool carries (3217's onSkillChange): the
+				// panel writes through a fresh tool instance, and without the hook
+				// the host's cached skill catalog would keep advertising a bundle
+				// this very request just retired or deleted.
+				const skill = memorySkillTool(opts, opts.bridge ? { onSkillChange: () => opts.bridge.invalidate() } : {});
 				try {
 					const out = await skill.execute({ action, name: String(body?.name ?? ''), note: '面板操作' }, {});
 					return json(res, 200, { message: `${action} ok`, status: out.status, file: out.file, warnings: out.warnings ?? [] });
@@ -2939,6 +3150,8 @@ function memoryPanelApi(opts) {
 				const agentsHome = process.env.DSH_AGENTS_HOME || path.join(homedir(), '.agents');
 				// A test-injected skillRoot replaces the whole scan (tests must never
 				// list or touch the real user catalog).
+				// .history/ (5.27.0) is our own append-only archive — its rows are
+				// not bundles (no SKILL.md at the expected leaf) and never list.
 				const hostRoots = opts.skillRoot
 					? [{ dir: path.resolve(opts.skillRoot), source: 'user-dsh' }]
 					: [
@@ -3222,8 +3435,20 @@ export function apply(ctx, config) {
 	// nothing matches or the batch was already served a recall (per-agent
 	// signature dedupe). Registration is global; dispatch is agent-scoped.
 	const recallServed = new Map(); // agentId -> signature of last served batch
+	// The recall reads MEMORY.md with a 10s cache and .usage.jsonl with 60s.
+	// TTL alone meant a memory_index row stayed UNRECALLABLE for up to 10s after
+	// its own tool call wrote it (audit #10: the discipline says "write then
+	// recall"; the cache window broke it). The tools now declare the caches via
+	// opts.dropRecallCaches — a write to either file voids the matching cache,
+	// so freshness follows writes instead of the clock.
 	const indexCache = { text: undefined, at: 0 };
 	const usageCache = { map: undefined, at: 0 };
+	opts.dropRecallCaches = () => {
+		indexCache.at = 0;
+		indexCache.text = undefined;
+		usageCache.at = 0;
+		usageCache.map = undefined;
+	};
 	const readUsageCached = async () => {
 		const now = Date.now();
 		if (usageCache.map === undefined || now - usageCache.at > 60_000) {
@@ -3300,6 +3525,15 @@ export function apply(ctx, config) {
 							}
 						}
 					}
+					// Bounded FIFO (5.27.0, audit): the signature carries a slice of
+					// user text, and one entry lives per agent for the whole process
+					// life — an unbounded Map grows with every session a long-running
+					// host ever opens. 512 is far above any plausible concurrent-agent
+					// count; evicting an idle agent's entry only means it can be
+					// re-served once, never a correctness loss.
+					if (recallServed.size > 512 && !recallServed.has(payload.agent.id)) {
+						recallServed.delete(recallServed.keys().next().value);
+					}
 					recallServed.set(payload.agent.id, signature);
 					if (!rows.length) return null;
 					// Usage signal: what recall actually put in front of the model is
@@ -3357,11 +3591,13 @@ export function apply(ctx, config) {
 	// panel page shows its fallback text. Resolved lazily via ctx.inject because
 	// webServer may not be provided yet at apply time. The memory root is global
 	// (~/.dsh/memory), so workspaceRegistry is no longer needed here.
-	ctx.inject(['webServer'], (scoped) => {
+	// 'connection' joins the inject list for the security fence (see
+	// memoryPanelApi): routes the host dispatches bare MUST gate themselves.
+	ctx.inject(['webServer', 'connection'], (scoped) => {
 		const server = scoped.webServer;
 		if (server) {
 			scoped.effect(() =>
-				server.register({ kind: 'prefix', path: '/api/memory-org', handler: memoryPanelApi(opts) }),
+				server.register({ kind: 'prefix', path: '/api/memory-org', handler: memoryPanelApi(opts, scoped.connection) }),
 			);
 		}
 	});

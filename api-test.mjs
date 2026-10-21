@@ -15,65 +15,111 @@ import { mkdir, writeFile, readFile, stat, rm } from 'node:fs/promises';
 
 const mod = await import(new URL('./server.js', import.meta.url).href);
 
-let routeHandler = null;
+// THREE handler instances (5.27.0, adversarial audit):
+//   LIVE  — the real global root, NO connection service. Read-only assertions
+//           run here; every WRITE route must answer 501 (the fence's degraded
+//           branch), which also means this instance can no longer touch user
+//           data — the old version retired/activated/deleted a live skill.
+//   TEMP  — a throwaway memory root + skillRoot WITH an authenticating
+//           connection. All write-channel lifecycle probes run here.
+//   GUARD — an instance whose connection REJECTS: proves the fence gates reads
+//           too, and its status passes through.
 const noop = () => {};
-const fakeCtx = {
-	tools: { register: () => noop },
-	on: () => noop,
-	inject(names, fn) {
-		fn({
-			webServer: {
-				register(route) {
-					if (route.path === '/api/memory-org') routeHandler = route.handler;
-					return noop;
+function makeInstance(conn, extraCtx = {}) {
+	let routeHandler = null;
+	const fakeCtx = {
+		tools: { register: () => noop },
+		on: () => noop,
+		inject(names, fn) {
+			fn({
+				webServer: {
+					register(route) {
+						if (route.path === '/api/memory-org') routeHandler = route.handler;
+						return noop;
+					},
 				},
-			},
-			// cordis scoped context = services + effect; effect(fn) runs immediately here.
-			effect: (f) => f(),
-		});
-	},
-	systemPrompt: { getSectionOrder: () => 2900, section: () => noop },
-};
-mod.apply(fakeCtx, {});
-if (!routeHandler) throw new Error('route was not registered');
+				connection: conn,
+				// cordis scoped context = services + effect; effect(fn) runs immediately here.
+				effect: (f) => f(),
+				...extraCtx,
+			});
+		},
+		systemPrompt: { getSectionOrder: () => 2900, section: () => noop },
+		...extraCtx,
+	};
+	return { fakeCtx, get handler() { return routeHandler; } };
+}
+
+// loader/registry shapes so opts.canReload is TRUE (the reload route's real
+// capability probe), without ever letting a swap run (cooldown is pre-seeded in
+// the one test that touches it).
+const LOADER = { internal: { loadCache: new Map() }, async import() { return {}; }, unwrapExports: (m) => m };
+const REGISTRY = { get: () => undefined, delete: () => undefined, plugin: () => ({ ctx: { fiber: {} } }) };
+
+const liveInst = makeInstance(undefined); // no connection at all (the degraded host)
+mod.apply(liveInst.fakeCtx, {});
+if (!liveInst.handler) throw new Error('route was not registered');
+
+// Temp roots for the write probes: a memory root with one source area and a
+// skill root — the suite must NEVER touch the real catalog again.
+const { mkdtemp, rm: rmTmp } = await import('node:fs/promises');
+const osMod = await import('node:os');
+const tmpMem = await mkdtemp(path.join(osMod.tmpdir(), 'dsh-api-mem-'));
+const tmpSkills = await mkdtemp(path.join(osMod.tmpdir(), 'dsh-api-sk-'));
+await writeFile(path.join(tmpMem, 'MEMORY.md'), '# 记忆管理（索引 + 纪律）\n\n## 功能模块索引（functions/）\n\n| 功能域 | 一句话状态 / 待验证 |\n|---|---|\n', 'utf8');
+await mkdir(path.join(tmpMem, 'functions'), { recursive: true });
+await writeFile(path.join(tmpMem, 'functions', '测试功能.md'), '# 功能域：测试功能\n\n## 当前状态摘要（截至 2026-10-21）\n\n- x\n', 'utf8');
+const ALLOW = { requestRejection: () => undefined }; // authenticated caller
+const tempInst = makeInstance(ALLOW, { loader: LOADER, registry: REGISTRY });
+mod.apply(tempInst.fakeCtx, { memoryRoot: tmpMem, skillRoot: tmpSkills });
+if (!tempInst.handler) throw new Error('temp route was not registered');
+
+const DENY = { requestRejection: () => 401 }; // unauthenticated stranger
+const guardInst = makeInstance(DENY);
+mod.apply(guardInst.fakeCtx, {});
 
 const root = mod.resolveRoot({});
 const pluginDir = path.dirname(fileURLToPath(import.meta.url));
 
-async function call(pathname) {
-	const url = new URL(pathname, 'http://localhost');
-	const req = { url: url.pathname + url.search };
-	let captured;
-	const res = {
-		writeHead(status) {
-			captured = { status };
-		},
-		end(body) {
-			captured.body = body;
-		},
-	};
-	await routeHandler(req, res);
-	return captured;
+function callerOf(handler) {
+	async function call(pathname) {
+		const url = new URL(pathname, 'http://localhost');
+		const req = { url: url.pathname + url.search };
+		let captured;
+		const res = {
+			writeHead(status) {
+				captured = { status };
+			},
+			end(body) {
+				captured.body = body;
+			},
+		};
+		await handler(req, res);
+		return captured;
+	}
+	// POST with a JSON body (the panel's write channel). The stub req is an async
+	// iterable of one Buffer, mirroring Node's request stream closely enough.
+	async function post(pathname, body) {
+		const url = new URL(pathname, 'http://localhost');
+		const payload = Buffer.from(JSON.stringify(body), 'utf8');
+		const req = { method: 'POST', url: url.pathname + url.search, async *[Symbol.asyncIterator]() { yield payload; } };
+		let captured;
+		const res = {
+			writeHead(status) {
+				captured = { status };
+			},
+			end(b) {
+				captured.body = b;
+			},
+		};
+		await handler(req, res);
+		return captured;
+	}
+	return { call, post };
 }
-
-// POST with a JSON body (the panel's write channel). The stub req is an async
-// iterable of one Buffer, mirroring Node's request stream closely enough.
-async function post(pathname, body) {
-	const url = new URL(pathname, 'http://localhost');
-	const payload = Buffer.from(JSON.stringify(body), 'utf8');
-	const req = { method: 'POST', url: url.pathname + url.search, async *[Symbol.asyncIterator]() { yield payload; } };
-	let captured;
-	const res = {
-		writeHead(status) {
-			captured = { status };
-		},
-		end(b) {
-			captured.body = b;
-		},
-	};
-	await routeHandler(req, res);
-	return captured;
-}
+const { call, post } = callerOf((...a) => liveInst.handler(...a));
+const { call: tcall, post: tpost } = callerOf((...a) => tempInst.handler(...a));
+const { call: gcall } = callerOf((...a) => guardInst.handler(...a));
 
 let failures = 0;
 const ok = (cond, label) => {
@@ -180,22 +226,34 @@ ok(badRel2.status === 400, 'skillfile rejects backslashes in the relative path')
 // The only mutating route. It runs the memory_skill tool's real executor, so
 // the same guards hold; crystallize is deliberately NOT reachable here.
 // These assertions use a THROWAWAY bundle and never touch the user's real
-// skills: the earlier version retired/activated/deleted a live skill, which is
-// exactly the kind of side effect a test must not have.
-const getOnly = await call('/api/memory-org/skill-action');
-ok(getOnly.status === 405, 'skill-action is POST-only');
-const badAct = await post('/api/memory-org/skill-action', { action: 'crystallize', name: 'x' });
+// skills AND (5.27.0) never touches the real root: the write probes run on the
+// TEMP instance; the live instance must refuse them (no connection = no way to
+// tell caller from stranger).
+// GET on a write route is 405 ONLY where the caller is allowed to reach it at
+// all (the temp instance): on the live instance the fence answers 501 before
+// the method check — the order itself is the contract (deny first, parse later).
+const getOnly = await tcall('/api/memory-org/skill-action');
+ok(getOnly.status === 405, 'skill-action is POST-only (past the fence)');
+const liveGetWrite = await call('/api/memory-org/skill-action');
+ok(liveGetWrite.status === 501, 'even a GET on a write route is refused before any parsing on a fence-less host');
+const fenced = await post('/api/memory-org/skill-action', { action: 'retire', name: 'detached-restart' });
+ok(fenced.status === 501, 'a host without the connection service REFUSES panel writes (501, degraded-closed) — the real root is untouchable');
+const reloadNoConn = await post('/api/memory-org/reload', {});
+ok(reloadNoConn.status === 501, 'reload also degrades closed without connection/loader');
+// GUARD: the fence gates READS too — an unauthenticated caller gets the
+// rejection status the host's own connection service chose (401), for any seg.
+const guardRead = await gcall('/api/memory-org/overview');
+ok(guardRead.status === 401, 'an unauthenticated read is rejected with the fence status');
+// On the authenticated TEMP instance, the action whitelist and guards apply.
+const badAct = await tpost('/api/memory-org/skill-action', { action: 'crystallize', name: 'x' });
 ok(badAct.status === 400, 'crystallize is not reachable from the panel (model judgement)');
-const noName = await post('/api/memory-org/skill-action', { action: 'activate' });
+const noName = await tpost('/api/memory-org/skill-action', { action: 'activate' });
 ok(noName.status === 400, 'a missing name is rejected');
-const badSlug = await post('/api/memory-org/skill-action', { action: 'activate', name: 'Bad_Name' });
+const badSlug = await tpost('/api/memory-org/skill-action', { action: 'activate', name: 'Bad_Name' });
 ok(badSlug.status === 400, 'a non-kebab name is rejected (it is a bundle dir name)');
-// A real lifecycle round trip, on a bundle this test plants and removes itself.
+// A real lifecycle round trip, on a bundle planted in the TEMP skill root.
 const probe = 'api-probe-skill';
-// The host user skill root (where bundles live now) — the SAME helper the
-// plugin uses, so the test and the running code agree on the location.
-const { dshHome } = await import(new URL('./src/util.js', import.meta.url).href);
-const probeDir = path.join(dshHome(), 'skills', probe);
+const probeDir = path.join(tmpSkills, probe);
 await mkdir(probeDir, { recursive: true });
 await writeFile(
 	path.join(probeDir, 'SKILL.md'),
@@ -203,32 +261,35 @@ await writeFile(
 	'utf8',
 );
 try {
-	const ret = await post('/api/memory-org/skill-action', { action: 'retire', name: probe });
+	const ret = await tpost('/api/memory-org/skill-action', { action: 'retire', name: probe });
 	ok(ret.status === 200 && JSON.parse(ret.body).status === 'retired', 'panel retire returns the new status');
-	const afterRet = JSON.parse((await call('/api/memory-org/skills')).body).memory.find((s) => s.name === probe);
+	const afterRet = JSON.parse((await tcall('/api/memory-org/skills')).body).memory.find((s) => s.name === probe);
 	ok(afterRet.status === 'retired', 'a retired bundle reports its new lifecycle');
-	const act = await post('/api/memory-org/skill-action', { action: 'activate', name: probe });
+	const act = await tpost('/api/memory-org/skill-action', { action: 'activate', name: probe });
 	ok(act.status === 200 && JSON.parse(act.body).status === 'active', 'panel activate restores it');
-	const afterAct = JSON.parse((await call('/api/memory-org/skills')).body).memory.find((s) => s.name === probe);
+	const afterAct = JSON.parse((await tcall('/api/memory-org/skills')).body).memory.find((s) => s.name === probe);
 	ok(afterAct.status === 'active', 'reactivated bundle reports active again');
-	const del = await post('/api/memory-org/skill-action', { action: 'delete', name: probe });
+	const del = await tpost('/api/memory-org/skill-action', { action: 'delete', name: probe });
 	ok(del.status === 200, 'panel delete succeeds');
 	const fileGone = await stat(path.join(probeDir, 'SKILL.md')).then(() => false, () => true);
 	ok(fileGone, 'the bundle file is gone');
-	const idxText = await readFile(path.join(root, 'MEMORY.md'), 'utf8');
-	ok(!idxText.includes(probe), 'MEMORY.md carries no dangling row for the deleted skill');
+	const idxText = await readFile(path.join(tmpMem, 'MEMORY.md'), 'utf8');
+	ok(!idxText.includes(probe), 'the temp index carries no dangling row for the deleted skill');
 } finally {
 	await rm(probeDir, { recursive: true, force: true });
 }
-const delMissing = await post('/api/memory-org/skill-action', { action: 'delete', name: 'no-such-skill-xyz' });
+const delMissing = await tpost('/api/memory-org/skill-action', { action: 'delete', name: 'no-such-skill-xyz' });
 ok(delMissing.status === 400, 'deleting a missing skill is a 400, not a 500');
-// hot reload (5.25.0): POST-only, and a host WITHOUT loader/registry degrades
-// to 501 with a message — this file's fakeCtx IS exactly such a host (the
-// legacy-generation branch, tested with the legacy artifact per the rule).
-const reloadGet = await call('/api/memory-org/reload');
-ok(reloadGet.status === 405, 'reload is POST-only');
-const reloadNoLoader = await post('/api/memory-org/reload', {});
-ok(reloadNoLoader.status === 501 && JSON.parse(reloadNoLoader.body).error.includes('不支持热重启'), 'a host without loader/registry answers 501, never half-swaps');
+// reload (5.27.0): POST-only; 501 without connection (asserted above); on the
+// temp instance (canReload TRUE, authenticated) a first POST is accepted and
+// the 15s ACCEPTANCE cooldown turns the second into 429 — the self-DoS the
+// audit flagged is throttled.
+const reloadGet = await tcall('/api/memory-org/reload');
+ok(reloadGet.status === 405, 'reload is POST-only (past the fence)');
+const reload1 = await tpost('/api/memory-org/reload', {});
+ok(reload1.status === 202, 'reload accepted on a capable authenticated host');
+const reload2 = await tpost('/api/memory-org/reload', {});
+ok(reload2.status === 429, `the second POST is throttled, not queued (${reload2.status})`);
 // The real loader branch end-to-end: an apply() WITH loader/registry must get a
 // reload that actually re-imports. A live host is not available here, so the
 // loader is faked with the two primitives the swap really uses (internal.load
@@ -362,4 +423,6 @@ const fileKeys = Object.keys(JSON.parse(file.body));
 ok(fileKeys.includes('name') && fileKeys.includes('text'), `file reads keep name/text (${fileKeys.join(',')})`);
 
 console.log(failures === 0 ? 'API ALL PASS' : `${failures} API FAILURES`);
+await rmTmp(tmpMem, { recursive: true, force: true });
+await rmTmp(tmpSkills, { recursive: true, force: true });
 process.exit(failures === 0 ? 0 : 1);

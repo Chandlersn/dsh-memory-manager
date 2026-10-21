@@ -37,20 +37,59 @@ export async function readIfExists(p) {
 }
 
 /**
+ * Serialize read-modify-write on one file (5.27.0, adversarial audit #3).
+ * writeText's atomic rename protects READERS from a torn file, but a whole
+ * read→改→write SEQUENCE is not atomic: two writers of MEMORY.md (memory_index,
+ * a skill lifecycle's syncIndexRow, the panel's delete, memory_rename) each read
+ * the same old text, and whoever renames LAST silently erases the other's row.
+ * The host runs sessions in one process with overlapping awaits, so this is a
+ * real interleave, not a theoretical one.
+ *
+ * A per-resolved-path promise chain: every writer of the same file waits for
+ * the previous one to finish before it reads. Same-process coverage is the
+ * point (cross-process would need an OS lock — out of scope, and the tool
+ * description no longer implies atomic==safe). The chain self-clears when a
+ * path's tail settles, so it never grows unbounded.
+ */
+const pathTails = new Map();
+export function withPathLock(p, fn) {
+	const key = path.resolve(p);
+	const prev = pathTails.get(key) ?? Promise.resolve();
+	// The next writer queues behind THIS one whether or not this one rejects.
+	const run = prev.then(fn, fn);
+	// Keep the tail alive for a follower, then drop the entry once settled.
+	pathTails.set(key, run);
+	run.then(
+		() => {
+			if (pathTails.get(key) === run) pathTails.delete(key);
+		},
+		() => {
+			if (pathTails.get(key) === run) pathTails.delete(key);
+		},
+	);
+	return run;
+}
+
+/**
  * Write text atomically: a crash or a reader can never observe a partial file.
  * `rename` replaces the destination in one step (Node uses MOVEFILE_REPLACE_
  * EXISTING on Windows); a short retry covers transient locks from readers or
  * antivirus scanning the destination.
  *
- * MEMORY DEFENCE: every write funnels through here, so tier-1 credentials are
- * redacted at the single choke point — no tool path can forget to scan. The
- * returned `{ hits }` lets callers surface what changed in the tool receipt;
+ * MEMORY DEFENCE: every markdown write funnels through here, so tier-1
+ * credentials are redacted at the choke point. (The .usage.jsonl ledger is the
+ * ONE writer that appends directly — it redacts its note inside usage.js;
+ * appendUsage is not a markdown write and keeps O(1) append semantics.)
+ * The returned `{ hits }` lets callers surface what changed in the tool receipt;
  * callers that ignore the return value keep working.
  */
 export async function writeText(p, content) {
 	const { text, hits } = redactSecrets(content);
 	await mkdir(path.dirname(p), { recursive: true });
-	const tmp = `${p}.tmp-${process.pid.toString(36)}-${Date.now().toString(36)}`;
+	// tmp name carries pid + ms + a RANDOM suffix: same-process writes to the
+	// same target in the same millisecond would otherwise share a tmp file and
+	// one rename steals the other's bytes.
+	const tmp = `${p}.tmp-${process.pid.toString(36)}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 	try {
 		await writeFile(tmp, text, 'utf8');
 		for (let attempt = 0; ; attempt++) {

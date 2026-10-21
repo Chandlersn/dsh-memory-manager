@@ -149,7 +149,7 @@ const HEADER_LINEAGE = new Map([
  * text. Both shapes must map to the same key, or an upsert appends a row for a
  * slug that is already there.
  */
-function rowSlug(line) {
+export function rowSlug(line) {
 	const cells = String(line ?? '').split('|');
 	const first = (cells.length >= 2 ? cells[1] : cells[0] ?? '').trim();
 	const m = /^\[([^\]]+)\]\([^)]*\)$/.exec(first);

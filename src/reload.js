@@ -202,9 +202,13 @@ export function selfReload(ctx, options = {}) {
 		}
 		globalThis[Symbol.for('dsh-memory-manager.last-reload')] = { at: Date.now(), purged: backup.esm.size, busted };
 
+		// Await the OLD fibers' teardown with allSettled (not all): Promise.all
+		// rejects on the FIRST throwing dispose and then continues registering the
+		// new code while SIBLING fibers are still unloading — the same race that
+		// makes a later rollback collide with half-dead registrations.
 		try {
 			registry.delete(previous);
-			await Promise.all(fibers.map(({ fiber }) => fiber.await()));
+			await Promise.allSettled(fibers.map(({ fiber }) => fiber.await()));
 		} catch (error) {
 			logger.warn?.(`memory-manager: hot reload dispose reported ${error?.message ?? error}`);
 		}
@@ -219,7 +223,7 @@ export function selfReload(ctx, options = {}) {
 				}
 				created.push(fresh);
 			}
-			await Promise.all(created.map((fiber) => fiber.await()));
+			await Promise.allSettled(created.map((fiber) => fiber.await()));
 			logger.info?.(`memory-manager: hot reload complete, ${created.length} fiber(s) re-registered`);
 			const version = await new Promise((res) => {
 				try {
@@ -231,8 +235,18 @@ export function selfReload(ctx, options = {}) {
 			return { ok: true, version: String(version), fibers: created.length };
 		} catch (error) {
 			restoreCaches(internal, backup);
+			// SETTLE the replacement before restoring the old code (the kernel HMR's
+			// partialReload does exactly this). registry.delete only drops the table
+			// entry synchronously and QUEUES each fiber's async dispose; without the
+			// await, re-registering the old plugin can collide with still-live
+			// registrations of the NEW one — dsh-tools throws
+			// `tool "X" is already registered` mid-rollback and the restore itself
+			// fails (restored:false), which is precisely the availability we are
+			// trying to claw back.
 			try {
-				registry.delete(replacement);
+				const gone = registry.delete(replacement);
+				const replacementFibers = gone?.fibers ?? gone?.runtime?.fibers;
+				if (replacementFibers) await Promise.allSettled([...replacementFibers].map((f) => f.await()));
 			} catch {
 				/* may never have started */
 			}
@@ -247,14 +261,21 @@ export function selfReload(ctx, options = {}) {
 					}
 					restored.push(fresh);
 				}
-				await Promise.all(restored.map((fiber) => fiber.await()));
+				await Promise.allSettled(restored.map((fiber) => fiber.await()));
 				return { ok: false, error: `新代码启动失败，旧版本已恢复（${error?.message ?? error}）`, restored: true };
 			} catch (restoreError) {
 				return { ok: false, error: `新代码启动失败（${error?.message ?? error}）；旧代码恢复也失败（${restoreError?.message ?? restoreError}）——请重启进程`, restored: false };
 			}
 		}
 	})();
-	return inFlight.finally(() => {
+	// THE OUTCOME IS READABLE AFTERWARD (5.27.0): the route answers 202 and the
+	// swap runs detached, so a swallowed .catch left the panel showing "reloaded"
+	// even when it failed. Every terminal result lands here; /overview surfaces it
+	// as env.lastReload so the client (or a human) can tell success from rollback.
+	return inFlight.then((res) => {
+		globalThis[Symbol.for('dsh-memory-manager.last-reload')] = { ...(globalThis[Symbol.for('dsh-memory-manager.last-reload')] ?? {}), at: Date.now(), ok: res.ok, error: res.error ?? '', restored: res.restored ?? false, version: res.version ?? '' };
+		return res;
+	}).finally(() => {
 		inFlight = null;
 	});
 }

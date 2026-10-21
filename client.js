@@ -1026,7 +1026,7 @@ window.__ModuleLoader__.load({
 		 * renders either side deterministically — in the browser via setView, in
 		 * the UI test via initialView.
 		 */
-		function SkillLibrary({ data, loading, error, tab, onTab, onOpenMemory, onOpenHost, onToggle, onDelete, actMsg, filter, setFilter }) {
+		function SkillLibrary({ data, loading, error, tab, onTab, onOpenMemory, onOpenHost, onToggle, onDelete, actMsg, toggleBusy, filter, setFilter }) {
 			const mem = data?.memory ?? [];
 			const host = data?.host ?? [];
 			const q = filter.trim().toLowerCase();
@@ -1116,6 +1116,7 @@ window.__ModuleLoader__.load({
 														'data-dmo': 'skill-toggle', role: 'switch', 'aria-checked': s.status === 'active',
 														title: s.status === 'active' ? '停用（retire）' : '启用（activate）',
 														onClick: () => onToggle(s.name, s.status === 'active' ? 'retire' : 'activate'),
+														disabled: toggleBusy === s.name,
 													},
 													h('span', { className: 'dmo-switch-dot' }),
 												),
@@ -1349,8 +1350,14 @@ window.__ModuleLoader__.load({
 			// guard the tool has (safeSlug, atomic write, link lint, index sync)
 			// stays in force. Failures surface inline; the list refetches after.
 			const [actMsg, setActMsg] = useState('');
+			// Per-row pending (5.27.0): the switch has no optimistic state — it
+			// refetches after the write — so a double click fires two lifecycle
+			// requests and the second lands as "已是 active" noise. The button is
+			// disabled while ITS skill's action is in flight.
+			const [toggleBusy, setToggleBusy] = useState('');
 			const skillAction = async (args) => {
 				setActMsg('');
+				setToggleBusy(String(args.name ?? ''));
 				try {
 					const r = await fetch(`${API}/skill-action`, {
 						method: 'POST',
@@ -1365,6 +1372,8 @@ window.__ModuleLoader__.load({
 				} catch (e) {
 					setActMsg(`操作失败：${String(e?.message ?? e)}`);
 					return null;
+				} finally {
+					setToggleBusy('');
 				}
 			};
 			const search = useApi(live.length >= 2 ? `${API}/search?q=${enc(live)}${searchZone !== 'all' ? `&zone=${searchZone}` : ''}` : null, fixtures);
@@ -1481,8 +1490,9 @@ window.__ModuleLoader__.load({
 					onOpenMemory: (name) => setView({ kind: 'bundle', name, tab: 'memory' }),
 					onOpenHost: (name) => setView({ kind: 'bundle', name, tab: 'host' }),
 					onToggle: (name, next) => { void skillAction({ action: next, name }); },
-					onDelete: (name) => { if (window.confirm(`删除技能「${name}」？文件与索引行都会被移除，git 是唯一档案。`)) void skillAction({ action: 'delete', name }); },
+					onDelete: (name) => { if (window.confirm(`删除技能「${name}」？整个目录包与索引行都会被移除，只能从 .history/ 或 git 找回旧正文。`)) void skillAction({ action: 'delete', name }); },
 					actMsg,
+					toggleBusy,
 					filter, setFilter,
 				});
 			else if (view.kind === 'bundle') main = h(SkillBundleView, { data: bundleSkill, name: view.name, onBack: back, sel: view.file ?? null, onSel: (f) => setView({ kind: 'bundle', name: view.name, tab: view.tab, file: f }), fixtures });

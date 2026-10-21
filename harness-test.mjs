@@ -969,7 +969,14 @@ const skCry = await T.memory_skill.execute(
 ok(skCry.created && skCry.status === 'candidate' && skCry.file.replace(/\\/g, '/').endsWith('detached-restart/SKILL.md'), 'crystallize writes a candidate skill bundle');
 const skText = await readFile(skCry.file, 'utf8');
 ok(skText.includes('## 调用步骤') && /^\s*1[.、]/m.test(skText), 'skill body has numbered procedure steps');
-ok(skText.includes('../functions/分离延迟重启.md'), 'skill backlinks its evidence source');
+// Evidence link is ABSOLUTE into the memory root (5.27.0): the bundle lives at
+// <skillRoot>/<name>/, OUTSIDE the memory root, so the old `../functions/x.md`
+// resolved to <skillRoot>/functions/x.md — a path that never exists (R10 was
+// blind to it until the audit). Assert the href lands on a REAL file: the whole
+// point of the change, not just its spelling.
+const memRootUrl = 'file:///' + root.replace(/\\/g, '/');
+ok(skText.includes(`${memRootUrl}/functions/分离延迟重启.md`), 'skill backlinks its evidence source with an absolute memory-root href');
+ok(!(await statExists(path.join(skillRoot, 'functions'))) && (await statExists(path.join(root, 'functions', '分离延迟重启.md'))), 'the linked target exists in the memory root, not beside the bundle');
 // Regression (5.16.4, found on the REAL root): a bare-slug source ("x") was
 // emitted as `../x` — the zone prefix was stripped for the label and forgotten
 // for the href, so R10 flagged the skill file dangling. Callers pass bare slugs
@@ -987,9 +994,9 @@ const skBare = await T.memory_skill.execute(
 	exec,
 );
 const skBareText = await readFile(skBare.file, 'utf8');
-ok(skBareText.includes('../functions/测试功能.md'), 'bare slug resolves to functions/ in the href');
-ok(skBareText.includes('../insights/闭环验证.md'), 'zone-prefixed source keeps its zone');
-ok((skBareText.match(/\.\.\/functions\/分离延迟重启\.md/g) ?? []).length === 1 && !skBareText.includes('.md.md'), 'x.md tolerates to one .md and no doubling');
+ok(skBareText.includes(`${memRootUrl}/functions/测试功能.md`), 'bare slug resolves to functions/ in the href');
+ok(skBareText.includes(`${memRootUrl}/insights/闭环验证.md`), 'zone-prefixed source keeps its zone');
+ok((skBareText.match(new RegExp(`${memRootUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/functions/分离延迟重启\\.md`, 'g')) ?? []).length === 1 && !skBareText.includes('.md.md'), 'x.md tolerates to one .md and no doubling');
 ok(!skBareText.includes('](../测试功能.md)'), 'no zone-less bare href survives');
 {
 	const cSk = await T.memory_check.execute({}, exec);
@@ -1013,6 +1020,54 @@ const skBundle = await T.memory_skill.execute(
 ok(skBundle.file.replace(/\\/g, '/').endsWith('bundle-path-skill/SKILL.md'), 'crystallize writes into the host bundle layout');
 const skIdx = await T.memory_read.execute({ kind: 'index' }, exec);
 ok(rowsFor(skIdx.content, 'detached-restart').length === 1 && /detached-restart\/SKILL\.md/.test(skIdx.content), 'skill row lands in the index table (bundle path)');
+// 5.27.0 (adversarial audit) — the skill body no longer carries a 使用记录
+// section: every activate/retire used to append a dated line, growing the body
+// with use while a skill must stay the CURRENT procedure.
+ok(!skText.includes('## 使用记录'), 'crystallized body has no 使用记录 section (lifecycle is status: only)');
+// RENDER PROJECTION is part of the contract: the host calls output.render after
+// EVERY success, and the audit caught `p is not defined` turning a landed write
+// into an "invalid output" rejection. Execute-alone tests never walked this —
+// each of the four action receipts must render without throwing.
+{
+	const cryParts = T.memory_skill.output.render({ action: 'crystallize', name: 'bundle-path-skill' }, skBundle);
+	ok(Array.isArray(cryParts) && cryParts[0].text.includes('已结晶技能') && cryParts[0].text.includes('目录包已写入'), 'the crystallize receipt renders (the audit p-not-defined regression is locked)');
+}
+// Ownership gate: an existing NON-owned bundle is never overwritten.
+await mkdir(path.join(skillRoot, 'foreign-skill'), { recursive: true });
+await writeFile(path.join(skillRoot, 'foreign-skill', 'SKILL.md'), '---\nname: foreign-skill\ndescription: d\n---\n\n# 外来技能，不是我们结晶的\n', 'utf8');
+let ownThrew = false;
+try {
+	await T.memory_skill.execute({ action: 'crystallize', name: 'foreign-skill', summary: 's', when: 'w', procedure: ['一', '二'], verification: 'v', sources: ['测试功能'] }, exec);
+} catch (e) {
+	ownThrew = /不是本插件结晶/.test(String(e?.message));
+}
+ok(ownThrew, 'crystallize refuses to overwrite a foreign (non-agent_created) bundle');
+// The evidence gate: activation with zero usage signal AND no note throws —
+// "only after the procedure was actually followed" is code now, not prose. The
+// source area must be one NOTHING has read/confirmed: a memory_write creates the
+// file but is NOT a usage signal, so the skill's evidence base stays empty.
+await T.memory_write.execute({ feature: '闸门零信号源', title: 't', summary: 's', change: 'c', result: 'done' }, exec);
+await T.memory_skill.execute({ action: 'crystallize', name: 'gate-skill', summary: '闸门回归', when: '闸门回归', procedure: ['一', '二'], verification: 'v', sources: ['闸门零信号源'] }, exec);
+let gateThrew = false;
+try {
+	await T.memory_skill.execute({ action: 'activate', name: 'gate-skill' }, exec);
+} catch (e) {
+	gateThrew = /转正需要证据/.test(String(e?.message));
+}
+ok(gateThrew, 'activate without evidence throws (the ⭐ gate is mechanical)');
+// The explicit-carrier path: a note carries it, visibly warned, and the same
+// call again with the note flips the status.
+const gateNote = await T.memory_skill.execute({ action: 'activate', name: 'gate-skill', note: '2026-10-21 会话里按此程序跑通一次' }, exec);
+ok(gateNote.status === 'active' && gateNote.warnings.some((w) => w.includes('仅凭 note')), 'note-carried activation works and declares its weak evidence');
+// Re-crystallization archives the superseded body before overwriting it —
+// receipts promised "git is the archive" while the skill store is NOT a repo.
+const reCry = await T.memory_skill.execute({ action: 'crystallize', name: 'bundle-path-skill', summary: '包路径回归（重结晶）', when: '包路径回归', procedure: ['一', '二'], verification: '写入宿主包', sources: ['测试功能'] }, exec);
+const histDir = path.join(skillRoot, '.history');
+const { readdir: rdTmp } = await import('node:fs/promises');
+const histFiles = (await rdTmp(histDir).catch(() => [])).filter((n) => n.startsWith('bundle-path-skill-'));
+ok(reCry.warnings.some((w) => w.includes('.history')) && histFiles.length === 1, 're-crystallize archives the old body to .history/ before overwriting');
+const archived = await readFile(path.join(histDir, histFiles[0]), 'utf8');
+ok(archived.includes('包路径回归') && !archived.includes('重结晶'), 'the archive holds the PREVIOUS body, not the new one');
 // A crystallized area must drop out of nomination (support is now filed).
 const sk2 = await T.memory_skill.execute({ action: 'candidates' }, exec);
 ok(!sk2.candidates.some((c) => c.href === 'functions/分离延迟重启.md'), 'already-crystallized area is not re-nominated');
