@@ -88,9 +88,13 @@ Layer 4 · skills/<skill>.md: callable procedures — the "use" step closes the 
   single source area, is flagged. A constraint is not an opinion; it must point back at its evidence.
 
 - **The daily log is the free raw layer**: the plugin dictates neither content nor form — it is the
-  first-hand data of task and conversation, recorded however the model and harness decide. The plugin
-  only reads it back when distilling (`memory_read kind=daily`), inducing the function division from it;
-  every function area's reason-to-exist traces back to concrete daily entries.
+  first-hand data of task and conversation, recorded however the model and harness decide. One light
+  filter only: **do not copy execution logs** (command output, PIDs, exit codes) — the transcript and
+  the log files already hold them; here they only dilute the distillation feed. What is worth recording
+  is what the logs do not carry: judgements and trade-offs, the user's own words, the cause-and-effect
+  of a pitfall, the next thing to verify. The plugin only reads it back when distilling
+  (`memory_read kind=daily`), inducing the function division from it; every function area's
+  reason-to-exist traces back to concrete daily entries.
 - **Each layer is leaner and more universal than the last**: the daily layer holds process, the function
   layer conclusions, the insight layer universal principles, the index layer the retrieval surface. No
   layer copies the text of another — one fact is true in exactly one place.

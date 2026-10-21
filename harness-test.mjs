@@ -1011,6 +1011,16 @@ ok(skText.includes('agent_created: true') && skText.includes('status: candidate'
 // 程序体 pointer section (one body, the host bundle, not two).
 ok(mod.DISCIPLINE_TEXT.includes('skill-creator') && mod.DISCIPLINE_TEXT.includes('quick_validate.py') && mod.DISCIPLINE_TEXT.includes('init_skill.py'), 'the discipline text mandates the skill-creator workflow');
 ok(/init_skill\.py/.test(T.memory_skill.description) && /Quality Bar/.test(T.memory_skill.description) && /host bundle/i.test(T.memory_skill.description), 'the tool description names the skill-creator steps and the one-storage rule');
+// The daily RAW layer carries ONE light filter (the user's ruling: execution
+// logs already live in the transcript and the log files — copying them here
+// dilutes the distillation feed). Both surfaces the model sees must say it:
+// the injected discipline text AND the template line written into a fresh day.
+ok(mod.DISCIPLINE_TEXT.includes('执行式日志') && mod.DISCIPLINE_TEXT.includes('不要抄'), 'the discipline text carries the daily-filter rule');
+{
+	const { dailyTemplate } = await import(new URL('./src/markdown.js', import.meta.url).href);
+	const dt = dailyTemplate('2026-10-21');
+	ok(dt.includes('执行式日志') && dt.includes('轻过滤'), 'a fresh daily log opens with the filter line');
+}
 // 5.24.0: a skill IS the host bundle — no bundlePath arg, no pointer section.
 ok(!('bundlePath' in (T.memory_skill.parameters ?? {})) && !('hostName' in (T.memory_skill.parameters ?? {})), 'obsolete skill fields are gone (bundlePath/hostName)');
 const skBundle = await T.memory_skill.execute(
