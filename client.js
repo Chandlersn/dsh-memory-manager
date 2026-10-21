@@ -275,6 +275,15 @@ window.__ModuleLoader__.load({
 		function resolveHref(href, zone) {
 			const clean = String(href ?? '').split('#')[0].trim();
 			if (!clean || /^(https?:|mailto:|#)/.test(clean)) return null;
+			// 5.24.0: a skill index row links to its HOST bundle via file:///. The
+			// skill's identity is the bundle DIRECTORY name (SKILL.md is the leaf),
+			// and clicking it opens the bundle view — not the memory reader.
+			if (/^file:\/\//i.test(clean)) {
+				const segs = clean.replace(/\\/g, '/').split('/').filter(Boolean);
+				const leaf = segs[segs.length - 1] ?? '';
+				if (leaf !== 'SKILL.md') return null;
+				return { zone: 'bundle', name: segs[segs.length - 2] ?? '' };
+			}
 			const p = clean.replace(/^(\.\.\/)+/, '').replace(/^\.\//, '');
 			if (p.startsWith('functions/')) return { zone: 'functions', name: p.slice(10) };
 			if (p.startsWith('insights/')) return { zone: 'insights', name: p.slice(9) };
@@ -1261,7 +1270,17 @@ window.__ModuleLoader__.load({
 				setQuery('');
 				setLive('');
 			};
-			const navigate = (target) => openFile(target.zone, target.name);
+			// resolveHref may return { zone: 'bundle' } (a skill row pointing at a
+			// host bundle); that opens the bundle view, everything else the reader.
+			const navigate = (target) => {
+				if (target.zone === 'bundle') {
+					setView({ kind: 'bundle', name: target.name, tab: 'memory' });
+					setQuery('');
+					setLive('');
+					return;
+				}
+				openFile(target.zone, target.name);
+			};
 			const back = () => {
 				if (view.kind === 'file' && view.zone) setView({ kind: 'zone', zone: view.zone });
 				else if (view.kind === 'bundle') setView({ kind: 'zone', zone: 'skills', tab: view.tab === 'host' ? 'host' : 'memory' });

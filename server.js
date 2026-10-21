@@ -21,6 +21,7 @@
  */
 import { readFile, writeFile, rename, unlink, rm, mkdir, readdir, stat, appendFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
 import * as path from 'node:path';
 import { homedir } from 'node:os';
@@ -143,16 +144,35 @@ async function checkLinks(text, filePath, root, add) {
 	// tripped R10. Match the same surface the writer produces.
 	for (const m of stripped.matchAll(/\[[^\]\n]*\]\(([^)\n]+)\)/g)) {
 		const rel = m[1].split('#')[0].trim();
-		if (!rel || rel.startsWith('/') || rel.startsWith('http') || rel.includes('attachments')) continue;
+		if (!rel || rel.startsWith('http') || rel.includes('attachments')) continue;
+		const label = () => path.relative(rootAbs, filePath).split(path.sep).join('/') || 'MEMORY.md';
+		// A skill index row links to its HOST bundle via file:/// (5.24.0: skills
+		// live outside the memory root by design). Resolve the URL and check that
+		// the file exists — the dangling half of R10 still matters — but never
+		// report it as an escape, because leaving the memory root IS the point.
+		if (rel.startsWith('file://')) {
+			let abs;
+			try {
+				abs = fileURLToPath(rel);
+			} catch {
+				add('FAIL', 'R10', `unparseable file URL in ${label()} -> ${rel}`);
+				continue;
+			}
+			const key = `${filePath}→${abs}`;
+			if (seen.has(key)) continue;
+			seen.add(key);
+			if (!(await statExists(abs))) add('FAIL', 'R10', `dangling link in ${label()} -> ${rel}`);
+			continue;
+		}
+		if (rel.startsWith('/')) continue;
 		const resolved = path.resolve(base, rel);
 		const key = `${filePath}→${resolved}`;
 		if (seen.has(key)) continue;
 		seen.add(key);
 		const exists = await statExists(resolved);
-		const label = path.relative(rootAbs, filePath).split(path.sep).join('/') || 'MEMORY.md';
-		if (!exists) add('FAIL', 'R10', `dangling link in ${label} -> ${rel}`);
+		if (!exists) add('FAIL', 'R10', `dangling link in ${label()} -> ${rel}`);
 		else if (resolved !== rootAbs && !resolved.startsWith(rootAbs + path.sep)) {
-			add('WARN', 'R10e', `link in ${label} escapes memory root -> ${rel}`);
+			add('WARN', 'R10e', `link in ${label()} escapes memory root -> ${rel}`);
 		}
 	}
 }

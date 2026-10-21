@@ -643,6 +643,24 @@ ok(
 );
 await writeFile(idxPath, idxHealed, 'utf8');
 
+// R10 + file:/// links (5.24.0): a skill index row points at its HOST bundle by
+// absolute file URL. The dangling half of R10 must still fire (a renamed bundle
+// silently loses recall), but a LIVE file:/// row must never warn as an escape —
+// leaving the memory root is the design.
+{
+	const bundleDir = path.join(skillRoot, 'linked-skill');
+	await mkdir(bundleDir, { recursive: true });
+	await writeFile(path.join(bundleDir, 'SKILL.md'), '# live bundle\n', 'utf8');
+	const liveUrl = 'file:///' + bundleDir.replace(/\\/g, '/') + '/SKILL.md';
+	const deadUrl = 'file:///' + path.join(skillRoot, 'ghost-skill').replace(/\\/g, '/') + '/SKILL.md';
+	await writeFile(idxPath, `${idxHealed}\n| [linked-skill](${liveUrl}) | live row | active |\n| [ghost-skill](${deadUrl}) | dead row | active |\n`, 'utf8');
+	const cFile = await T.memory_check.execute({}, exec);
+	ok(!cFile.results.some((r) => r.rule === 'R10' && r.message.includes('linked-skill')), `a live file:/// bundle link resolves without R10/R10e (${cFile.results.filter((r) => r.rule === 'R10e').length} escapes flagged)`);
+	ok(!cFile.results.some((r) => r.rule === 'R10e' && r.message.includes('linked-skill')), 'a file:/// row is NOT an escape warning (outside-root is by design)');
+	ok(cFile.results.some((r) => r.rule === 'R10' && r.message.includes('ghost-skill')), 'a dangling file:/// bundle link still trips R10');
+	await writeFile(idxPath, idxHealed, 'utf8');
+}
+
 // 16) R3 head guardrail: a head summary whose 截至 date is older than the newest
 // iteration block is flagged (append must pair with head refresh); a missing
 // head summary is flagged too. R16: env-constant absolute paths must exist.
