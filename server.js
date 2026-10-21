@@ -1138,7 +1138,13 @@ function skillTemplate(name, f) {
 		'',
 		'## 调用步骤',
 		'',
-		f.steps.map((s, i) => `${i + 1}. ${s}`).join('\n'),
+		// Pointer form (bundlePath given): the steps are the HOST bundle's body.
+		// Duplicating them here would be a second body to drift — exactly what
+		// "程序体（唯一来源）" forbids. Without a bundle the steps ARE the body,
+		// so they stay verbatim.
+		f.bundlePath
+			? `- 见权威版 \`${f.bundlePath}SKILL.md\` 的 Procedure 节（本文件只留登记与证据，不复制程序）。`
+			: f.steps.map((s, i) => `${i + 1}. ${s}`).join('\n'),
 		'',
 		'## 前提与坑',
 		'',
