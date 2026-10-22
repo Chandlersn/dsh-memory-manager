@@ -111,6 +111,10 @@ const indexText = [
 	'|---|---|---|',
 	'| [分离延迟重启](skills/分离延迟重启.md) | 会话跑在宿主内时用分离进程延迟杀旧起新 | active |',
 	'',
+	'## 决策共识 / 规范（跨功能、约束级）',
+	'',
+	'- 索引行摘要只说「这是什么」，不写推导过程。',
+	'',
 	'## 环境常量（易忘）',
 	'',
 	'- 记忆根：`C:/x/memory`',
@@ -192,7 +196,11 @@ ok(count(overview, 'data-dmo="growth-card"') === 5, `overview shows all five zon
 ok(overview.includes('能力台账') && overview.includes('技能库'), 'the added capability/skill cards label their zones');
 ok(overview.includes('WARN 1') && overview.includes('冷记忆 1'), 'health chips carry the warning and the cold count');
 ok(overview.includes('[WARN] TEMP: functions/beta.md 冷记忆'), 'the health list renders every problem from overview.results');
-ok(overview.includes('2 功能 · 1 思想 · 2 日线索'), 'header summarises the memory size');
+ok(overview.includes('2 功能 · 1 思想 · 0 能力 · 1 技能 · 2 日线索'), 'header summarises every zone');
+// Consensus + environment constants (5.28.0): the two prose blocks of MEMORY.md
+// that the index tables do not carry are surfaced on the overview.
+ok(overview.includes('共识与环境常量') && overview.includes('跨功能共识 / 规范') && overview.includes('环境常量（易忘）'), 'the overview surfaces consensus and env constants');
+ok(overview.includes('索引行摘要只说「这是什么」') && overview.includes('记忆根：C:/x/memory'), 'prose bullets render from MEMORY.md');
 // Environment card (5.26.0): the overview answers "which build runs, where do
 // the stores live, how full is the index" from the server's own truth.
 ok(overview.includes('运行环境') && overview.includes('5.26.0'), 'the env card names the running version');
@@ -377,7 +385,11 @@ ok(idxRead.includes('带空格的主题名也必须渲染成链接。'), 'spaced
 ok(count(idxRead, 'title="insights/可观测性先于修 bug.md"') >= 1, 'spaced theme link renders as a button (not raw markdown)');
 ok(!/\[insights\/[^\]]*\]\(insights\//.test(idxRead), 'no raw markdown link survives inside the index tables');
 ok(count(idxRead, 'data-dmo="section"') === 0, 'index tables are not duplicated as section cards');
-ok(idxRead.includes('记忆根'), 'remaining index sections (env constants) render as cards');
+// Consensus and env-constant bullets now live on the overview card; the index
+// page must NOT repeat them (5.28.0). The detail-pointer block is overview-free
+// and stays on the index.
+ok(!idxRead.includes('记忆根：') && !idxRead.includes('索引行摘要只说'), 'index does not repeat consensus/env constants shown on the overview');
+ok(idxRead.includes('细节指针'), 'the detail-pointer section still renders on the index');
 ok(idxRead.includes('clickable'), 'index rows open their target file in-panel');
 
 // --- reader: insight + daily open every section ----------------------------

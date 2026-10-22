@@ -171,6 +171,9 @@ window.__ModuleLoader__.load({
 .dmo-mono{font-family:var(--ds-font-family-code,ui-monospace,monospace)}
 .dmo-meta{font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}
 .dmo-probs{margin:6px 0 0;padding-left:20px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary)}
+.dmo-prose{margin:0;padding-left:20px;font-size:13px;line-height:20px;color:var(--dsw-alias-label-secondary)}
+.dmo-prose li{margin:2px 0}
+.dmo-prose li::marker{color:var(--dsw-alias-label-tertiary)}
 .dmo-growth{display:flex;gap:8px;flex-wrap:wrap}
 .dmo-gcard{flex:1 1 120px;border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-md);padding:8px 10px;cursor:pointer;background:var(--dsw-alias-bg-layer-1);text-align:left;color:inherit;font:inherit}
 .dmo-gcard:hover{background:var(--dsw-alias-interactive-bg-hover)}
@@ -252,6 +255,34 @@ window.__ModuleLoader__.load({
 				// in cell 3, the current one bakes it into cell 1.
 				const href = cells.map((c) => /\]\(([^)\s]+\.md)\)/.exec(c)?.[1]).find(Boolean) ?? '';
 				out[zone][slug] = { summary: plain(cells.slice(1).join(' ')), href };
+			}
+			return out;
+		}
+
+		/**
+		 * Read the two prose sections of MEMORY.md that the index tables skip:
+		 * the cross-feature consensus block and the environment-constant block.
+		 *
+		 * Both live outside the four navigation tables, so they used to be
+		 * reachable only by scrolling the raw index page. The overview surfaces
+		 * them because they are the memory a future session most needs at a
+		 * glance ("what did we agree" + "which machine path is real").
+		 *
+		 * @param text - MEMORY.md content.
+		 * @returns `{ consensus: string[], env: string[] }` — bullet lines each.
+		 */
+		function parseProseSections(text) {
+			const out = { consensus: [], env: [] };
+			let zone = null;
+			for (const raw of String(text ?? '').split('\n')) {
+				const line = raw.trim();
+				if (/^##\s/.test(raw)) {
+					zone = /共识|规范/.test(line) ? 'consensus' : /环境常量/.test(line) ? 'env' : null;
+					continue;
+				}
+				if (!zone || !line.startsWith('-') || line === '-') continue;
+				const body = plain(line.replace(/^-\s*/, ''));
+				if (body) out[zone].push(body);
 			}
 			return out;
 		}
@@ -730,7 +761,11 @@ window.__ModuleLoader__.load({
 							'div',
 							{ style: { display: 'flex', flexDirection: 'column', gap: 6 } },
 							sections
-								.filter((s) => !/功能模块|思想|能力|技能/.test(s.heading))
+								// The four index tables render as tables above, and the
+								// consensus + environment-constant blocks now live on the
+								// overview — neither repeats here. The detail-pointer block
+								// stays: it is only on the index.
+								.filter((s) => !/功能模块|思想|能力|技能|共识|环境常量/.test(s.heading))
 								.map((s, i) => h(Card, { key: `x${i}`, tight: true }, h('h3', { className: 'dmo-h2' }, s.heading), h(MarkdownBody, { text: s.body, zone: '', onNavigate }))),
 						)
 					: h(
@@ -745,7 +780,7 @@ window.__ModuleLoader__.load({
 		// overview / lists / search
 		// ---------------------------------------------------------------------
 
-		function Overview({ health, counts, timeline, usage, env, preview, previewQ, setPreviewQ, onOpen, onZone, onNavigate }) {
+		function Overview({ health, counts, timeline, usage, env, prose, preview, previewQ, setPreviewQ, onOpen, onZone, onNavigate }) {
 			const problems = health?.results ?? [];
 			const fails = problems.filter((p) => p.level === 'FAIL');
 			const warns = problems.filter((p) => p.level === 'WARN');
@@ -827,7 +862,32 @@ window.__ModuleLoader__.load({
 						),
 					),
 				),
-				env
+				// Consensus + environment constants: the two prose blocks of
+			// MEMORY.md that the index tables do not carry. They answer "what
+			// did we agree across features" and "which machine path is real",
+			// which is exactly what a future session needs before acting.
+			prose && (prose.consensus.length || prose.env.length)
+				? h(
+						Card,
+						null,
+						h(CardTitle, null, '共识与环境常量'),
+						h('div', { style: { display: 'flex', flexDirection: 'column', gap: 10 } },
+							prose.consensus.length
+								? h('div', null,
+										h('div', { className: 'dmo-meta', style: { marginBottom: 4 } }, '跨功能共识 / 规范'),
+										h('ul', { className: 'dmo-prose' }, prose.consensus.map((c, i) => h('li', { key: `c${i}` }, c))),
+									)
+								: null,
+							prose.env.length
+								? h('div', null,
+										h('div', { className: 'dmo-meta', style: { marginBottom: 4 } }, '环境常量（易忘）'),
+										h('ul', { className: 'dmo-prose' }, prose.env.map((c, i) => h('li', { key: `e${i}` }, c))),
+									)
+								: null,
+						),
+					)
+				: null,
+			env
 					? h(Card, null, h(CardTitle, null, '运行环境'), envRow)
 					: null,
 				h(
@@ -1479,7 +1539,7 @@ window.__ModuleLoader__.load({
 			else if (overview.error) main = h('div', { className: 'dmo-empty' }, `API 不可用：${overview.error}`);
 			else if (!ws) main = h('div', { className: 'dmo-empty' }, '没有已注册的 workspace。');
 			else if (!health?.initialized) main = h('div', { className: 'dmo-empty' }, '记忆还没有建立（`~/.dsh/memory/` 尚未创建）。让 Agent 做一次实质工作，它就会用 memory_write 写下第一份迭代。');
-			else if (view.kind === 'overview') main = h(Overview, { health, counts, timeline, usage: overview.data?.[0]?.usage, env: overview.data?.[0]?.env, preview, previewQ, setPreviewQ, onOpen: openFile, onZone: (z) => setView({ kind: 'zone', zone: z }), onNavigate: navigate });
+			else if (view.kind === 'overview') main = h(Overview, { health, counts, timeline, usage: overview.data?.[0]?.usage, env: overview.data?.[0]?.env, prose: parseProseSections(indexText), preview, previewQ, setPreviewQ, onOpen: openFile, onZone: (z) => setView({ kind: 'zone', zone: z }), onNavigate: navigate });
 			else if (view.kind === 'zone' && view.zone === 'skills')
 				main = h(SkillLibrary, {
 					data: skillLib.data, loading: skillLib.loading, error: skillLib.error,
@@ -1514,7 +1574,7 @@ window.__ModuleLoader__.load({
 					'div',
 					{ className: 'dmo-header' },
 					h('h1', { className: 'dmo-title' }, '记忆管理'),
-					h('span', { className: 'dmo-sub' }, `${counts.functions ?? 0} 功能 · ${counts.insights ?? 0} 思想 · ${counts.daily ?? 0} 日线索`),
+					h('span', { className: 'dmo-sub' }, `${counts.functions ?? 0} 功能 · ${counts.insights ?? 0} 思想 · ${counts.capabilities ?? 0} 能力 · ${counts.skills ?? 0} 技能 · ${counts.daily ?? 0} 日线索`),
 					h(
 						'label',
 						{ className: 'dmo-search', style: { marginLeft: 'auto', width: 240 } },
@@ -1564,7 +1624,10 @@ window.__ModuleLoader__.load({
 						'div',
 						{ className: 'dmo-rail' },
 						NAV.map((n) => {
-							const count = n.key === 'functions' || n.key === 'insights' || n.key === 'daily' ? counts[n.key] : null;
+							// Every zone that reports a count shows one: capabilities and
+							// skills were silently excluded before, so two rail rows read
+							// as empty while holding real data.
+							const count = n.key === 'overview' || n.key === 'index' ? null : counts[n.key];
 							return h(
 								'button',
 								{
@@ -1617,7 +1680,7 @@ window.__ModuleLoader__.load({
 			},
 			// Pure view logic, exposed so ui-test.mjs can assert the panel's
 			// parsing/folding behaviour without a browser.
-			__internalsForTest: { relTime, plain, parseIndexTables, splitSections, resolveHref, defaultOpen, SearchPane, RecallPreviewCard, reverseBullets, highlight },
+			__internalsForTest: { relTime, plain, parseIndexTables, parseProseSections, splitSections, resolveHref, defaultOpen, SearchPane, RecallPreviewCard, reverseBullets, highlight },
 		};
 	},
 });
