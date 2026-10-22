@@ -151,6 +151,16 @@ window.__ModuleLoader__.load({
 .dmo-code-copy{margin-left:auto;border:none;background:transparent;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:16px;cursor:pointer;padding:2px 6px;border-radius:var(--dsw-radius-sm)}
 .dmo-code-copy:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}
 .dmo-code .dmo-pre{margin:0;border:none;border-radius:0;background:transparent}
+/* Syntax token colors: every one rides a Host semantic variable so the panel
+   follows the active theme; the fallbacks only exist for a stripped build. */
+.dmo-t-kw{color:var(--dsw-alias-state-business-primary,#7ab0ff);font-weight:500}
+.dmo-t-str{color:var(--dsw-alias-state-success-primary,#6fce89)}
+.dmo-t-com{color:var(--dsw-alias-label-tertiary,#8a8a8a);font-style:italic}
+.dmo-t-num{color:var(--dsw-alias-state-warn-primary,#e3b341)}
+.dmo-t-fn{color:var(--dsw-alias-brand-text,#c792ea)}
+.dmo-t-diff-add{display:block;background:color-mix(in srgb,var(--dsw-alias-code-diff-added,#2ea043) 14%,transparent);color:var(--dsw-alias-code-diff-added,#3fb950)}
+.dmo-t-diff-del{display:block;background:color-mix(in srgb,var(--dsw-alias-code-diff-deleted,#f85149) 14%,transparent);color:var(--dsw-alias-code-diff-deleted,#f85149)}
+.dmo-t-diff-meta{display:block;color:var(--dsw-alias-label-tertiary,#8a8a8a)}
 .dmo-md blockquote{margin:6px 0;padding:2px 0 2px 10px;border-left:2px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary)}
 .dmo-md hr{border:none;border-top:.5px solid var(--dsw-alias-border-l2);margin:10px 0}
 .dmo-link{color:var(--dsw-alias-link);cursor:pointer;text-decoration:none;border:none;background:transparent;font:inherit;padding:0;font-weight:500}
@@ -475,6 +485,174 @@ window.__ModuleLoader__.load({
 			return out.filter((x) => x !== '');
 		}
 
+		// --- code-block syntax coloring -----------------------------------------
+		// The panel stores procedures, commands and patches, and the Host's own
+		// markdown renderer ships no highlighter either, so a fenced block used to
+		// be one flat grey blob. This is a deliberately small tokenizer: comments,
+		// strings, numbers, keywords, and unified-diff lines — enough that the eye
+		// separates structure from payload at a glance. Colors ride the Host's
+		// semantic theme variables, so dark and light themes both stay legible and
+		// nothing here invents a palette. Unknown languages render untouched.
+
+		const LANG_KEYWORDS = {
+			js: 'const let var function return if else for while do switch case break continue new class extends super this typeof instanceof in of delete void yield await async try catch finally throw import export from default null undefined true false',
+			ts: 'const let var function return if else for while do switch case break continue new class extends implements interface type enum namespace declare as readonly public private protected static abstract async try catch finally throw import export from default null undefined true false void never unknown any string number boolean',
+			py: 'def class return if elif else for while in not and or is None True False import from as with try except finally raise lambda yield pass break continue global nonlocal assert async await del print',
+			sh: 'if then else elif fi for while do done case esac function return export local set shift source echo exit read until select time',
+			bash: 'if then else elif fi for while do done case esac function return export local set shift source echo exit read until select time',
+			ps: 'if else elseif foreach for while switch do return function param begin end process filter where',
+			powershell: 'if else elseif foreach for while switch do return function param begin end process filter where',
+			sql: 'SELECT FROM WHERE INSERT INTO VALUES UPDATE SET DELETE CREATE DROP ALTER TABLE INDEX JOIN LEFT RIGHT INNER OUTER ON GROUP BY ORDER HAVING LIMIT OFFSET AS AND OR NOT NULL DISTINCT UNION CASE WHEN THEN ELSE END',
+			go: 'func package import var const type struct interface map chan go defer return if else for range switch case default break continue go nil true false string int int64 float64 bool byte rune error',
+			rust: 'fn let mut const struct enum impl trait use pub mod match if else for while loop return break continue self super crate where move async await dyn ref true false Some None Ok Err String str i32 u32 usize bool char',
+			java: 'public private protected class interface extends implements static final void int long double float boolean char new return if else for while switch case default try catch finally throw throws import package this super null true false',
+			c: 'int char float double long short unsigned signed struct union enum typedef static const extern void return if else for while do switch case break continue goto sizeof NULL',
+			cpp: 'int char float double long short unsigned signed struct union enum class template typename namespace using public private protected static const constexpr virtual override inline void return if else for while do switch case break continue new delete nullptr true false auto',
+			csharp: 'using namespace class struct interface enum public private protected internal static virtual override abstract sealed async await var new return if else for foreach while switch case default try catch finally throw null true false void int string bool object list',
+			yaml: 'true false null yes no on off',
+			json: 'true false null',
+			toml: 'true false',
+		};
+		const LANG_ALIASES = {
+			javascript: 'js', typescript: 'ts', tsx: 'ts', jsx: 'js', node: 'js',
+			python: 'py', shell: 'sh', zsh: 'sh', console: 'sh', cmd: 'sh', pwsh: 'powershell', ps1: 'powershell',
+			golang: 'go', rs: 'rust', cs: 'csharp', h: 'c', cc: 'cpp', cxx: 'cpp', md: '', markdown: '',
+		};
+
+		/**
+		 * Split one fenced code block into [class, text] tokens.
+		 *
+		 * Single-quoted strings stop at the line end unless closed: the common
+		 * failure of a stray quote swallowing the rest of a block is worse than a
+		 * missing color, so an unterminated string stays plain text.
+		 *
+		 * @param text - the block body (already fence-stripped).
+		 * @param lang - the fence language tag (may be '' or unknown).
+		 * @returns tokens with class in {kw,str,com,num,fn,diff-add,diff-del,diff-meta,''}.
+		 */
+		function tokenizeCode(text, lang) {
+			const source = String(text ?? '');
+			const base = (LANG_ALIASES[lang] ?? lang ?? '').toLowerCase();
+			if (!source.trim()) return [['', source]];
+			const tokens = [];
+			const push = (cls, value) => {
+				if (value === '') return;
+				if (cls === '' && tokens.length && tokens[tokens.length - 1][0] === '') {
+					tokens[tokens.length - 1][1] += value;
+					return;
+				}
+				tokens.push([cls, value]);
+			};
+
+			// Unified diff: line-level coloring, no further tokenizing. Auto-
+			// detection is limited to plain/unknown fences — YAML opens a document
+			// with `---`, so treating every leading dash as a deletion would
+			// mis-color whole config blocks.
+			const looksDiffLang = base === '' || base === 'text' || base === 'diff' || base === 'patch';
+			if (base === 'diff' || base === 'patch' || (looksDiffLang && /^(diff --git|@@ -\d|\+\+\+ |--- )/m.test(source))) {
+				for (const line of source.split('\n')) {
+					if (line.startsWith('+++') || line.startsWith('---') || line.startsWith('diff ') || line.startsWith('index ')) push('diff-meta', `${line}\n`);
+					else if (line.startsWith('@@')) push('diff-meta', `${line}\n`);
+					else if (line.startsWith('+')) push('diff-add', `${line}\n`);
+					else if (line.startsWith('-')) push('diff-del', `${line}\n`);
+					else push('', `${line}\n`);
+				}
+				const trimmed = tokens[tokens.length - 1];
+				if (trimmed && trimmed[1].endsWith('\n')) trimmed[1] = trimmed[1].slice(0, -1);
+				return tokens;
+			}
+
+			const keywords = new Set((LANG_KEYWORDS[base] ?? '').split(/\s+/).filter(Boolean));
+			const hashComment = base === 'py' || base === 'sh' || base === 'yaml' || base === 'toml' || base === 'powershell';
+			const slashComment = base !== '' && base !== 'yaml' && base !== 'toml' && base !== 'sql' && base !== 'powershell' && base !== 'md';
+			const lineComment = (
+				rest,
+			) => {
+				const end = rest.indexOf('\n');
+				return end === -1 ? rest.length : end;
+			};
+			let i = 0;
+			while (i < source.length) {
+				const rest = source.slice(i);
+				const two = rest.slice(0, 2);
+				// Block comment.
+				if (two === '/*') {
+					const end = source.indexOf('*/', i + 2);
+					const stop = end === -1 ? source.length : end + 2;
+					push('com', source.slice(i, stop));
+					i = stop;
+					continue;
+				}
+				if (hashComment && rest[0] === '#') {
+					const stop = i + lineComment(source.slice(i));
+					push('com', source.slice(i, stop));
+					i = stop;
+					continue;
+				}
+				if (slashComment && two === '//') {
+					const stop = i + lineComment(source.slice(i));
+					push('com', source.slice(i, stop));
+					i = stop;
+					continue;
+				}
+				if (base === 'sql' && two === '--') {
+					const stop = i + lineComment(source.slice(i));
+					push('com', source.slice(i, stop));
+					i = stop;
+					continue;
+				}
+				// String (single line, escape-aware, unterminated stays plain).
+				const quote = rest[0];
+				if (quote === '"' || quote === "'" || quote === '`') {
+					let j = i + 1;
+					let closed = false;
+					while (j < source.length) {
+						const ch = source[j];
+						if (ch === '\\') {
+							j += 2;
+							continue;
+						}
+						if (ch === '\n' && quote !== '`') break;
+						if (ch === quote) {
+							closed = true;
+							j += 1;
+							break;
+						}
+						j += 1;
+					}
+					if (closed) {
+						push('str', source.slice(i, j));
+						i = j;
+						continue;
+					}
+					push('', quote);
+					i += 1;
+					continue;
+				}
+				// Number: only at a non-word boundary (an identifier like `u32` is
+				// consumed whole by the word branch below, so no tail can leak here).
+				const num = /^[+-]?\d[\w.]*/.exec(rest);
+				if (num && !/[\w]/.test(source[i - 1] ?? '')) {
+					push('num', num[0]);
+					i += num[0].length;
+					continue;
+				}
+				// Word: keyword / identifier.
+				const word = /^[A-Za-z_$][\w$]*/.exec(rest);
+				if (word) {
+					const value = word[0];
+					if (keywords.has(value) || (base === 'sql' && keywords.has(value.toUpperCase()))) push('kw', value);
+					else if (/^\s*\(/.test(rest.slice(value.length)) && !keywords.has(value)) push('fn', value);
+					else push('', value);
+					i += value.length;
+					continue;
+				}
+				push('', rest[0]);
+				i += 1;
+			}
+			return tokens;
+		}
+
 		function MarkdownBody({ text, zone, onNavigate }) {
 			const lines = String(text ?? '').split('\n');
 			const blocks = [];
@@ -497,6 +675,10 @@ window.__ModuleLoader__.load({
 					while (i < lines.length && !/^```/.test(lines[i].trim())) buf.push(lines[i++]);
 					i++;
 					const body = buf.join('\n');
+					// A known language gets token spans; an unknown one renders the
+					// body as-is (a wrong color is worse than no color).
+					const tokens = tokenizeCode(body, lang);
+					const tokenized = tokens.length > 0 && tokens.some(([cls]) => cls !== '');
 					blocks.push(
 						h(
 							'div',
@@ -518,7 +700,13 @@ window.__ModuleLoader__.load({
 									'复制',
 								),
 							),
-							h('pre', { className: 'dmo-pre' }, body),
+							tokenized
+								? h(
+										'pre',
+										{ className: 'dmo-pre dmo-hl' },
+										tokens.map(([cls, value], n) => (cls ? h('span', { key: `t${n}`, className: `dmo-t-${cls}` }, value) : value)),
+									)
+								: h('pre', { className: 'dmo-pre' }, body),
 						),
 					);
 					continue;
@@ -1680,7 +1868,7 @@ window.__ModuleLoader__.load({
 			},
 			// Pure view logic, exposed so ui-test.mjs can assert the panel's
 			// parsing/folding behaviour without a browser.
-			__internalsForTest: { relTime, plain, parseIndexTables, parseProseSections, splitSections, resolveHref, defaultOpen, SearchPane, RecallPreviewCard, reverseBullets, highlight },
+			__internalsForTest: { relTime, plain, parseIndexTables, parseProseSections, splitSections, resolveHref, defaultOpen, SearchPane, RecallPreviewCard, reverseBullets, highlight, tokenizeCode },
 		};
 	},
 });

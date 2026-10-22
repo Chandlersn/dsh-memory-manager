@@ -339,7 +339,18 @@ const mdView = serialize(FakeReact.createElement(MemoryPanel, {
 ok(count(mdView, 'class="dmo-code"') === 1, 'a fenced block renders as one framed code unit');
 ok(mdView.includes('dmo-code-lang') && mdView.includes('js'), 'the language badge shows the fence tag');
 ok(count(mdView, 'data-dmo="code-copy"') === 1, 'the code block carries a copy button');
-ok(mdView.includes('const x = 1;'), 'the code body renders');
+ok(mdView.includes('const') && mdView.includes('x = ') && mdView.includes('1'), 'the code body renders');
+// Coloring (5.29.0): a known-language fence becomes token spans; the raw text
+// must survive the split intact (concatenation equals the source, no loss).
+ok(mdView.includes('dmo-t-kw') && mdView.includes('>const<'), 'js keyword renders as a colored span');
+ok(mdView.replace(/<[^>]+>/g, '').includes('const x = 1;'), 'token spans concatenate back to the exact source');
+// Tokenizer edge guards: the judgment calls that a naive highlighter gets wrong.
+const T_classes = (text, lang) => T.tokenizeCode(text, lang).filter(([c]) => c);
+ok(!T_classes('---\ny: 1\n# n', 'yaml').some(([c]) => c.startsWith('diff')), 'yaml doc marker never reads as a diff');
+ok(!T_classes('let x = u32', 'rust').some(([c, v]) => c === 'num' && v.includes('32')), 'identifier u32 is not half a number');
+ok(T_classes('echo "abc', 'sh').every(([c]) => c !== 'str'), 'unterminated string stays plain');
+ok(T_classes('just prose', '').length === 0, 'unknown language is never colored');
+ok(T.tokenizeCode('const s = "x" // c', 'js').map(([, v]) => v).join('') === 'const s = "x" // c', 'tokens rejoin losslessly');
 ok(count(mdView, 'dmo-table-wrap') === 1, 'a table renders inside its own scroll box');
 ok(count(mdView, 'class="dmo-table"') === 1 && mdView.includes('列一') && mdView.includes('列二'), 'the table keeps its header cells');
 ok(mdView.includes('odd'), 'zebra striping marks alternate rows');
