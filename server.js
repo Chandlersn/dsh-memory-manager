@@ -1867,8 +1867,13 @@ function memoryWriteTool(opts) {
 		description:
 			'Append ONE iteration block to functions/<feature>.md (distilled conclusion, not a process log; dates are tags, blocks are append-only) and refresh the file-head stable-state summary via `currentState`. The daily log (YYYY-MM-DD.md) is the RAW layer — the model/harness records whatever it wants there with any means; this tool never touches it. The MEMORY.md index row is written separately (memory_index) once a feature area stabilizes, so distillation flows daily → functions → index, one direction per step. A block is a DISTILLED conclusion (动因 / 改动 / 判据 / 待观察, one line each): per-step changelists, code-level enumerations and debugging process stay in the session, the daily log and the code — writing them into the block is the failure R14 flags.',
 		parameters: {
-			feature: { type: 'string', required: true, description: '功能域 slug（文件名，不含 .md）：这个迭代属于哪个功能/模块；不确定就先 memory_read kind=index。' },
+			// Declaration order is display order: the host's generic tool card shows
+			// `name · first string argument`, so the FIRST parameter must be the
+			// human-meaningful one (the block title), never the feature slug — a
+			// slug like "memory-manager" rendered as "memory_write · memory-manager"
+			// and read like a broken plugin-qualified name.
 			title: { type: 'string', required: true, description: '一句话结论式标题，如“修复 config 加载顺序导致的空指针”；不要“优化了一些问题”这类空话。' },
+			feature: { type: 'string', required: true, description: '功能域 slug（文件名，不含 .md）：这个迭代属于哪个功能/模块；不确定就先 memory_read kind=index。' },
 			change: { type: 'string', description: '改动（结论级，1-3 句）：现在是什么行为 / 改了什么。不写过程——逐条实现清单、代码级枚举、调试经过都不进记忆（留在会话与代码/提交里）。' },
 			reason: { type: 'string', description: '原因（一句话）：为什么必须改（用户诉求 / 缺陷根因）。' },
 			verification: { type: 'string', description: '验证（一句话 + 关键数字）：测试名/命令/实测现象；不要复述全部断言细节。' },
