@@ -65,6 +65,8 @@ window.__ModuleLoader__.load({
 .dmo-btn:hover{background:var(--dsw-alias-interactive-bg-hover)}
 .dmo-btn:active{background:var(--dsw-alias-interactive-bg-active)}
 .dmo-btn.outline{border:.5px solid var(--dsw-alias-border-l3)}
+	.dmo-btn.danger{border:.5px solid var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary)}
+	.dmo-btn.danger:hover{background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 12%,transparent)}
 .dmo-btn.sm{height:28px;padding:0 10px;font-size:12px;line-height:18px;border-radius:var(--dsw-radius-sm)}
 .dmo-btn.link{padding:0 2px;height:auto;color:var(--dsw-alias-link);font-weight:500;text-decoration:none}
 .dmo-btn.link:hover{background:transparent;text-decoration:underline dotted var(--dsw-alias-link);text-underline-offset:3px}
@@ -390,7 +392,7 @@ window.__ModuleLoader__.load({
 		// primitives
 		// ---------------------------------------------------------------------
 
-		function Btn({ children, onClick, tone, sm, title, disabled }) {
+		function Btn({ children, onClick, tone, sm, title, disabled, 'data-dmo': mark }) {
 			return h(
 				'button',
 				{
@@ -399,6 +401,9 @@ window.__ModuleLoader__.load({
 					onClick,
 					title,
 					disabled,
+					// 面板的测试钩子一律走 data-dmo（ui-test 的序列化器只输出它）。
+					// 透传出来，破坏性按钮之类才有稳定的断言锚点。
+					...(mark === undefined ? {} : { 'data-dmo': mark }),
 				},
 				children,
 			);
@@ -1511,20 +1516,30 @@ window.__ModuleLoader__.load({
 			const items = data?.items ?? [];
 			const counts = data?.counts ?? { open: 0, acknowledged: 0, resolved: 0 };
 			const [busy, setBusy] = useState(null);
+			// 二次确认：正在等确认的 fingerprint。删除不可逆，误点代价大，
+			// 故第一次点只把按钮变成"确认删除"，第二次点才真删。
+			const [confirming, setConfirming] = useState(null);
 			const total = counts.open + counts.acknowledged + counts.resolved;
 
-			const changeStatus = (fingerprint, status) => {
+			/** 统一走 /inbox-action：payload 决定是改状态还是删除。 */
+			const write = (fingerprint, payload) => {
 				setBusy(fingerprint);
 				fetch(`${API}/inbox-action`, {
 					method: 'POST',
 					headers: { 'content-type': 'application/json' },
-					body: JSON.stringify({ fingerprint, status }),
+					body: JSON.stringify({ fingerprint, ...payload }),
 				})
 					.then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-					.then(() => onStateChange?.())
+					.then(() => {
+						setConfirming(null);
+						onStateChange?.();
+					})
 					.catch(() => {})
 					.finally(() => setBusy(null));
 			};
+
+			const changeStatus = (fingerprint, status) => write(fingerprint, { status });
+			const remove = (fingerprint) => write(fingerprint, { op: 'delete' });
 
 			const chips = INBOX_STATUS.map((s) =>
 				h(
@@ -1589,6 +1604,41 @@ window.__ModuleLoader__.load({
 					);
 				}
 
+				// 删除：与"标记已解决"是两回事 —— 解决保留记录（说明处理过），
+				// 删除抹掉记录（这条根本不该在收件箱里：误报、重复投递、不再需要跟踪）。
+				// 不可逆，故点第一次只进入确认态，第二次才真删。
+				const awaiting = confirming === item.fingerprint;
+				actions.push(
+					h(
+						Btn,
+						{
+							key: 'del',
+							sm: true,
+							tone: awaiting ? 'danger' : 'outline',
+							disabled: isBusy,
+							'data-dmo': 'inbox-delete',
+							title: awaiting ? '再点一次即永久删除，不可撤销' : '彻底删除这条（不可撤销）',
+							onClick: () => (awaiting ? remove(item.fingerprint) : setConfirming(item.fingerprint)),
+						},
+						awaiting ? '确认删除' : '删除',
+					),
+				);
+				if (awaiting) {
+					actions.push(
+						h(
+							Btn,
+							{
+								key: 'cancel',
+								sm: true,
+								tone: 'link',
+								disabled: isBusy,
+								onClick: () => setConfirming(null),
+							},
+							'取消',
+						),
+					);
+				}
+
 				return h(
 					'div',
 					{ key: item.fingerprint, className: 'dmo-gcard', 'data-dmo': 'inbox-row' },
@@ -1605,7 +1655,14 @@ window.__ModuleLoader__.load({
 					),
 					h('div', { style: { padding: '0 14px 10px' } }, item.message),
 					item.hint ? h('div', { className: 'dmo-meta', style: { padding: '0 14px 10px' } }, `提示：${item.hint}`) : null,
-					h('div', { className: 'dmo-meta', style: { padding: '0 14px 12px', display: 'flex', gap: 8, alignItems: 'center' } }, ...actions),
+					h(
+						'div',
+						{ className: 'dmo-meta', style: { padding: '0 14px 12px', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
+						...actions,
+						awaiting
+							? h('span', { style: { color: 'var(--dsw-alias-state-error-primary)' } }, '删除后无法恢复；若只是处理完了，改用「标记已解决」')
+							: null,
+					),
 				);
 			});
 
@@ -1953,7 +2010,17 @@ window.__ModuleLoader__.load({
 							// Every zone that reports a count shows one: capabilities and
 							// skills were silently excluded before, so two rail rows read
 							// as empty while holding real data.
-							const count = n.key === 'overview' || n.key === 'index' ? null : counts[n.key];
+							//
+							// 收件箱的数值来自它自己的接口（不在 zone 计数里），且取的是
+							// **未处理**数 —— 徽标该回答"有多少要我看"，已认领/已解决
+							// 不该让它一直亮着。
+							const inboxOpen = inboxRes.data?.counts?.open;
+							const count =
+								n.key === 'overview' || n.key === 'index'
+									? null
+									: n.key === 'inbox'
+										? inboxOpen
+										: counts[n.key];
 							return h(
 								'button',
 								{
@@ -1963,7 +2030,10 @@ window.__ModuleLoader__.load({
 								},
 								h('span', { className: 'ico' }, n.icon),
 								n.label,
-								Number.isFinite(count) && count > 0 ? h('span', { className: 'cnt' }, String(count)) : null,
+								// data-dmo 带上 key，ui-test 才能按目标精确断言"哪一项显示了数值"。
+								Number.isFinite(count) && count > 0
+									? h('span', { className: 'cnt', 'data-dmo': `nav-count-${n.key}` }, String(count))
+									: null,
 							);
 						}),
 						health?.initialized && (health.results ?? []).length

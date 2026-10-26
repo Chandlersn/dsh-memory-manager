@@ -529,6 +529,22 @@ ok(inboxView.includes('认领') && inboxView.includes('标记已解决') && inbo
 const inboxFilters = count(inboxView, 'data-dmo="inbox-filter"');
 ok(inboxFilters === 3, `inbox offers one filter per status (${inboxFilters})`);
 
+// 删除（2026-10-26）：与"标记已解决"是两回事 —— 解决保留记录，删除抹掉记录。
+// 渲染是一次性的（无交互），故这里只钉"删除入口存在且默认不在确认态"；
+// 真正的删除行为由 api-test 走 HTTP 路由验证。
+const inboxDeletes = count(inboxView, 'data-dmo="inbox-delete"');
+ok(inboxDeletes === 3, `every inbox row offers a delete button (${inboxDeletes})`);
+ok(inboxView.includes('>删除<'), 'the delete button is labelled 删除');
+ok(!inboxView.includes('确认删除'), 'delete is not in the confirm state until clicked (destructive needs two steps)');
+ok(!inboxView.includes('删除后无法恢复'), 'the irreversible warning stays hidden until the user asks to delete');
+
+// 侧边栏数值：收件箱的徽标取**未处理**数（fixture 里 open=1），
+// 且它来自 /inbox 接口而不是 zone 计数 —— 早先 counts[n.key] 拿不到它，徽标恒不显示。
+ok(count(overview, 'data-dmo="nav-count-inbox"') === 1, 'the rail shows a count badge on the inbox entry');
+ok(overview.includes('data-dmo="nav-count-inbox">1<'), 'the inbox badge carries the open count (1)');
+// 已解决的不该让徽标一直亮着：fixture 里 acknowledged=1 / resolved=1 都不计入。
+ok(!overview.includes('data-dmo="nav-count-inbox">3<'), 'the badge counts only unhandled items, not all of them');
+
 // 导航接线（2026-10-26 真 bug）：早期 click 处理器只认 overview/index，
 // 其余一律 setView({kind:'zone'}) —— 点「收件箱」会落到 zone 分支渲染空白。
 // 这里钉住 rail 确实带第 8 项且标签正确，防止再被塞回 zone 分支。

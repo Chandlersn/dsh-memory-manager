@@ -2709,8 +2709,8 @@ function memoryInboxTool(opts, inbox) {
 			action: {
 				type: 'string',
 				required: true,
-				enum: ['post', 'list', 'update'],
-				description: 'post=投递一个问题；list=查看队列；update=改处置状态。',
+				enum: ['post', 'list', 'update', 'delete'],
+				description: 'post=投递一个问题；list=查看队列；update=改处置状态；delete=彻底删除一条（不可逆，用于误报/重复投递）。',
 			},
 			from: {
 				type: 'string',
@@ -2822,7 +2822,23 @@ function memoryInboxTool(opts, inbox) {
 				if (updated === undefined) {
 					throw new Error(`no inbox item with fingerprint ${String(args.fingerprint)}`);
 				}
-				return { action: 'update', path, count: 1, items: [updated] };
+				// count 统一表示**收件箱剩余总数**（渲染头那行说的就是它）。
+				// 早先这里固定填 1，于是"改一条/删一条"都显示成"收件箱 1 条"，
+				// 看起来像删除没生效 —— 语义错，不是数量错。
+				const remaining = await inbox.list();
+				return { action: 'update', path, count: remaining.length, items: [updated] };
+			}
+
+			if (args.action === 'delete') {
+				// 彻底删除 —— 与"标记已解决"不同：那条保留记录（说明处理过），
+				// 这条是"根本不该在收件箱里"（误报 / 重复投递 / 不再需要跟踪）。
+				// 不可逆，故面板上有二次确认；工具层只负责删并回显被删的内容。
+				const removed = await inbox.remove(oneLine(args.fingerprint));
+				if (removed === undefined) {
+					throw new Error(`no inbox item with fingerprint ${String(args.fingerprint)}`);
+				}
+				const remaining = await inbox.list();
+				return { action: 'delete', path, count: remaining.length, items: [removed] };
 			}
 
 			const items = await inbox.list({
@@ -2845,6 +2861,11 @@ function renderInbox(args, value) {
 	const lines = [];
 	if (value.action === 'post') {
 		lines.push(value.isNew ? '已投递（新条目）' : `已投递（第 ${value.times} 次，去重合并）`);
+	} else if (value.action === 'delete') {
+		// 说清"删了哪条、还剩几条" —— 否则一句"收件箱 N 条"会让人以为删没生效。
+		lines.push(`已删除；收件箱 ${value.path} 剩 ${value.count} 条`);
+	} else if (value.action === 'update') {
+		lines.push(`已改处置状态；收件箱 ${value.path} 共 ${value.count} 条`);
 	} else {
 		lines.push(`收件箱 ${value.path}：${value.count} 条`);
 	}
@@ -3537,12 +3558,23 @@ function memoryPanelApi(opts, connection, inbox) {
 					items: filtered,
 				});
 			}
-			// 收件箱的写通道：改处置状态。与 skill-action 一样属写路由，
+			// 收件箱的写通道：改处置状态 / 删除。与 skill-action 一样属写路由，
 			// 无 connection 服务时 501（见上方 PANEL_WRITE_SEGS 守卫）。
 			if (seg === 'inbox-action') {
 				if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' });
 				const body = await readBody(req);
 				const fingerprint = String(body?.fingerprint ?? '');
+
+				// op 区分两种写：默认 update（改状态），delete 是彻底删除。
+				// 用显式 op 而不是"status 为空就删"，避免误传造成不可逆删除。
+				if (body?.op === 'delete') {
+					const removed = await inbox.remove(fingerprint);
+					if (removed === undefined) {
+						return json(res, 404, { error: `没有 fingerprint 为 ${fingerprint} 的条目` });
+					}
+					return json(res, 200, { deleted: true, item: removed });
+				}
+
 				const status = String(body?.status ?? '');
 				if (!['open', 'acknowledged', 'resolved'].includes(status)) {
 					return json(res, 400, { error: 'status 必须是 open / acknowledged / resolved' });

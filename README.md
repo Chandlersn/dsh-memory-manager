@@ -10,7 +10,7 @@
 把**反复跑通且被验证的操作**结晶成可直接调用的 `skills/`，
 索引只留一行摘要，并让每个会话开局就被注入这套纪律。
 
-- 十二个记忆工具 + 一段系统提示纪律 + 一条 `agent/pre-step` 主动回忆钩子 + 一个只读 Web 面板
+- 十三个记忆工具 + 一段系统提示纪律 + 一条 `agent/pre-step` 主动回忆钩子 + 一个只读 Web 面板
 - 写入即建档：`summary` 与 `currentState` 是必填参数，索引行不会漂移
 - 带机械体检（R0–R22 + 温度分析，规则号会增长故不写死条数），坏了能被检查出来，而不是靠记性
 - **能力台账**：用过的外部 CLI / MCP / 本地工具（不含 harness 自带能力与本项目自己的脚本/API）登记在 `capabilities/`，下次同类任务先查台账，不重复摸索
@@ -150,6 +150,7 @@ memory/
 | `memory_usage` | **使用信号**：`record` 记一次纠正/认可（召回与读取由插件自动记）；`report` 按窗口聚合，给出 实验/专项/通用 的分层建议（只建议，不自动移动文件） |
 | `memory_federation` | **联邦模式**（可选）：`sync` 把各项目 `MEMORY.md` 复制进联邦层 `sources/` 并重建项目索引表；`check` 体检 F1–F5（索引存在、链接可解析、项目/副本齐全、无孤儿副本、绝对路径存活） |
 | `memory_skill` | **技能结晶层**（数据流缺的"用"这一步）：`candidates` 用使用信号机械提名（≥6 用 + ≥1 认可 + 纠正率<20%，纯聚合不自动写）；`crystallize` 把反复跑通的操作写成宿主技能目录包 `<dshHome>/skills/<kebab>/SKILL.md`（何时使用/步骤/坑/验证 + frontmatter 路由；重结晶前把旧正文存档 `.history/`）；`activate`/`retire` 生命周期（candidate→active→retired，只有 active 进召回；转正需使用/认可以外证据或显式 note 承担）；`delete` 删整包（仅限自有）；`list`/`read` 查 |
+| `memory_inbox` | **插件问题收件箱**：各插件经 `clis/health-finding` 事件自动投递，agent 也可用 `post` 主动报一条（去重靠来源+代号+消息指纹）；`list` 看队列（未处理在前，可按状态/来源筛）；`update` 在 open/acknowledged/resolved 间改处置；`delete` **彻底删除**一条（不可逆，用于误报或重复投递 —— 与"标记已解决"不同，后者保留记录）。面板「收件箱」页提供同一套操作，侧栏徽标显示**未处理**数 |
 
 系统提示里会注入一段纪律说明；`agent/pre-step` 钩子按用户输入与索引行的词元重合度打分，
 把命中的索引行作为一条 `recall` 消息注入。打分是 **RRF 融合**的两路排序：

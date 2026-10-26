@@ -269,6 +269,29 @@ export class MemoryInbox {
   }
 
   /**
+   * 彻底删除一条。
+   *
+   * 与 `update(resolved)` 的区别，用户在面板上要能分清：
+   * - **标记已解决** = 保留了记录，说明"这件事有过、已处理"；
+   * - **删除** = 抹掉记录，说明"这条根本不该在收件箱里"（误报、重复投递、
+   *   或已经不需要跟踪）。
+   *
+   * 删除是**不可逆**的，所以面板上要二次确认；这里只负责删。
+   * 返回被删的条目，便于调用方回显与审计。
+   *
+   * @param {string} fingerprint 指纹。
+   * @returns {Promise<InboxItem|undefined>} 被删的条目；不存在时 undefined。
+   */
+  async remove(fingerprint) {
+    await this.ensureLoaded();
+    const item = this.items.get(fingerprint);
+    if (item === undefined) return undefined;
+    this.items.delete(fingerprint);
+    await this.flush();
+    return item;
+  }
+
+  /**
    * 列出收件箱。
    *
    * @param {object} [filter] 过滤条件。

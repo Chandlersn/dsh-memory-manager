@@ -422,6 +422,126 @@ ok(['name', 'bytes', 'mtime'].every((k) => listKeys.includes(k)), `listing files
 const fileKeys = Object.keys(JSON.parse(file.body));
 ok(fileKeys.includes('name') && fileKeys.includes('text'), `file reads keep name/text (${fileKeys.join(',')})`);
 
+// --- 问题收件箱：投递 / 改状态 / 删除 ----------------------------------------
+//
+// ⚠️ 隔离：收件箱落在 `<DSH_HOME>/storages/memory-inbox.json`，而 DSH_HOME 是
+// **调用时**读的环境变量（MemoryInbox.filePath() 每次现算）。所以这里临时把它
+// 指向空目录 —— 否则这段测试会读写用户真实的收件箱。
+//
+// 写入形态直接落文件：收件箱的条目来自插件事件与 memory_inbox 工具，路由本身
+// 没有"创建"入口，所以造数据只能写盘。这也让本段成为真正的黑盒路由测试。
+const tmpHome = await mkdtemp(path.join(osMod.tmpdir(), 'dsh-api-inbox-'));
+const prevHome = process.env.DSH_HOME;
+process.env.DSH_HOME = tmpHome;
+const stamp = '2026-10-26T00:00:00.000Z';
+const seedInbox = async () => {
+	await mkdir(path.join(tmpHome, 'storages'), { recursive: true });
+	await writeFile(
+		path.join(tmpHome, 'storages', 'memory-inbox.json'),
+		JSON.stringify({
+			version: 1,
+			items: {
+				fpOpen: { fingerprint: 'fpOpen', from: 'dsh-clis', code: 'x.open', severity: 'warn', message: '未处理的那条', receivedAt: stamp, lastSeenAt: stamp, times: 1, status: 'open' },
+				fpDone: { fingerprint: 'fpDone', from: 'agent', code: 'x.done', severity: 'info', message: '已解决的那条', receivedAt: stamp, lastSeenAt: stamp, times: 1, status: 'resolved' },
+			},
+		}, null, 2),
+		'utf8',
+	);
+};
+await seedInbox();
+
+const inboxInst = makeInstance(ALLOW);
+const { call: icall, post: ipost } = callerOf((...a) => inboxInst.handler(...a));
+mod.apply(inboxInst.fakeCtx, { memoryRoot: tmpMem, skillRoot: tmpSkills });
+
+const inboxList = await icall('/api/memory-org/inbox');
+const inboxData = JSON.parse(inboxList.body);
+ok(inboxList.status === 200 && inboxData.total === 2, `inbox lists the seeded items (${inboxData.total})`);
+ok(inboxData.counts.open === 1 && inboxData.counts.resolved === 1, 'inbox counts items per status');
+ok(Array.isArray(inboxData.items) && inboxData.items[0].status === 'open', 'inbox lists unhandled items first');
+
+const filtered = await icall('/api/memory-org/inbox?status=resolved');
+ok(JSON.parse(filtered.body).total === 1, 'the status filter narrows the inbox');
+
+// 改状态
+const ack = await ipost('/api/memory-org/inbox-action', { fingerprint: 'fpOpen', status: 'acknowledged' });
+ok(ack.status === 200 && JSON.parse(ack.body).item.status === 'acknowledged', 'inbox-action updates a status');
+
+// 删除必须显式 op=delete：不带 status 的请求不得把条目删掉（不可逆操作要有明确意图）
+const noOp = await ipost('/api/memory-org/inbox-action', { fingerprint: 'fpDone' });
+ok(noOp.status === 400, `a write with no status and no delete op is rejected (${noOp.status})`);
+const stillThere = await icall('/api/memory-org/inbox');
+ok(JSON.parse(stillThere.body).total === 2, 'the rejected write left the inbox untouched');
+
+const del = await ipost('/api/memory-org/inbox-action', { fingerprint: 'fpDone', op: 'delete' });
+ok(del.status === 200 && JSON.parse(del.body).deleted === true, 'inbox-action deletes an item on op=delete');
+const afterDelete = await icall('/api/memory-org/inbox');
+const afterData = JSON.parse(afterDelete.body);
+ok(afterData.total === 1 && !afterData.items.some((i) => i.fingerprint === 'fpDone'), 'the deleted item is gone from the inbox');
+ok(afterData.counts.resolved === 0, 'deleting also drops it from the status counts');
+
+const delAgain = await ipost('/api/memory-org/inbox-action', { fingerprint: 'fpDone', op: 'delete' });
+ok(delAgain.status === 404, `deleting a missing item is a 404 (${delAgain.status})`);
+
+// 删除是持久的（落盘），不是只改了内存视图
+const onDisk = JSON.parse(await readFile(path.join(tmpHome, 'storages', 'memory-inbox.json'), 'utf8'));
+ok(!('fpDone' in onDisk.items), 'the delete is persisted to disk, not just in memory');
+
+process.env.DSH_HOME = prevHome;
+await rmTmp(tmpHome, { recursive: true, force: true });
+
+// --- 文档数字守卫：工具数量与工具表 -------------------------------------------
+//
+// 工具数量在四处各宣称一次（README 中文/英文、package.json 两个 description），
+// 全是**手写的数字**；README 还带一张工具表。每加一个工具就得改四处，
+// 人工盯必然漏 —— 本仓库自己的原则就是「对外文档的数字宣称要么机器核对，
+// 要么标日期」（insights/文档数字要有机器守卫.md）。
+//
+// 这里把"注册了什么"与"文档写了什么"对上：数量词比对不一致即失败，
+// 工具表则做**成员级**核对（比数量更强，能抓改名与漏删）。
+const registered = [];
+const countInst = makeInstance(ALLOW, {
+	tools: {
+		register(def) {
+			registered.push(def?.name ?? '');
+			return noop;
+		},
+	},
+});
+mod.apply(countInst.fakeCtx, { memoryRoot: tmpMem, skillRoot: tmpSkills });
+const toolNames = registered.filter(Boolean).sort();
+
+const CN_NUM = { 十: 10, 十一: 11, 十二: 12, 十三: 13, 十四: 14, 十五: 15 };
+const EN_NUM = { ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15 };
+const cnWord = Object.keys(CN_NUM).find((k) => CN_NUM[k] === toolNames.length);
+const enWord = Object.keys(EN_NUM).find((k) => EN_NUM[k] === toolNames.length);
+
+const readmeCn = await readFile(path.join(pluginDir, 'README.md'), 'utf8');
+const readmeEn = await readFile(path.join(pluginDir, 'README.en.md'), 'utf8');
+const pkgJson = JSON.parse(await readFile(path.join(pluginDir, 'package.json'), 'utf8'));
+
+ok(cnWord !== undefined, `the test knows the Chinese word for ${toolNames.length} tools`);
+ok(readmeCn.includes(`${cnWord}个记忆工具`), `README.md claims ${cnWord} tools, matching the ${toolNames.length} registered`);
+// 英文句首会大写（"Thirteen memory tools"），故按小写比对。
+ok(readmeEn.toLowerCase().includes(`${enWord} memory tools`), `README.en.md claims ${enWord} tools, matching the ${toolNames.length} registered`);
+ok(
+	typeof pkgJson.meta?.description === 'string' && pkgJson.meta.description.includes(`${cnWord}个记忆工具`),
+	`package.json (meta) claims ${cnWord} tools`,
+);
+ok(
+	typeof pkgJson.description === 'string' && pkgJson.description.includes(`${enWord} memory tools`),
+	`package.json (description) claims ${enWord} tools`,
+);
+
+// 工具表成员级核对：README 的每一行工具以 `| \`memory_x\` |` 起头。
+const documented = [...readmeCn.matchAll(/^\| `(memory_\w+)`/gm)].map((m) => m[1]).sort();
+const undocumented = toolNames.filter((n) => !documented.includes(n));
+const stale = documented.filter((n) => !toolNames.includes(n));
+ok(
+	undocumented.length === 0 && stale.length === 0,
+	`README's tool table lists exactly the registered tools (undocumented: ${undocumented.join(',') || 'none'}; stale: ${stale.join(',') || 'none'})`,
+);
+
 console.log(failures === 0 ? 'API ALL PASS' : `${failures} API FAILURES`);
 await rmTmp(tmpMem, { recursive: true, force: true });
 await rmTmp(tmpSkills, { recursive: true, force: true });
