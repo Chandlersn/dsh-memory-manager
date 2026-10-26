@@ -3641,6 +3641,34 @@ export function apply(ctx, config) {
 	} else {
 		void provideProbe;
 	}
+
+	// 主动广播探针 —— 这是 CLIS 发现本插件的**唯一可靠方式**。
+	//
+	// 为什么不能只靠 ctx.set：Cordis 的 ctx.get 无法枚举键名，CLIS 只能
+	// 按硬编码的已知键去猜，新增插件就得同步改 CLIS 的代码。
+	// 事件是天然的多播机制，各插件装载时广播一次即可被自动收集。
+	//
+	// **为什么还要延时重播**：本插件在 profile bundles 里排在 CLIS 之前
+	// （第 6 位 vs 第 12 位），装载时 CLIS 还没订阅，一次性广播会丢失。
+	// 故在装载后补播几次（1s/3s/8s），覆盖对方订阅建立的时间窗。
+	// 多播几次的代价是几个立即返回的空 dispatch，可忽略。
+	const broadcastProbe = () => {
+		if (typeof ctx.emit !== 'function') return;
+		try {
+			ctx.emit('clis/register-probe', {
+				plugin: 'dsh-memory-manager',
+				probe: () => probe.probe(),
+			});
+		} catch {
+			// 事件派发失败不影响插件功能：探针不被发现只是少了互查能力
+		}
+	};
+	broadcastProbe();
+	for (const delayMs of [1000, 3000, 8000]) {
+		const timer = setTimeout(broadcastProbe, delayMs);
+		// 不要阻止进程退出；fiber 卸载时也不需要精确取消（广播本身无副作用）
+		if (typeof timer.unref === 'function') timer.unref();
+	}
 	// Host skill bridge (5.17.0): publish active+hostName skills into ctx.skills
 	// so the host `skill` tool can load them. OPTIONAL — a host without the
 	// skill registry (ctx.get returns nothing usable) skips the bridge entirely
