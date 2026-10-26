@@ -3670,48 +3670,30 @@ export function apply(ctx, config) {
 		);
 	}
 
-	// —— 健康探针（2026-10-26）：让本插件能被 clis_probe 自动检查 ——
-	// 注册到 ctx.healthProbe，CLIS 侧按此键收集全部探针。
-	// 用 ctx.get 探测而非直接属性访问：未 inject 的服务键在 Cordis 代理上会抛错。
+	// —— 健康探针（2026-10-26）——
+	//
+	// 按 **DSH 插件封装标准**的自愿接口导出（见本包 README 与
+	// D:/个人开发/CLIS/docs/PLUGIN-STANDARD.md）：模块根具名导出
+	// `healthProbe`，与 `inject` / `Config` 同族。
+	//
+	// 监督者（CLIS）自动发现它，**不需要 emit、不需要注册**。
+	// 早先版本用 `ctx.emit('clis/register-probe')` 广播，还因捆绑顺序
+	// 需要延时重播 —— 导出形态把这些时序问题一并去掉。
+	//
+	// 探针用默认配置（DEFAULTS）：监督者不知道本插件的 config，
+	// 而检查项（索引体积/迭代块/链接）用默认阈值判断即可。
 	const probe = createHealthProbe({ runHealthCheck, resolveRoot, opts });
-	const provideProbe = () => probe;
 	if (typeof ctx.set === 'function') {
 		try {
 			ctx.set('memory.healthProbe', probe);
 		} catch {
 			// 宿主不支持自定义服务键时跳过：探针不注册不影响插件主体功能
 		}
-	} else {
-		void provideProbe;
 	}
+	// 注：不再用 ctx.emit('clis/register-probe') 广播。模块根导出 healthProbe
+	// 已足够被发现，且免去了"本插件排在 CLIS 之前 → 广播丢失 → 需延时重播"
+	// 那套时序补丁。
 
-	// 主动广播探针 —— 这是 CLIS 发现本插件的**唯一可靠方式**。
-	//
-	// 为什么不能只靠 ctx.set：Cordis 的 ctx.get 无法枚举键名，CLIS 只能
-	// 按硬编码的已知键去猜，新增插件就得同步改 CLIS 的代码。
-	// 事件是天然的多播机制，各插件装载时广播一次即可被自动收集。
-	//
-	// **为什么还要延时重播**：本插件在 profile bundles 里排在 CLIS 之前
-	// （第 6 位 vs 第 12 位），装载时 CLIS 还没订阅，一次性广播会丢失。
-	// 故在装载后补播几次（1s/3s/8s），覆盖对方订阅建立的时间窗。
-	// 多播几次的代价是几个立即返回的空 dispatch，可忽略。
-	const broadcastProbe = () => {
-		if (typeof ctx.emit !== 'function') return;
-		try {
-			ctx.emit('clis/register-probe', {
-				plugin: 'dsh-memory-manager',
-				probe: () => probe.probe(),
-			});
-		} catch {
-			// 事件派发失败不影响插件功能：探针不被发现只是少了互查能力
-		}
-	};
-	broadcastProbe();
-	for (const delayMs of [1000, 3000, 8000]) {
-		const timer = setTimeout(broadcastProbe, delayMs);
-		// 不要阻止进程退出；fiber 卸载时也不需要精确取消（广播本身无副作用）
-		if (typeof timer.unref === 'function') timer.unref();
-	}
 	// Host skill bridge (5.17.0): publish active+hostName skills into ctx.skills
 	// so the host `skill` tool can load them. OPTIONAL — a host without the
 	// skill registry (ctx.get returns nothing usable) skips the bridge entirely
@@ -3918,6 +3900,33 @@ export function resolveRecallBudget(configured) {
 	const ceiling = DEFAULTS.recallTimeoutMs;
 	if (!Number.isFinite(configured)) return ceiling;
 	return Math.min(Math.max(0, configured), ceiling);
+}
+
+/**
+ * 健康探针工厂 —— **DSH 插件封装标准的自愿接口**（与 `inject` / `Config` 同族）。
+ *
+ * 监督者（CLIS）从模块根具名导出里自动发现它，不需要 emit、不需要注册、
+ * 不需要改 patch。见 D:/个人开发/CLIS/docs/PLUGIN-STANDARD.md。
+ *
+ * 为什么是**工厂**而不是现成对象：探针需要 runHealthCheck / 默认阈值等
+ * 模块级依赖，工厂让监督者拿到一个已装配好的探针，而插件自己也不必在
+ * 模块加载期做任何 I/O（监督者调用时才真正读盘）。
+ *
+ * 契约要点（标准要求）：
+ * - **只读**：probe() 不修改任何数据；
+ * - **不抛错**：内部失败转成 finding，而非 throw；
+ * - **code 稳定**：`memory.R14` 这类代号用于去重，不随内容变化。
+ *
+ * @returns 符合 HealthProbe 契约的探针。
+ */
+export function healthProbe() {
+	// 用 DEFAULTS 而非 apply() 里的 opts：监督者不知道本插件的 config，
+	// 而检查项（索引体积/迭代块/链接/冷记忆）按默认阈值判断即可。
+	return createHealthProbe({
+		runHealthCheck,
+		resolveRoot,
+		opts: { ...DEFAULTS },
+	});
 }
 
 export { name, inject, dshHome, joinDshHome, resolveRoot, resolveDshRoot, runHealthCheck, panelizeHealth, zoneCounts, tokensOf, matchIndexRows, buildRecallMessage, decisionRepairTargets, indexRowsOf, captureLineFor, insightTrust, DEFAULTS, DISCIPLINE_TEXT };
