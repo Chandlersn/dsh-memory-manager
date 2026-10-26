@@ -51,6 +51,9 @@ import { tokensOf, matchIndexRows, buildRecallMessage, skillNameOf } from './src
 import { redactSecrets, scanSecrets } from './src/secrets.js';
 import { isSkillName, registerMemorySkillBridge, parseSkillText, isPublishable, skillAppliesToProject, PROVIDER_NAME } from './src/host-skill.js';
 import { resolveDshRoot, setHostRoot, loadHost, defineTool, createUserMessage } from './src/host.js';
+// 健康探针与问题收件箱（2026-10-26）：让记忆系统参与插件互查互治，
+// 并成为各插件 / agent 投递问题的统一邮箱。
+import { createHealthProbe, MemoryInbox } from './health-inbox.js';
 import {
 	name, inject, DEFAULTS, FUNC_TABLE_HEADING, INSIGHT_TABLE_HEADING, CAP_TABLE_HEADING,
 	CAP_TABLE_HEADER, FUNC_TABLE_HEADER, INSIGHT_TABLE_HEADER,
@@ -2685,6 +2688,179 @@ async function searchMemory(root, rawQuery, { zone = 'all', limit = 20, after = 
 // tools
 // ---------------------------------------------------------------------------
 
+/**
+ * 问题收件箱工具 —— 各插件与 agent 投递"需要长期跟踪的问题"的统一入口。
+ *
+ * 为什么需要它：
+ * 体检能发现问题，但"发现了之后谁在跟、修了没"没有落处。收件箱把
+ * 三方投递（插件事件 / agent 报告 / 用户要求）汇成一份可分诊的清单，
+ * 存在记忆管理这边 —— 它本来就是长期状态的持有者。
+ *
+ * 刻意不做：自动修复。收件箱只记录与追踪，动手由 agent 或用户决定。
+ * @param {object} opts 插件选项。
+ * @param {MemoryInbox} inbox 收件箱实例。
+ */
+function memoryInboxTool(opts, inbox) {
+	return defineTool({
+		name: 'memory_inbox',
+		description:
+			'Plugin-problem inbox shared by every plugin and the agent. action=post files one problem for long-term tracking (deduplicated by source+code+message); action=list shows the queue with open items first; action=update moves one item between open / acknowledged / resolved. Other plugins also post automatically through the `clis/health-finding` event, so listing is usually enough. Use it when a health check finds something that must not be forgotten, or when you promised the user to track a defect. It records and tracks only — it never fixes anything.',
+		parameters: {
+			action: {
+				type: 'string',
+				required: true,
+				enum: ['post', 'list', 'update'],
+				description: 'post=投递一个问题；list=查看队列；update=改处置状态。',
+			},
+			from: {
+				type: 'string',
+				description: 'action=post 时必填：投递方（插件名，或 "agent" / "user"）。',
+			},
+			code: {
+				type: 'string',
+				description: 'action=post 时必填：问题代号，需稳定（如 R14、clis.service-missing）。',
+			},
+			message: {
+				type: 'string',
+				description: 'action=post 时必填：一句话说清问题。',
+			},
+			severity: {
+				type: 'string',
+				enum: ['info', 'warn', 'error'],
+				description: 'action=post 可选：严重度，缺省 warn。',
+			},
+			location: {
+				type: 'string',
+				description: 'action=post 可选：位置（文件路径、服务名等）。',
+			},
+			hint: {
+				type: 'string',
+				description: 'action=post 可选：方向提示，不是修复指令。',
+			},
+			fingerprint: {
+				type: 'string',
+				description: 'action=update 时必填：条目的 fingerprint（list 里能看到）。',
+			},
+			status: {
+				type: 'string',
+				enum: ['open', 'acknowledged', 'resolved'],
+				description: 'action=update 时必填：新状态。',
+			},
+			note: {
+				type: 'string',
+				description: 'action=update 可选：处置备注。',
+			},
+			statusFilter: {
+				type: 'string',
+				enum: ['open', 'acknowledged', 'resolved'],
+				description: 'action=list 可选：只看某个状态。',
+			},
+			fromFilter: {
+				type: 'string',
+				description: 'action=list 可选：只看某个投递方。',
+			},
+		},
+		output: {
+			schema: {
+				type: 'object',
+				additionalProperties: false,
+				properties: {
+					action: { type: 'string', required: true },
+					path: { type: 'string', required: true },
+					// post
+					posted: { type: 'boolean' },
+					isNew: { type: 'boolean' },
+					times: { type: 'integer' },
+					// list / update
+					count: { type: 'integer' },
+					items: {
+						type: 'array',
+						items: {
+							type: 'object',
+							additionalProperties: false,
+							properties: {
+								fingerprint: { type: 'string', required: true },
+								from: { type: 'string', required: true },
+								code: { type: 'string', required: true },
+								severity: { type: 'string', required: true },
+								message: { type: 'string', required: true },
+								status: { type: 'string', required: true },
+								times: { type: 'integer', required: true },
+								receivedAt: { type: 'string', required: true },
+								lastSeenAt: { type: 'string', required: true },
+								location: { type: 'string' },
+								hint: { type: 'string' },
+								note: { type: 'string' },
+							},
+						},
+					},
+				},
+			},
+			render: renderInbox,
+		},
+		async execute(args) {
+			const path = inbox.filePath();
+
+			if (args.action === 'post') {
+				const { item, isNew, times } = await inbox.post({
+					from: oneLine(args.from) || 'agent',
+					code: oneLine(args.code) || 'unspecified',
+					message: oneLine(args.message),
+					severity: args.severity,
+					location: args.location === undefined ? undefined : oneLine(args.location),
+					hint: args.hint === undefined ? undefined : oneLine(args.hint),
+				});
+				return { action: 'post', path, posted: true, isNew, times, count: 1, items: [item] };
+			}
+
+			if (args.action === 'update') {
+				const updated = await inbox.update(
+					oneLine(args.fingerprint),
+					args.status,
+					args.note === undefined ? undefined : oneLine(args.note),
+				);
+				if (updated === undefined) {
+					throw new Error(`no inbox item with fingerprint ${String(args.fingerprint)}`);
+				}
+				return { action: 'update', path, count: 1, items: [updated] };
+			}
+
+			const items = await inbox.list({
+				...(args.statusFilter !== undefined ? { status: args.statusFilter } : {}),
+				...(args.fromFilter !== undefined ? { from: oneLine(args.fromFilter) } : {}),
+			});
+			return { action: 'list', path, count: items.length, items };
+		},
+	});
+}
+
+/**
+ * 收件箱结果的渲染。
+ *
+ * @param {object} args 入参。
+ * @param {object} value 结果。
+ * @returns {Array<{type: string, text: string}>}
+ */
+function renderInbox(args, value) {
+	const lines = [];
+	if (value.action === 'post') {
+		lines.push(value.isNew ? '已投递（新条目）' : `已投递（第 ${value.times} 次，去重合并）`);
+	} else {
+		lines.push(`收件箱 ${value.path}：${value.count} 条`);
+	}
+	for (const item of value.items ?? []) {
+		const mark = item.status === 'open' ? '○' : item.status === 'acknowledged' ? '◐' : '●';
+		lines.push(
+			`${mark} [${item.severity}] ${item.from} · ${item.code} — ${item.message}` +
+				(item.times > 1 ? `（×${item.times}）` : ''),
+		);
+		if (item.hint !== undefined) lines.push(`   提示：${item.hint}`);
+		if (item.note !== undefined) lines.push(`   备注：${item.note}`);
+	}
+	if (value.action === 'list' && (value.count ?? 0) === 0) lines.push('（空）');
+	return [{ type: 'text', text: lines.join('\n') }];
+}
+
 function memoryCheckTool(opts) {	return defineTool({
 		name: 'memory_check',
 		description:
@@ -3415,6 +3591,56 @@ export function apply(ctx, config) {
 		ctx.tools.register(memoryUsageTool(opts)),
 		ctx.tools.register(memoryFederationTool(opts)),
 	];
+
+	// —— 问题收件箱（2026-10-26）——
+	//
+	// 为什么让记忆管理收：它本来就是"全局长期记忆"的持有者，问题清单也是
+	// 需要长期跟踪的状态。放在这里不必新建一套存储与面板。
+	//
+	// 三类投递来源：
+	// 1. 其他插件通过 Cordis 事件 `clis/health-finding` 自动投递（本文件订阅）；
+	// 2. agent 用 memory_inbox 工具主动报告；
+	// 3. 用户直接要求在记忆里留一条待跟踪问题。
+	const inbox = new MemoryInbox(dshHome);
+	disposers.push(
+		ctx.tools.register(memoryInboxTool(opts, inbox)),
+	);
+
+	// 订阅其他插件的健康通报 —— 这是"问题投递"的自动通道。
+	// 用 ctx.on 注册，随插件卸载自动取消（Cordis 保证）。
+	if (typeof ctx.on === 'function') {
+		disposers.push(
+			ctx.on('clis/health-finding', (notice) => {
+				if (notice === null || typeof notice !== 'object') return;
+				// 异步落盘失败不影响事件派发方
+				void inbox
+					.post({
+						from: typeof notice.from === 'string' ? notice.from : 'unknown-plugin',
+						code: typeof notice.code === 'string' ? notice.code : 'unknown',
+						severity: notice.severity,
+						message: typeof notice.message === 'string' ? notice.message : '',
+						...(typeof notice.location === 'string' ? { location: notice.location } : {}),
+						...(typeof notice.hint === 'string' ? { hint: notice.hint } : {}),
+					})
+					.catch(() => {});
+			}),
+		);
+	}
+
+	// —— 健康探针（2026-10-26）：让本插件能被 clis_probe 自动检查 ——
+	// 注册到 ctx.healthProbe，CLIS 侧按此键收集全部探针。
+	// 用 ctx.get 探测而非直接属性访问：未 inject 的服务键在 Cordis 代理上会抛错。
+	const probe = createHealthProbe({ runHealthCheck, resolveRoot, opts });
+	const provideProbe = () => probe;
+	if (typeof ctx.set === 'function') {
+		try {
+			ctx.set('memory.healthProbe', probe);
+		} catch {
+			// 宿主不支持自定义服务键时跳过：探针不注册不影响插件主体功能
+		}
+	} else {
+		void provideProbe;
+	}
 	// Host skill bridge (5.17.0): publish active+hostName skills into ctx.skills
 	// so the host `skill` tool can load them. OPTIONAL — a host without the
 	// skill registry (ctx.get returns nothing usable) skips the bridge entirely
