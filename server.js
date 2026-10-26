@@ -3130,8 +3130,8 @@ async function zoneCounts(root, skillRoot = '') {
  * the connection service is a host where we cannot tell caller from stranger,
  * so writes are off, never guessed-open.
  */
-const PANEL_WRITE_SEGS = new Set(['skill-action', 'reload']);
-function memoryPanelApi(opts, connection) {
+const PANEL_WRITE_SEGS = new Set(['skill-action', 'reload', 'inbox-action']);
+function memoryPanelApi(opts, connection, inbox) {
 	return async (req, res) => {
 		const url = new URL(req.url, 'http://localhost');
 		const seg = url.pathname.slice('/api/memory-org'.length).replace(/^\//, '');
@@ -3514,6 +3514,49 @@ function memoryPanelApi(opts, connection) {
 				const hits = await searchMemory(root, q, { zone, limit: 60, skillRoot: opts.skillRoot });
 				return json(res, 200, { hits });
 			}
+			// —— 问题收件箱（2026-10-26）——
+			//
+			// 让用户在前端自己掌控全局：各插件/agent 投递的问题、当前处置状态、
+			// 以及"修了没"的进度都在这一个页面里。
+			if (seg === 'inbox') {
+				const statusFilter = url.searchParams.get('status');
+				const fromFilter = url.searchParams.get('from');
+				const all = await inbox.list();
+				const filtered = await inbox.list({
+					...(statusFilter !== null ? { status: statusFilter } : {}),
+					...(fromFilter !== null ? { from: fromFilter } : {}),
+				});
+				const counts = { open: 0, acknowledged: 0, resolved: 0 };
+				for (const item of all) {
+					if (counts[item.status] !== undefined) counts[item.status] += 1;
+				}
+				return json(res, 200, {
+					path: inbox.filePath(),
+					counts,
+					total: filtered.length,
+					items: filtered,
+				});
+			}
+			// 收件箱的写通道：改处置状态。与 skill-action 一样属写路由，
+			// 无 connection 服务时 501（见上方 PANEL_WRITE_SEGS 守卫）。
+			if (seg === 'inbox-action') {
+				if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' });
+				const body = await readBody(req);
+				const fingerprint = String(body?.fingerprint ?? '');
+				const status = String(body?.status ?? '');
+				if (!['open', 'acknowledged', 'resolved'].includes(status)) {
+					return json(res, 400, { error: 'status 必须是 open / acknowledged / resolved' });
+				}
+				const updated = await inbox.update(
+					fingerprint,
+					status,
+					body?.note === undefined ? undefined : String(body.note),
+				);
+				if (updated === undefined) {
+					return json(res, 404, { error: `没有 fingerprint 为 ${fingerprint} 的条目` });
+				}
+				return json(res, 200, { item: updated });
+			}
 			htmlPage(
 				res,
 				200,
@@ -3856,7 +3899,7 @@ export function apply(ctx, config) {
 		const server = scoped.webServer;
 		if (server) {
 			scoped.effect(() =>
-				server.register({ kind: 'prefix', path: '/api/memory-org', handler: memoryPanelApi(opts, scoped.connection) }),
+				server.register({ kind: 'prefix', path: '/api/memory-org', handler: memoryPanelApi(opts, scoped.connection, inbox) }),
 			);
 		}
 	});

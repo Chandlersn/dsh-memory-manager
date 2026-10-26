@@ -160,6 +160,22 @@ const fixtures = {
 	// `heading`. Fixtures that invent field names hide exactly the mismatch a user
 	// sees as "the panel and the system don't agree".
 	'/api/memory-org/search?q=%E5%86%B7%E8%AE%B0%E5%BF%86': { data: { hits: [{ zone: 'functions', name: 'beta.md', line: 3, heading: '今日待观察', snippet: '…冷记忆相关命中…' }] }, loading: false, error: null },
+	// 收件箱（2026-10-26）：形状对齐 /inbox 路由 —— counts 三个状态 + items。
+	// from 是"谁报的"，code 是问题代号，times 是重复次数（去重合并后 >1）。
+	'/api/memory-org/inbox?v=0': {
+		data: {
+			path: 'C:/x/.dsh/storages/memory-inbox.json',
+			counts: { open: 1, acknowledged: 1, resolved: 1 },
+			total: 3,
+			items: [
+				{ fingerprint: 'aaa11111', from: 'dsh-clis', code: 'memory.R14', severity: 'warn', message: '迭代块超长未蒸馏', hint: '在写入时限制篇幅', status: 'open', times: 2, receivedAt: iso(600), lastSeenAt: iso(60) },
+				{ fingerprint: 'bbb22222', from: 'agent', code: 'clis.service-missing', severity: 'error', message: '反馈服务不可用', status: 'acknowledged', times: 1, receivedAt: iso(1200), lastSeenAt: iso(300) },
+				{ fingerprint: 'ccc33333', from: 'dsh-clis', code: 'memory.R3', severity: 'warn', message: '头部摘要过期', status: 'resolved', times: 1, receivedAt: iso(3000), lastSeenAt: iso(2000) },
+			],
+		},
+		loading: false,
+		error: null,
+	},
 };
 
 // --- tiny renderer ----------------------------------------------------------
@@ -190,7 +206,7 @@ const count = (s, needle) => s.split(needle).length - 1;
 
 // --- overview ---------------------------------------------------------------
 const overview = render({ kind: 'overview' });
-ok(count(overview, 'data-dmo="nav-item"') === 7, `rail has 7 destinations (${count(overview, 'data-dmo="nav-item"')})`);
+ok(count(overview, 'data-dmo="nav-item"') === 8, `rail has 8 destinations (${count(overview, 'data-dmo="nav-item"')})`);
 ok(overview.includes('功能') && overview.includes('思想') && overview.includes('每日') && overview.includes('索引') && overview.includes('能力') && overview.includes('技能'), 'rail labels for every zone');
 ok(count(overview, 'data-dmo="growth-card"') === 5, `overview shows all five zone count cards (${count(overview, 'data-dmo="growth-card"')})`);
 ok(overview.includes('能力台账') && overview.includes('技能库'), 'the added capability/skill cards label their zones');
@@ -493,6 +509,25 @@ const hl = T.highlight('abc冷记忆def', '冷记忆');
 ok(hl.length === 3 && hl[0] === 'abc' && hl[1]?.type === 'mark' && hl[1].props.children === '冷记忆' && hl[2] === 'def', 'highlight marks the matched span');
 const noQ = T.highlight('纯文本', '');
 ok(noQ.length === 1 && noQ[0] === '纯文本', 'highlight is a no-op without a query');
+
+// --- 问题收件箱（2026-10-26）-------------------------------------------------
+// 用户要求能在面板里自己掌控全局：看到有哪些问题、谁报的、修了没，
+// 并且能把状态从 open 推到 acknowledged/resolved。
+const inboxView = render({ kind: 'inbox' });
+const inboxRows = count(inboxView, 'data-dmo="inbox-row"');
+ok(inboxRows === 3, `inbox renders every tracked item (${inboxRows})`);
+ok(inboxView.includes('memory.R14') && inboxView.includes('memory.R3'), 'inbox shows the problem codes');
+ok(inboxView.includes('dsh-clis') && inboxView.includes('agent'), 'inbox shows who reported each item');
+// 计数徽标：三个状态各 1 条，用户一眼看到分布
+ok(inboxView.includes('未处理 1') && inboxView.includes('处理中 1') && inboxView.includes('已解决 1'), 'inbox chips carry per-status counts');
+// 重复次数可见：同一问题反复投递时不该被当成新问题
+ok(inboxView.includes('重复 2 次'), 'inbox surfaces how many times a problem recurred');
+// 方向提示要显示 —— 这是"该怎么看"而不只是"有问题"
+ok(inboxView.includes('在写入时限制篇幅'), 'inbox surfaces the hint');
+// 状态操作按钮：open 可认领+解决，acknowledged 可解决，resolved 可重开
+ok(inboxView.includes('认领') && inboxView.includes('标记已解决') && inboxView.includes('重新打开'), 'inbox offers status transitions');
+const inboxFilters = count(inboxView, 'data-dmo="inbox-filter"');
+ok(inboxFilters === 3, `inbox offers one filter per status (${inboxFilters})`);
 
 // --- pure logic -------------------------------------------------------------
 const tables = T.parseIndexTables(indexText);

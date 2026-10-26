@@ -40,6 +40,7 @@ window.__ModuleLoader__.load({
 			{ key: 'capabilities', label: '能力', icon: '⚒' },
 			{ key: 'skills', label: '技能', icon: '⌘' },
 			{ key: 'daily', label: '每日', icon: '🕘' },
+			{ key: 'inbox', label: '收件箱', icon: '📮' },
 		];
 		const ZONE_LABEL = { functions: '功能', insights: '思想', capabilities: '能力', skills: '技能', daily: '每日', '': '索引' };
 		const ZONE_DIR = { functions: 'functions', insights: 'insights', capabilities: 'capabilities', skills: 'skills', daily: '' };
@@ -1478,6 +1479,139 @@ window.__ModuleLoader__.load({
 			return out;
 		}
 
+		// ---------------------------------------------------------------------
+		// 问题收件箱（2026-10-26）
+		// ---------------------------------------------------------------------
+		// 各插件与 agent 投递的问题汇总在这里，用户一屏看到"有哪些问题、
+		// 谁报的、多久了、修了没"。设计取向：状态可改而不只是只读 ——
+		// 用户能标 acknowledged（已认领）或 resolved（已解决），这些操作
+		// 走 POST /inbox-action 落到磁盘，下次体检据此判断是否真的修好。
+		const INBOX_STATUS = [
+			{ key: 'open', label: '未处理', mark: '○', tone: 'warn' },
+			{ key: 'acknowledged', label: '处理中', mark: '◐', tone: 'info' },
+			{ key: 'resolved', label: '已解决', mark: '●', tone: 'ok' },
+		];
+
+		/** 把 ISO 时间说成"多久之前"。 */
+		function agoText(iso) {
+			if (!iso) return '';
+			const ms = Date.now() - new Date(iso).getTime();
+			if (!Number.isFinite(ms) || ms < 0) return '';
+			const min = Math.floor(ms / 60000);
+			if (min < 1) return '刚刚';
+			if (min < 60) return `${min} 分钟前`;
+			const hour = Math.floor(min / 60);
+			if (hour < 24) return `${hour} 小时前`;
+			const day = Math.floor(hour / 24);
+			return `${day} 天前`;
+		}
+
+		function InboxPane({ res, statusFilter, setStatusFilter, onStateChange }) {
+			const data = res.data;
+			const items = data?.items ?? [];
+			const counts = data?.counts ?? { open: 0, acknowledged: 0, resolved: 0 };
+			const [busy, setBusy] = useState(null);
+			const total = counts.open + counts.acknowledged + counts.resolved;
+
+			const changeStatus = (fingerprint, status) => {
+				setBusy(fingerprint);
+				fetch(`${API}/inbox-action`, {
+					method: 'POST',
+					headers: { 'content-type': 'application/json' },
+					body: JSON.stringify({ fingerprint, status }),
+				})
+					.then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+					.then(() => onStateChange?.())
+					.catch(() => {})
+					.finally(() => setBusy(null));
+			};
+
+			const chips = INBOX_STATUS.map((s) =>
+				h(
+					'button',
+					{
+						key: s.key,
+						type: 'button',
+						className: `dmo-chip btn${statusFilter === s.key ? ' active' : ''}`,
+						'data-dmo': 'inbox-filter',
+						onClick: () => setStatusFilter(s.key),
+						title: `只看${s.label}`,
+					},
+					`${s.mark} ${s.label} ${counts[s.key] ?? 0}`,
+				),
+			);
+
+			const head = h(
+				'div',
+				{ className: 'dmo-toolbar' },
+				h('span', { style: { fontSize: 14, fontWeight: 600 } }, '问题收件箱'),
+				h('span', { className: 'dmo-meta' }, `共 ${total} 条`),
+				h('span', { className: 'grow' }),
+				h('div', { className: 'dmo-chips' }, chips),
+			);
+
+			if (!items.length) {
+				const which = statusFilter ? INBOX_STATUS.find((s) => s.key === statusFilter)?.label : '全部';
+				return h(
+					'div',
+					{ style: { display: 'flex', flexDirection: 'column', gap: 10 } },
+					head,
+					h(
+						'div',
+						{ className: 'dmo-card' },
+						h('div', { className: 'dmo-empty' }, `「${which}」里没有条目。`),
+						h(
+							'div',
+							{ className: 'dmo-meta', style: { padding: '0 14px 14px' } },
+							'插件体检发现的问题会自动投递到这里，agent 也可以用 memory_inbox 主动报告。',
+						),
+					),
+				);
+			}
+
+			const rows = items.map((item) => {
+				const status = INBOX_STATUS.find((s) => s.key === item.status) ?? INBOX_STATUS[0];
+				const isBusy = busy === item.fingerprint;
+				// 状态按钮：open → 认领 / 解决；acknowledged → 解决；resolved → 重开
+				const actions = [];
+				if (item.status === 'open') {
+					actions.push(
+						h(Btn, { key: 'ack', sm: true, tone: 'outline', disabled: isBusy, onClick: () => changeStatus(item.fingerprint, 'acknowledged') }, '认领'),
+					);
+				}
+				if (item.status !== 'resolved') {
+					actions.push(
+						h(Btn, { key: 'res', sm: true, tone: 'outline', disabled: isBusy, onClick: () => changeStatus(item.fingerprint, 'resolved') }, '标记已解决'),
+					);
+				} else {
+					actions.push(
+						h(Btn, { key: 'reopen', sm: true, tone: 'outline', disabled: isBusy, onClick: () => changeStatus(item.fingerprint, 'open') }, '重新打开'),
+					);
+				}
+
+				return h(
+					'div',
+					{ key: item.fingerprint, className: 'dmo-gcard', 'data-dmo': 'inbox-row' },
+					h(
+						'div',
+						{ className: 'dmo-gcard-head' },
+						h('span', { className: 'dmo-gnum' }, status.mark),
+						h('span', { style: { fontWeight: 600 } }, item.code),
+						h(Chip, { tone: item.severity === 'error' ? 'warn' : undefined }, item.severity),
+						h('span', { className: 'dmo-meta' }, item.from),
+						item.times > 1 ? h('span', { className: 'dmo-meta' }, `重复 ${item.times} 次`) : null,
+						h('span', { className: 'grow' }),
+						h('span', { className: 'dmo-meta' }, agoText(item.lastSeenAt)),
+					),
+					h('div', { style: { padding: '0 14px 10px' } }, item.message),
+					item.hint ? h('div', { className: 'dmo-meta', style: { padding: '0 14px 10px' } }, `提示：${item.hint}`) : null,
+					h('div', { className: 'dmo-meta', style: { padding: '0 14px 12px', display: 'flex', gap: 8, alignItems: 'center' } }, ...actions),
+				);
+			});
+
+			return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 10 } }, head, ...rows);
+		}
+
 		function SearchPane({ res, q, zone, setZone, onOpen }) {
 			const hits = res.data?.hits ?? [];
 			const zones = [
@@ -1559,6 +1693,7 @@ window.__ModuleLoader__.load({
 			const [query, setQuery] = useState('');
 			const [live, setLive] = useState('');
 			const [searchZone, setSearchZone] = useState('all');
+			const [inboxFilter, setInboxFilter] = useState('');
 			const [tick, setTick] = useState(0);
 			// Hot-reload button state (5.25.0): `reloading` guards against a second
 			// click while a swap is in flight (the server side has its own single
@@ -1579,6 +1714,8 @@ window.__ModuleLoader__.load({
 			const mainRef = useRef(null);
 
 			const overview = useApi(`${API}/overview?v=${tick}`, fixtures);
+			// 收件箱随 tick 刷新：状态改变后立即重新取，用户能看到进度跳动
+			const inboxRes = useApi(`${API}/inbox?v=${tick}`, fixtures);
 			const funcs = useApi(`${API}/list?zone=functions&v=${tick}`, fixtures);
 			const insights = useApi(`${API}/list?zone=insights&v=${tick}`, fixtures);
 			const caps = useApi(`${API}/list?zone=capabilities&v=${tick}`, fixtures);
@@ -1694,7 +1831,7 @@ window.__ModuleLoader__.load({
 			const fileText = opened ? (opened.zone === '' ? indexText : fileRes.data?.text ?? null) : null;
 			const kind = !opened ? null : opened.zone === '' ? 'index' : opened.zone === 'functions' ? 'functions' : opened.zone === 'insights' ? 'insights' : opened.zone === 'capabilities' ? 'capabilities' : opened.zone === 'skills' ? 'skills' : 'daily';
 
-			const activeKey = view.kind === 'overview' ? 'overview' : view.kind === 'zone' ? view.zone : view.kind === 'bundle' ? 'skills' : view.zone === '' ? 'index' : view.zone;
+			const activeKey = view.kind === 'overview' ? 'overview' : view.kind === 'inbox' ? 'inbox' : view.kind === 'zone' ? view.zone : view.kind === 'bundle' ? 'skills' : view.zone === '' ? 'index' : view.zone;
 
 			const onKeyDown = (e) => {
 				const tag = e.target?.tagName;
@@ -1727,6 +1864,7 @@ window.__ModuleLoader__.load({
 			else if (overview.error) main = h('div', { className: 'dmo-empty' }, `API 不可用：${overview.error}`);
 			else if (!ws) main = h('div', { className: 'dmo-empty' }, '没有已注册的 workspace。');
 			else if (!health?.initialized) main = h('div', { className: 'dmo-empty' }, '记忆还没有建立（`~/.dsh/memory/` 尚未创建）。让 Agent 做一次实质工作，它就会用 memory_write 写下第一份迭代。');
+			else if (view.kind === 'inbox') main = h(InboxPane, { res: inboxRes, statusFilter: inboxFilter, setStatusFilter: setInboxFilter, onStateChange: () => setTick((n) => n + 1) });
 			else if (view.kind === 'overview') main = h(Overview, { health, counts, timeline, usage: overview.data?.[0]?.usage, env: overview.data?.[0]?.env, prose: parseProseSections(indexText), preview, previewQ, setPreviewQ, onOpen: openFile, onZone: (z) => setView({ kind: 'zone', zone: z }), onNavigate: navigate });
 			else if (view.kind === 'zone' && view.zone === 'skills')
 				main = h(SkillLibrary, {
