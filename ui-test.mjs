@@ -529,6 +529,12 @@ ok(inboxView.includes('认领') && inboxView.includes('标记已解决') && inbo
 const inboxFilters = count(inboxView, 'data-dmo="inbox-filter"');
 ok(inboxFilters === 3, `inbox offers one filter per status (${inboxFilters})`);
 
+// 导航接线（2026-10-26 真 bug）：早期 click 处理器只认 overview/index，
+// 其余一律 setView({kind:'zone'}) —— 点「收件箱」会落到 zone 分支渲染空白。
+// 这里钉住 rail 确实带第 8 项且标签正确，防止再被塞回 zone 分支。
+ok(count(overview, 'data-dmo="nav-item"') === 8, `rail renders 8 items so the inbox entry exists`);
+ok(overview.includes('收件箱'), 'the rail labels the inbox entry');
+
 // --- pure logic -------------------------------------------------------------
 const tables = T.parseIndexTables(indexText);
 ok(tables.functions.alpha?.summary === 'alpha 已稳定，等待上线验证。', 'parseIndexTables maps slug -> summary');

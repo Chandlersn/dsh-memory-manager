@@ -39,8 +39,8 @@ window.__ModuleLoader__.load({
 			{ key: 'insights', label: '思想', icon: '✦' },
 			{ key: 'capabilities', label: '能力', icon: '⚒' },
 			{ key: 'skills', label: '技能', icon: '⌘' },
-			{ key: 'daily', label: '每日', icon: '🕘' },
-			{ key: 'inbox', label: '收件箱', icon: '📮' },
+			{ key: 'daily', label: '每日', icon: '◷' },
+			{ key: 'inbox', label: '收件箱', icon: '✉' },
 		];
 		const ZONE_LABEL = { functions: '功能', insights: '思想', capabilities: '能力', skills: '技能', daily: '每日', '': '索引' };
 		const ZONE_DIR = { functions: 'functions', insights: 'insights', capabilities: 'capabilities', skills: 'skills', daily: '' };
@@ -1959,7 +1959,7 @@ window.__ModuleLoader__.load({
 								{
 									key: n.key, type: 'button', 'data-dmo': 'nav-item',
 									className: `dmo-nav${activeKey === n.key ? ' active' : ''}`,
-									onClick: () => (n.key === 'overview' ? setView({ kind: 'overview' }) : n.key === 'index' ? openFile('', null) : setView({ kind: 'zone', zone: n.key })),
+									onClick: () => (n.key === 'overview' ? setView({ kind: 'overview' }) : n.key === 'inbox' ? setView({ kind: 'inbox' }) : n.key === 'index' ? openFile('', null) : setView({ kind: 'zone', zone: n.key })),
 								},
 								h('span', { className: 'ico' }, n.icon),
 								n.label,
