@@ -862,8 +862,10 @@ async function runHealthCheck(root, opts) {
 		const extractable = [...byArea.entries()].filter(([, laws]) => new Set(laws).size >= MIN_DAO_SOURCES);
 		if (extractable.length) {
 			const desc = extractable.map(([area, laws]) => `${area}（${new Set(laws).size} 条法）`).join('、');
+			// level 只能是 WARN / FAIL（宿主 schema 校验）——"建议"用 WARN 表达，
+			// 文案里说清它是机会而非缺陷，避免读数的人误判成故障。
 			add(
-				'INFO',
+				'WARN',
 				'R24',
 				`以下功能域已积累 ≥${MIN_DAO_SOURCES} 条法，可考虑萃取上层命题：${desc}——读这些法的「核心原则」，找它们共同指向的一个关于「世界是怎样的」的命题（不是更广的规则，是它们成立的前提）`,
 			);
