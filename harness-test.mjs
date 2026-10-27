@@ -846,11 +846,11 @@ ok(renderedRec.includes('已记录') && !renderedRec.includes('还没有使用�
 // operation-manual phrasing. Consensus entries (the binding layer) must carry
 // evidence and stay one sentence; usage flips expose unstable conclusions.
 const i4 = await T.memory_insight.execute({ theme: '单源原则', principle: '只有一个来源的原则', summary: '单源测试', sources: ['测试功能'] }, exec);
-ok(i4.warnings.some((w) => w.includes('跨域闸门')), 'insight warns when it has only one source area');
+ok(i4.warnings.some((w) => w.includes('专项')), 'insight warns when it has only one source area (gateFa tiers it as 专项)');
 const i5 = await T.memory_insight.execute({ theme: '双源原则', principle: '两个来源支持的原则', summary: '双源测试', sources: ['测试功能', '检索目标'] }, exec);
-ok(!i5.warnings.some((w) => w.includes('跨域闸门')), 'no cross-domain warning with two source areas');
+ok(!i5.warnings.some((w) => w.includes('专项')), 'no 专项 warning with two source areas');
 const i6 = await T.memory_insight.execute({ theme: '步骤原则', principle: '1. 先运行 npm test；2. 再部署上线', summary: '步骤测试', sources: ['测试功能'] }, exec);
-ok(i6.warnings.some((w) => w.includes('可降级')), 'insight warns when the principle reads like a procedure');
+ok(i6.warnings.some((w) => w.includes('操作手册')), 'insight warns when the principle reads like a procedure');
 const longPrinciple = '这是一个非常长的原则句子用来验证长度闸门'.repeat(12);
 const i7 = await T.memory_insight.execute({ theme: '超长原则', principle: longPrinciple, summary: '超长测试', sources: ['测试功能'] }, exec);
 ok(i7.warnings.some((w) => w.includes('字 >')), 'insight warns when the principle is too long');

@@ -12,9 +12,9 @@ will **re-apply** is distilled into `insights/`, whatever is **re-run and verifi
 callable procedure in `skills/`, the index keeps a single line per row, and every session starts with that
 discipline injected into its system prompt.
 
-- Thirteen memory tools + an injected system-prompt discipline + a budgeted `agent/pre-step` recall hook + a read-only Web panel
+- fourteen memory tools + an injected system-prompt discipline + a budgeted `agent/pre-step` recall hook + a read-only Web panel
 - Writing is filing: `summary` and `currentState` are required parameters, so the index row never drifts
-- Mechanical lint rules (R0–R23 plus temperature analysis; rule numbers grow, so no fixed count is claimed), so rot gets detected instead of remembered
+- Mechanical lint rules (R0–R24 plus temperature analysis; rule numbers grow, so no fixed count is claimed), so rot gets detected instead of remembered
 - **Capability ledger**: every EXTERNAL CLI / MCP / local tool you used is filed in `capabilities/` — look before
   you rediscover it (harness built-ins and the project's own scripts/APIs are NOT capabilities)
 - **Skill crystallization**: operations that keep being re-run and confirmed become callable procedures — each one
@@ -170,6 +170,7 @@ records *why* we believed it then.
 | `memory_write` | **append one iteration block** (a conclusion distilled from the raw daily record) and refresh the head stable-state summary; `summary` is the block's one-line takeaway. **Writes no index row, never touches the daily log** |
 | `memory_index` | **the integration layer**: once an area/theme stabilizes, upsert its row into the MEMORY.md index (row summary distilled from the block summaries); pass `group` to land in a `### 索引·<domain>` sub-table when the table has been split |
 | `memory_insight` | distil a transferable principle from the function division into `insights/`, backlink its source areas, `supersedes` to replace an older idea; three soft gates at write time (≥2 source areas / not a procedure / ≤200 chars) |
+| `memory_dao` | write the **道 layer** (`dao/`) — the most abstract guiding principle. HARD GATE: must be extracted from **>=5 laws**, the proposition must contain no concrete tech/project/file markers and no procedure phrasing, and the layer caps at 7 entries; a rejection states exactly what is missing |
 | `memory_fold` | past 30KB, fold the oldest iteration blocks into an "early evolution" paragraph (conclusions and every date tag preserved) |
 | `memory_rename` | rename / merge a function area, rewrite every reference and verify zero dangling links |
 | `memory_check` | lint: index size, missing summaries, orphan files, backlinks, date ordering, dangling links, cold memory, head-summary guardrail, env-path liveness, over-long blocks/rows (R14), duplicated rows/sections (R15), correction-rate circuit breaker (R18), consensus entries without evidence / too long / fake cross-domain (R19), skill executability and lifecycle (R20/R20e) |

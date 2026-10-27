@@ -49,6 +49,7 @@ import {
 import { selfReload, isReloading } from './src/reload.js';
 import { tokensOf, matchIndexRows, buildRecallMessage, skillNameOf } from './src/recall.js';
 import { redactSecrets, scanSecrets } from './src/secrets.js';
+import { gateDao, gateFa, concreteMarkersOf, MIN_DAO_SOURCES, MAX_DAO_ENTRIES } from './src/layer-gate.js';
 import { isSkillName, registerMemorySkillBridge, parseSkillText, isPublishable, skillAppliesToProject, PROVIDER_NAME } from './src/host-skill.js';
 import { resolveDshRoot, setHostRoot, loadHost, defineTool, createUserMessage } from './src/host.js';
 // 健康探针与问题收件箱（2026-10-26）：让记忆系统参与插件互查互治，
@@ -775,6 +776,100 @@ async function runHealthCheck(root, opts) {
 		}
 	} catch {
 		/* budget checks are best-effort */
+	}
+
+	// R24 (2026-10-27): the 道 layer's own integrity + extraction prompt.
+	//
+	// 道是「从 ≥5 条法萃取」的最抽象层（dao/），它有两个会静默腐坏的方式：
+	//   (a) 命题里混进具体技术/项目名 —— 它已经不是道，是法伪装成道；
+	//   (b) 来源法被取代或删除 —— 道的依据没了，但文件还在，没人会发现。
+	// 再者：法已经凑够 5 条的主题簇如果一直没人萃取，道层就永远长不出来。
+	// 这三件事都只有机器看得见，所以在这里报。
+	try {
+		const daoDir = path.join(root, 'dao');
+		let daoFiles = [];
+		try {
+			daoFiles = (await readdir(daoDir)).filter((f) => f.endsWith('.md'));
+		} catch {
+			/* dao/ 尚未建立 */
+		}
+		const liveDao = [];
+		for (const f of daoFiles) {
+			const body = (await readIfExists(path.join(daoDir, f))) ?? '';
+			if (/^>\s*⚠️\s*已被取代/m.test(body)) continue;
+			liveDao.push({ slug: f.replace(/\.md$/, ''), body });
+		}
+
+		// (a) 命题的抽象度（复用 layer-gate 的判据，与写入闸门同源）
+		const unabstract = [];
+		for (const { slug, body } of liveDao) {
+			const m = body.match(/## 命题\s*\n+\s*\n?([^\n]+)/);
+			if (!m) continue;
+			const markers = concreteMarkersOf(m[1]);
+			if (markers.length) unabstract.push(`${slug}（${markers.slice(0, 3).join('、')}）`);
+		}
+		if (unabstract.length) {
+			add(
+				'WARN',
+				'R24',
+				`dao/ 有 ${unabstract.length} 条命题含具体技术/项目标记：${unabstract.join('；')}——道必须能「换一个领域依然成立」，含具体名词的是法伪装成道`,
+			);
+		}
+
+		// (b) 来源法的存活
+		for (const { slug, body } of liveDao) {
+			const srcSection = body.split('## 来源法')[1] ?? '';
+			const refs = [...srcSection.matchAll(/\(\.\.\/insights\/([^)]+?)\.md\)/g)].map((m) => m[1]);
+			if (refs.length < MIN_DAO_SOURCES) {
+				add('WARN', 'R24', `dao/${slug}.md 只列出 ${refs.length} 条来源法（< ${MIN_DAO_SOURCES}）：道的依据不足，确认它是否被拆散或手工删减过`);
+				continue;
+			}
+			const gone = [];
+			for (const r of refs) {
+				const txt = await readIfExists(path.join(root, 'insights', `${r}.md`));
+				if (txt === undefined || /^>\s*⚠️\s*已被取代/m.test(txt)) gone.push(r);
+			}
+			if (gone.length) {
+				add('WARN', 'R24', `dao/${slug}.md 的来源法有 ${gone.length} 条已不存在或已被取代（${gone.join('、')}）：道的依据缺了，要么补新来源，要么重新审视这条道是否还成立`);
+			}
+		}
+
+		// (c) 数量上限
+		if (liveDao.length > MAX_DAO_ENTRIES) {
+			add('WARN', 'R24', `dao/ 已 ${liveDao.length} 条 > 上限 ${MAX_DAO_ENTRIES}：道多了就不是道，是清单——合并或取代`);
+		}
+
+		// (d) 可萃取提示：法已够 5 条的中文主题簇
+		// 这里不猜语义，只按「被其他法引用的来源域」聚类：同一个 functions/ 功能域
+		// 被 ≥5 条法回链，说明这批法讲的是同一个实践面，值得看能不能萃道。
+		const byArea = new Map();
+		let insightFiles = [];
+		try {
+			insightFiles = (await readdir(path.join(root, 'insights'))).filter((f) => f.endsWith('.md'));
+		} catch {
+			/* insights/ 不存在 */
+		}
+		for (const f of insightFiles) {
+			const body = (await readIfExists(path.join(root, 'insights', f))) ?? '';
+			if (/^>\s*⚠️\s*已被取代/m.test(body)) continue;
+			const srcLine = body.split('\n').find((l) => /来源[:：]/.test(l)) ?? '';
+			for (const m of srcLine.matchAll(/functions\/([^)\].]+?)\.md/g)) {
+				const area = m[1];
+				if (!byArea.has(area)) byArea.set(area, []);
+				byArea.get(area).push(f.replace(/\.md$/, ''));
+			}
+		}
+		const extractable = [...byArea.entries()].filter(([, laws]) => new Set(laws).size >= MIN_DAO_SOURCES);
+		if (extractable.length) {
+			const desc = extractable.map(([area, laws]) => `${area}（${new Set(laws).size} 条法）`).join('、');
+			add(
+				'INFO',
+				'R24',
+				`以下功能域已积累 ≥${MIN_DAO_SOURCES} 条法，可考虑萃取上层命题：${desc}——读这些法的「核心原则」，找它们共同指向的一个关于「世界是怎样的」的命题（不是更广的规则，是它们成立的前提）`,
+			);
+		}
+	} catch {
+		/* R24 是增强检查，绝不因它失败而中断体检 */
 	}
 
 	const warnCount = results.filter((r) => r.level === 'WARN').length;
@@ -2329,22 +2424,12 @@ function memoryInsightTool(opts) {
 				else skipped.push(s);
 			}
 			if (skipped.length) warnings.push(`来源不存在，未回链：${skipped.join('、')}（先用 memory_write 建立功能文件）`);
-			// Verification gate (the 法层's promotion test, reduced to what is
-			// mechanically checkable): a principle that claims to be
-			// transferable must show up in >=2 unrelated areas, and must not be an
-			// operation manual in disguise. Both are WARN, not FAIL — this is a
-			// judgement the model should make with the warning in front of it.
-			if (linked.length < 2) {
-				warnings.push(
-					`跨域闸门未过：只有 ${linked.length} 个来源功能域（法层「跨域迁移」要求 ≥2 个无关领域）。本条仍属专项经验：可以留在 insights/，但不要当普适原则用，也不要升级为共识`,
-				);
-			}
-			const stepLike = /(^|\s)(\d+[.、)]|步骤|第[一二三四五]步|命令行|执行命令|运行 `|点击|打开菜单|安装依赖)/;
-			if (stepLike.test(principle)) {
-				warnings.push(
-					`可降级警告：原则里出现操作步骤句式（法层「不可降级」闸门：能改写成操作手册的就不是原则）。把步骤留在 functions/，这里只留判断`,
-				);
-			}
+			// 层级准入闸门（src/layer-gate.js 的 gateFa）—— 判据是**函数**，
+			// 不在这个工具里内联正则。法层对「≥2 无关来源域」只降级不拒绝
+			// （单源是合法的专项经验），但必须让调用方知道它进了哪一层。
+			const faVerdict = gateFa({ principle, sources: linked });
+			if (!faVerdict.ok) throw new Error(faVerdict.reason);
+			for (const w of faVerdict.warnings) warnings.push(w);
 			if (charLen(principle) > MAX_PRINCIPLE_CHARS) {
 				warnings.push(`原则 ${charLen(principle)} 字 > ${MAX_PRINCIPLE_CHARS}：原则是判断，不是论述；推导留在来源功能文件里`);
 			}
@@ -2424,6 +2509,156 @@ function memoryInsightTool(opts) {
 	});
 }
 
+/**
+ * 道层写入工具 —— 层级准入的**硬闸门**。
+ *
+ * 与 memory_insight 的关键差别：不满足条件时**直接抛错拒绝写入**，
+ * 而不是写进去再给一条警告。这是用户 2026-10-27 的明确要求：
+ * 「各层级之间的萃取或者结晶，要形成固定的函数调用机制，把条件包含和
+ * 描述包含在其中，而非仅靠语义和提示词的文字描述来成型。」
+ *
+ * 判据本体在 src/layer-gate.js（纯函数、可穷举测试），本工具只负责：
+ * 读现有道条目 → 调 gateDao → 通过则写文件 + 更新 MEMORY.md 索引。
+ */
+function memoryDaoTool(opts) {
+	return defineTool({
+		name: 'memory_dao',
+		description:
+			'Write ONE 道 (dao) entry — the most abstract layer: a philosophical/dialectical proposition about how things ARE, from which concrete shoulds can be derived. HARD GATE (throws, does not warn): requires extractedFrom with >=5 existing insights/ laws, a proposition free of concrete tech/project/file markers, no procedure phrasing, and a layer size cap of 7. If the gate rejects, the reason states exactly what is missing — do not retry blindly: add laws first, or reconsider whether this is actually a 法 rather than a 道. Body goes to dao/<name>.md; MEMORY.md gets one proposition line.',
+		parameters: {
+			name: { type: 'string', required: true, description: '道名 slug（文件名，不含 .md），如「静默失效」「判据在真实路径上」。' },
+			proposition: { type: 'string', required: true, description: '命题本体：一句话说清"世界是怎样的"。不得含具体技术/项目/文件名，不得含操作步骤。' },
+			extractedFrom: { type: 'array', required: true, description: '萃取来源：insights/ 里的**法** slug 列表。至少 5 条（硬闸门）。道不直接从 functions/ 萃取——中间必须隔着法。', items: { type: 'string' } },
+			body: { type: 'string', required: true, description: '正文（Markdown）：三种形态 / 推理用法 / 来源法逐条 / 边界。命题一句话在这里展开成可用的推理前提。' },
+			date: { type: 'string', description: 'YYYY-MM-DD；缺省今天。' },
+			supersedes: { type: 'string', description: '可选：被本道取代的旧道名。旧文件保留并打取代标记。' },
+		},
+		output: {
+			schema: {
+				type: 'object',
+				additionalProperties: false,
+				properties: {
+					daoFile: { type: 'string', required: true },
+					name: { type: 'string', required: true },
+					extractedFrom: { type: 'array', required: true, items: { type: 'string' } },
+					missingLaws: { type: 'array', required: true, items: { type: 'string' } },
+					warnings: { type: 'array', required: true, items: { type: 'string' } },
+				},
+			},
+			render: (_args, v) => {
+				const lines = [
+					`道已沉淀：${v.daoFile}`,
+					`萃取自 ${v.extractedFrom.length} 条法：${v.extractedFrom.join('、')}`,
+				];
+				if (v.missingLaws.length) lines.push(`⚠ 来源法不存在：${v.missingLaws.join('、')}`);
+				for (const w of v.warnings) lines.push(`⚠ ${w}`);
+				return [{ type: 'text', text: lines.join('\n') }];
+			},
+		},
+		presentCall: (args) => ({ card: 'generic', title: `Memory dao: ${args.name ?? ''}`, kind: 'other', rawInput: args }),
+		async execute(args, exec) {
+			const root = resolveRoot(opts);
+			const daoDir = path.join(root, 'dao');
+			const warnings = [];
+
+			const name = safeSlug(args.name);
+			const proposition = oneLine(args.proposition);
+			const body = String(args.body ?? '').trim();
+			if (!body) throw new Error('body is required: a 道 需要正文展开（形态/推理用法/来源法/边界），否则只是一句口号');
+			const date = normDate(args.date);
+
+			// —— 校验来源法真实存在（目录校验不做进纯函数，这里做）——
+			const requested = (Array.isArray(args.extractedFrom) ? args.extractedFrom : []).map((s) => safeSlug(s));
+			const existingLaws = [];
+			const missingLaws = [];
+			for (const s of requested) {
+				const p = path.join(root, 'insights', `${s}.md`);
+				const txt = await readIfExists(p);
+				if (txt === undefined) { missingLaws.push(s); continue; }
+				// 已被取代的法不能作为道的来源：它不再代表当前认知。
+				if (/^>\s*⚠️\s*已被取代/m.test(txt)) { warnings.push(`来源法 insights/${s}.md 已被取代，不作为萃取依据`); continue; }
+				existingLaws.push(s);
+			}
+			if (missingLaws.length) {
+				warnings.push(`来源法不存在：${missingLaws.join('、')}（先用 memory_insight 建立法）`);
+			}
+
+			// —— 现有道条目数（上限检查用）——
+			let existingCount = 0;
+			try {
+				existingCount = (await readdir(daoDir)).filter((f) => f.endsWith('.md')).length;
+			} catch {
+				/* dao/ 不存在 = 0 条 */
+			}
+			// 覆盖同名文件时它不算"新增"
+			const targetPath = path.join(daoDir, `${name}.md`);
+			const overwriting = await statExists(targetPath);
+			const countedFor = overwriting ? Math.max(0, existingCount - 1) : existingCount;
+
+			// —— 硬闸门 ——
+			const verdict = gateDao({
+				name,
+				proposition,
+				extractedFrom: existingLaws,
+				existing: countedFor,
+			});
+			if (!verdict.ok) throw new Error(verdict.reason);
+			for (const w of verdict.warnings) warnings.push(w);
+
+			// —— 写入 ——
+			await mkdir(daoDir, { recursive: true });
+			const lawLines = existingLaws
+				.map((s) => {
+					const link = `../insights/${s}.md`;
+					return `- [${s}](${link})`;
+				})
+				.join('\n');
+			const text = [
+				`# 道 · ${name}`,
+				'',
+				'> 性质：**道层**。最抽象的指导思想，不含任何具体工具/文件/项目。',
+				`> 萃取自 ${existingLaws.length} 条法（\`insights/\`）的共同上位命题，非单条抽象。`,
+				'',
+				'## 命题',
+				'',
+				`${proposition}`,
+				'',
+				body,
+				'',
+				'## 来源法',
+				'',
+				lawLines,
+				'',
+			].join('\n');
+			await writeText(targetPath, text);
+
+			let supersededFile;
+			if (typeof args.supersedes === 'string' && args.supersedes.trim()) {
+				const oldName = safeSlug(args.supersedes);
+				if (oldName === name) throw new Error('supersedes must reference a DIFFERENT 道');
+				const oldPath = path.join(daoDir, `${oldName}.md`);
+				const oldText = await readIfExists(oldPath);
+				if (oldText === undefined) {
+					warnings.push(`supersedes: dao/${oldName}.md 不存在，未打标`);
+				} else if (oldText.includes('> ⚠️ 已被取代')) {
+					warnings.push(`supersedes: dao/${oldName}.md 已带取代标记`);
+				} else {
+					const stamp = `> ⚠️ 已被取代 → [${name}.md](${name}.md)（${date}）。以下内容保留作为决策历史。`;
+					await writeText(oldPath, oldText.replace(/^/, `${stamp}\n\n`));
+					supersededFile = oldPath;
+				}
+			}
+
+			return {
+				daoFile: targetPath,
+				name,
+				extractedFrom: existingLaws.map((s) => `insights/${s}.md`),
+				missingLaws: missingLaws.map((s) => `insights/${s}.md`),
+				warnings,
+			};
+		},
+	});
+}
 function memoryFoldTool(opts) {
 	return defineTool({
 		name: 'memory_fold',
@@ -3864,6 +4099,7 @@ export function apply(ctx, config) {
 		ctx.tools.register(memoryWriteTool(opts)),
 		ctx.tools.register(memoryIndexTool(opts)),
 		ctx.tools.register(memoryInsightTool(opts)),
+		ctx.tools.register(memoryDaoTool(opts)),
 		ctx.tools.register(memoryFoldTool(opts)),
 		ctx.tools.register(memoryRenameTool(opts)),
 		ctx.tools.register(memoryCheckTool(opts)),
