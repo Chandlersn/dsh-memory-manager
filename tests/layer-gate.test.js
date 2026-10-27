@@ -42,6 +42,23 @@ ok(gateDao({ name: 'a', proposition: '失败多半不是做错，而是做不成
 }
 ok(!gateDao({ name: 'a', proposition: '某抽象命题', extractedFrom: [] }).ok, '0 条法 → 拒绝');
 ok(!gateDao({ name: 'a', proposition: '某抽象命题' }).ok, '未传 extractedFrom → 拒绝');
+// 来源必须**去重后**仍有 5 条：`from.length` 曾把同一条法写 5 遍算作 5 条来源，
+// 于是规则明文要堵的那条路（单条法换个说法）成了唯一能过的路。
+{
+	const dup = gateDao({ name: 'a', proposition: '某抽象命题', extractedFrom: ['法1', '法1', '法1', '法1', '法1'] });
+	ok(!dup.ok, '同一条法重复 5 遍 → 拒绝（按去重后计数）');
+	ok(dup.reason.includes('不同的'), '  拒绝理由说明按「不同的法」计数');
+	ok(dup.reason.includes('4 条是重复的'), '  拒绝理由点明有几条是重复的');
+}
+{
+	const mixed = gateDao({ name: 'a', proposition: '某抽象命题', extractedFrom: ['a', 'b', 'c', 'd', 'd'] });
+	ok(!mixed.ok, '4 条不同 + 1 条重复 → 仍拒绝（去重后只有 4）');
+}
+{
+	const okFive = gateDao({ name: 'a', proposition: '某抽象命题', extractedFrom: ['a', 'b', 'c', 'd', 'e', 'e'] });
+	ok(okFive.ok && okFive.count === 5, `去重后 5 条 → 通过，count=5（实际 ${okFive.count}）`);
+	ok(okFive.warnings.some((w) => w.includes('只按去重后的 5 条计')), '  重复项只给警告，不谎称已按去重计数');
+}
 
 console.log('\n--- 道层：命题必须够抽象 ---');
 {
@@ -61,6 +78,13 @@ for (const p of [
 }
 ok(concreteMarkersOf('工具与系统之间的边界').length === 0, 'concreteMarkersOf 不误伤中性词');
 ok(concreteMarkersOf('cordis 服务').includes('cordis'), 'concreteMarkersOf 抓到技术名');
+// 词型标记按词边界匹配：子串匹配会误杀正经的英文道命题。
+ok(concreteMarkersOf('Wisdom is knowing what not to do.').length === 0, 'wisdom 不再撞上 dom');
+ok(concreteMarkersOf('Legitimate authority comes from the path taken.').length === 0, 'legitimate 不再撞上 git');
+ok(concreteMarkersOf('Rapid feedback collapses the gap.').length === 0, 'rapid 不再撞上 api');
+ok(concreteMarkersOf('use the dom tree').includes('dom'), '独立成词的 dom 仍被抓到');
+ok(concreteMarkersOf('run git push').includes('git'), '独立成词的 git 仍被抓到');
+ok(concreteMarkersOf('entry.js 的导出形态').includes('.js'), '形状型标记（.js）仍是子串语义');
 
 console.log('\n--- 道层：命题不能是操作手册 ---');
 {
@@ -69,6 +93,9 @@ console.log('\n--- 道层：命题不能是操作手册 ---');
 	ok(r.reason.includes('操作手册'), '  拒绝理由说明原因');
 }
 ok(!gateDao({ name: 'a', proposition: '先观察再动手然后复盘', extractedFrom: laws() }).ok, '含「先…再…然后」→ 拒绝');
+ok(!gateDao({ name: 'a', proposition: '先量化再干预', extractedFrom: laws() }).ok, '含「先…再…」（无「然后」）→ 拒绝');
+ok(!gateDao({ name: 'a', proposition: '第1步先测量，再决定是否干预', extractedFrom: laws() }).ok, '阿拉伯数字「第1步」→ 拒绝');
+ok(looksLikeProcedure('第1步') === true, 'looksLikeProcedure 认阿拉伯数字步骤');
 ok(looksLikeProcedure('1. 打开文件') === true, 'looksLikeProcedure 认步骤');
 ok(looksLikeProcedure('运行 `npm test`') === true, 'looksLikeProcedure 认命令行');
 ok(looksLikeProcedure('失败时不发声比发声更危险') === false, 'looksLikeProcedure 不误伤抽象句');

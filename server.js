@@ -802,11 +802,38 @@ async function runHealthCheck(root, opts) {
 
 		// (a) 命题的抽象度（复用 layer-gate 的判据，与写入闸门同源）
 		const unabstract = [];
+		const headless = [];
 		for (const { slug, body } of liveDao) {
 			const m = body.match(/## 命题\s*\n+\s*\n?([^\n]+)/);
-			if (!m) continue;
+			// 缺 `## 命题` 标题曾直接 continue —— 手工写一个没有标题的 dao 文件即可
+			// 绕过唯一的兜底检查（闸门只拦 memory_dao 一条写路径）。缺结构本身就是问题。
+			if (!m) {
+				headless.push(slug);
+				continue;
+			}
 			const markers = concreteMarkersOf(m[1]);
 			if (markers.length) unabstract.push(`${slug}（${markers.slice(0, 3).join('、')}）`);
+		}
+		// (a2) 道文件必须在索引里出现一次。
+		// memory_dao 的 description 写着「MEMORY.md gets one proposition line」，但它的
+		// execute 从不读写 MEMORY.md（memory_index 的 zone 枚举也只有 functions/insights）。
+		// 于是每条道都得靠人手工登记，漏登记时没有任何东西会说话——道写进去了、体检全绿、
+		// 而索引里查不到它。这条把那个静默缺口变成可见的。
+		const unindexed = liveDao.filter(({ slug }) => !memText.includes(`dao/${slug}.md`)).map(({ slug }) => slug);
+		if (unindexed.length) {
+			add(
+				'WARN',
+				'R24',
+				`dao/ 有 ${unindexed.length} 条没有写进 MEMORY.md 的道层小节：${unindexed.join('、')}——索引是唯一的检索面，没登记的道等于只有磁盘知道（memory_dao 不会替你登记，手工补一行）`,
+			);
+		}
+
+		if (headless.length) {
+			add(
+				'WARN',
+				'R24',
+				`dao/ 有 ${headless.length} 条缺少「## 命题」小节：${headless.join('、')}——没有这一节，抽象度检查整条被跳过（道必须有一句能用来说的命题）`,
+			);
 		}
 		if (unabstract.length) {
 			add(
@@ -2537,7 +2564,7 @@ function memoryDaoTool(opts) {
 	return defineTool({
 		name: 'memory_dao',
 		description:
-			'Write ONE 道 (dao) entry — the most abstract layer: a philosophical/dialectical proposition about how things ARE, from which concrete shoulds can be derived. HARD GATE (throws, does not warn): requires extractedFrom with >=5 existing insights/ laws, a proposition free of concrete tech/project/file markers, no procedure phrasing, and a layer size cap of 7. If the gate rejects, the reason states exactly what is missing — do not retry blindly: add laws first, or reconsider whether this is actually a 法 rather than a 道. Body goes to dao/<name>.md; MEMORY.md gets one proposition line.',
+			'Write ONE 道 (dao) entry — the most abstract layer: a philosophical/dialectical proposition about how things ARE, from which concrete shoulds can be derived. HARD GATE (throws, does not warn): requires extractedFrom with >=5 existing insights/ laws, a proposition free of concrete tech/project/file markers, no procedure phrasing, and a layer size cap of 7. If the gate rejects, the reason states exactly what is missing — do not retry blindly: add laws first, or reconsider whether this is actually a 法 rather than a 道. Body goes to dao/<name>.md. This tool does NOT write MEMORY.md — add the dao-layer row by hand (体检 R24 会点名没有登记进索引的道)。',
 		parameters: {
 			name: { type: 'string', required: true, description: '道名 slug（文件名，不含 .md），如「静默失效」「判据在真实路径上」。' },
 			proposition: { type: 'string', required: true, description: '命题本体：一句话说清"世界是怎样的"。不得含具体技术/项目/文件名，不得含操作步骤。' },
@@ -2597,9 +2624,16 @@ function memoryDaoTool(opts) {
 			}
 
 			// —— 现有道条目数（上限检查用）——
+			// 只数**在用**的道：已被取代的不占名额。曾按目录里全部 .md 计数，而 R24
+			// 只数在用的——6 条在用 + 2 条已取代 = 8 文件时，闸门判定「已达上限 7」
+			// 拒绝任何新增，R24 看到 6 条 → 零告警。层被永久锁死而体检全绿。
 			let existingCount = 0;
 			try {
-				existingCount = (await readdir(daoDir)).filter((f) => f.endsWith('.md')).length;
+				const daoAll = (await readdir(daoDir)).filter((f) => f.endsWith('.md'));
+				for (const f of daoAll) {
+					const t = (await readIfExists(path.join(daoDir, f))) ?? '';
+					if (!/^>\s*⚠️\s*已被取代/m.test(t)) existingCount++;
+				}
 			} catch {
 				/* dao/ 不存在 = 0 条 */
 			}
@@ -3479,14 +3513,14 @@ function memoryIndexTool(opts) {
 const DISCIPLINE_TEXT = [
 	'## 持久记忆纪律（memory-manager）',
 	'',
-	'本 Harness 维护**全局**跨会话记忆（`~/.dsh/memory/`，即 dshHome 的 memory/ 目录；十二个工具：memory_read / memory_search / memory_capability / memory_write / memory_index / memory_insight / memory_fold / memory_rename / memory_check / memory_usage / memory_federation / memory_skill；结构见 memory/MEMORY.md）。记忆对全部项目、全部会话通用，按功能域组织而非按项目隔离。**数据流单向五层，每层只吃上一层的产出**：',
+	'本 Harness 维护**全局**跨会话记忆（`~/.dsh/memory/`，即 dshHome 的 memory/ 目录；十四个工具：memory_read / memory_search / memory_capability / memory_write / memory_index / memory_insight / memory_dao / memory_fold / memory_rename / memory_check / memory_usage / memory_federation / memory_skill / memory_inbox；结构见 memory/MEMORY.md）。记忆对全部项目、全部会话通用，按功能域组织而非按项目隔离。**数据流单向五层，每层只吃上一层的产出**：',
 	'',
 	'- **第 0 层 · 每日记录（原始层）**：`YYYY-MM-DD.md` 是任务与对话过程的第一手数据，**本插件不约束其内容与格式**——用任何工具、任何方式自由记录（决策、对话、试错、片段都行）。它是一切蒸馏的原料；同一事实只在这里是"过程"，其余层只见结论。只有一条轻过滤：**执行式日志（命令输出、PID、退出码、耗时流水）不要抄**——会话转录与日志文件里本来就有，抄进每日记录只会稀释蒸馏原料；值得记的是日志里没有的：判断与取舍、用户原话、踩坑的因果、待验证的下一步。',
 	'- **第 1 层 · 功能域（memory_write）**：从每日原始记录中**归纳汲取**功能划分——一次实质工作 = 一个 functions/<功能域>.md 迭代块（蒸馏结论：动因/改动/判据/待观察 各一句）。`summary` 是本块的一句话概括；功能域该新建还是并入既有的，判断依据就是每日记录里反复出现的主题。',
 	'- **第 2 层 · 创新思想（memory_insight）**：从功能划分中**再提取**可迁移原则（会重套的、不绑定单一功能机制的），回链来源功能域；取代旧思想传 `supersedes`。',
 	'- **第 3 层 · 索引与总览（memory_index）**：**整合层**——功能域稳定后（有 ≥2 个迭代块，或用户可感知为独立主题时）用 memory_index 把它收进 MEMORY.md 索引；索引行摘要 = 从各迭代块的概括中提炼的"这个功能是什么"。索引是展示与检索的派生物，不与单次写入强绑。',
 	'- **第 4 层 · 技能（memory_skill）**：**使用环收口**——一个被反复重跑且被确认的操作，应结晶为可调用程序（何时使用/步骤/坑/验证），下次命中直接照做，不再现场推导。**技能就是一个宿主目录包**：`<dshHome>/skills/<kebab-name>/SKILL.md`（+ 可选 scripts/references/assets），与宿主 `skill` 工具、面板技能库读的是同一份——没有记忆根副本、没有指针文件。何时结晶：`memory_skill(candidates)` 给出机械提名（≥6 次使用 + ≥1 次确认 + 纠正率<20%，来自 .usage.jsonl），**提名≠结晶**——是否成文由你判断证据是否连贯。**成文必须走 skill-creator 流程**（`~/.dsh/skills/skill-creator/`，其描述命中即用 `skill` 工具加载）：Step1 具体用例 → Step2 规划可复用内容 → Step3 `init_skill.py` 初始化目录包 → Step4 祈使句式编辑 → Step5 `quick_validate.py` + `package_skill.py` 校验打包 → Step6 真实任务实战迭代；Quality Bar 逐条过（description ≤80 词且带 when-to-use、use/do-not-use 触发、祈使句式、规则配机器可检脚本、无死链、体积预算）。生命周期 candidate→active（真实任务照做成功过才转正）→retired（环境变了留档），写在 frontmatter `status`；`agent_created: true` 标记本插件自有（面板据此区分「结晶技能」与「系统技能」）。技能名必须 kebab-case（它同时是宿主目录名）。召回只放行 active 技能并标注 ⭐；技能=怎么做（程序），capability=有什么工具，insight=什么原则——三者别混。结晶时标 `scope`（global=跨项目通用 / project=须带 scopeProject=<项目名>），跨项目复用前先核对作用域。',
-	'- **层级定义（道/法/术/器，按普适程度分）**：**器**=指向内容的指针与检索面（MEMORY.md 双表+面板）；**术**=一个功能域"怎么做"的完整迭代史（functions/，判据"我会不会再跑一次这个操作"）；**法**=从具体操作提炼的可套原则（insights/，判据"换个项目/领域还成立吗"）；**道**=跨域都必须遵守的约束（MEMORY.md 共识区，判据"违反了会不会出事故"）。**放错层的三个信号**：① 在功能域里翻到普适断言 → 该升到 insights；② 同一句话想写进两个功能域 → 该升到 insights；③ 一条"原则"每次都要附带操作步骤才能用 → 该降回 functions。**反例**：索引行里写推导过程；迭代块里写"以后所有项目都应该……"；原则写成"1. 先运行 X；2. 再执行 Y"；把某次技术选型记成共识。',
+	'- **层级定义（道/法/术/器，按普适程度分）**：**器**=指向内容的指针与检索面（MEMORY.md 双表+面板）；**术**=一个功能域"怎么做"的完整迭代史（functions/，判据"我会不会再跑一次这个操作"）；**法**=从具体操作提炼的可套原则（insights/，判据"换个项目/领域还成立吗"）；**道**=**dao/** 里最抽象的指导思想（判据"换个领域是否依然成立"）——由 `memory_dao` 从 **≥5 条法**萃取，硬闸门把关，`memory_check` 的 R24 守其完整性；违反即出事故的**约束**另在 **MEMORY.md 共识区**（R19 把关）。**放错层的三个信号**：① 在功能域里翻到普适断言 → 该升到 insights；② 同一句话想写进两个功能域 → 该升到 insights；③ 一条"原则"每次都要附带操作步骤才能用 → 该降回 functions。**反例**：索引行里写推导过程；迭代块里写"以后所有项目都应该……"；原则写成"1. 先运行 X；2. 再执行 Y"；把某次技术选型记成共识；把只在一个域验证过的经验当"道"萃取（那只是专项，够 5 条才谈得上道）。',
 	'- **先查后写**：涉及"项目里怎么做 / 为什么这么做 / 环境常量"时，先 `memory_read kind=index`（行内摘要判断相关性，再打开对应文件）；只记得片段、说不清在哪个域或哪天时用 `memory_search`（全库排序检索，返回命中的分区/文件/行号/小节/片段）。**动手前先查 `memory_capability`**：外部 CLI / MCP / 已装软件都在 `capabilities/` 台账里，能省下一整轮摸索。不要凭空重推已有结论。',
 	'- **用到的外部工具要登记**：只有**项目外部**的工具才进台账——第三方 CLI / MCP / 已装软件，且调用它需要摸索（确切命令、前提、踩过的坑）。不登记：harness 自带工具（shell/文件/网络等，模型本来就会）、本项目自己的脚本与 API（那是 functions/ 迭代块）。台账按工具一文件、就地更新——**不是流水账，是索引**。下次同类任务先 `action=list`，不要重新摸索同一个工具。',
 	'- **蒸馏不搬过程**：迭代块只写结论；逐条实现清单、调试经过属于每日原始层与会话/代码。块 >900 字或概括 >110 字写入告警，体检 R14 复查。',
@@ -3497,7 +3531,7 @@ const DISCIPLINE_TEXT = [
 	'- **收缩机制**：功能文件超 30KB 用 `memory_fold` 折叠最旧块；MEMORY.md 超线按 ### 子分区拆分；重命名/合并用 `memory_rename`（自动改写引用并验证死链清零）。',
 	'- **密钥防线**：凭据（API key / token / 私钥 / JWT）绝不进记忆——插件写入口在落盘前把凭据形态替换成 `[REDACTED:kind]` 并在回执点名；每日原始层不经插件，直接写文件时请自律（体检 R21 兜底报告，身份证/手机号只告警不改写）。留「调用形态 + 前提从哪里领」，不留密钥本体。',
 	'- 批量改动记忆后跑 `memory_check` 体检。',
-	'- 归属口诀：会**重跑**的操作（术·functions/）、会**重套**的原则（法·insights/）、**反复跑通且验证**的程序（技能·宿主目录包 `<dshHome>/skills/`，靠 frontmatter `agent_created` 与外来安装包区分）、违反即出事故的约束（道·共识区）、指向内容的指针（器·索引与面板）；原始过程永远只留在每日记录。',
+	'- 归属口诀：会**重跑**的操作（术·functions/）、会**重套**的原则（法·insights/）、**反复跑通且验证**的程序（技能·宿主目录包 `<dshHome>/skills/`，靠 frontmatter `agent_created` 与外来安装包区分）、**≥5 条法萃出的上位命题**（道·dao/，由 `memory_dao` 写、R24 守）、违反即出事故的约束（共识区·MEMORY.md，R19 守）、指向内容的指针（器·索引与面板）；原始过程永远只留在每日记录。',
 ].join('\n');
 
 // ---------------------------------------------------------------------------

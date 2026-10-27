@@ -1163,6 +1163,35 @@ ok(!cCap.results.some((r) => r.message.includes('ffmpeg') && r.level === 'FAIL')
 	await rm(daoRoot, { recursive: true, force: true });
 }
 
+// 22d) memory_dao 的**写入路径**：此前 execute 从未被任何测试调用过——重复来源能凑数、
+// 上限口径与 R24 不一致、description 承诺写 MEMORY.md 却不写，三者都因此长期无人发现。
+{
+	const lawSlugs = [];
+	for (let i = 1; i <= 5; i++) {
+		const slug = `道源${i}`;
+		await T.memory_insight.execute({ theme: slug, principle: `原则 ${i}：这件事总是不声不响地坏掉`, summary: `道源 ${i}`, sources: ['测试功能', '检索目标'] }, exec);
+		lawSlugs.push(slug);
+	}
+	// 同一条法写 5 遍：硬闸门必须拒绝（这条此前是唯一能过的路）
+	let dupThrew = 0;
+	try {
+		await T.memory_dao.execute({ name: '重复来源道', proposition: '事情总是不声不响地坏掉', extractedFrom: [lawSlugs[0], lawSlugs[0], lawSlugs[0], lawSlugs[0], lawSlugs[0]], body: '## 三种形态\n\n- 一种\n' }, exec);
+	} catch {
+		dupThrew++;
+	}
+	ok(dupThrew === 1, 'memory_dao rejects duplicate-only sources through the real execute path');
+	// 5 条不同的法 → 写入 dao/<name>.md
+	await T.memory_dao.execute({ name: '集成之道', proposition: '事情总是不声不响地坏掉', extractedFrom: lawSlugs, body: '## 三种形态\n\n- 一种\n' }, exec);
+	ok(await statExists(path.join(root, 'dao', '集成之道.md')), 'memory_dao writes dao/<name>.md through the execute path');
+	// 工具不写 MEMORY.md（description 曾谎称会写），所以体检必须点名未被登记的道
+	const cDao = await T.memory_check.execute({}, exec);
+	ok(cDao.results.some((r) => r.rule === 'R24' && r.message.includes('集成之道')), 'R24 flags a dao that never made it into the index');
+	// 手工造一个没有「## 命题」小节的 dao：抽象度检查整条被跳过，必须点名
+	await writeFile(path.join(root, 'dao', '无标题之道.md'), '# 道 · 无标题\n\n这条没有命题小节，抽象度检查会整条跳过。\n', 'utf8');
+	const cHead = await T.memory_check.execute({}, exec);
+	ok(cHead.results.some((r) => r.rule === 'R24' && r.message.includes('无标题之道')), 'R24 flags a dao without a 命题 section (the check used to skip it silently)');
+}
+
 // 23) memory_skill — the crystallization layer (MemOS-borrowed, file-discipline
 // adapted): nomination is mechanical over the usage ledger, crystallization is
 // the model's judgement, and the lifecycle candidate→active→retired decides what

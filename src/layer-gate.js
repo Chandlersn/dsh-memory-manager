@@ -59,23 +59,41 @@ const CONCRETE_MARKERS = [
 	'functions/', 'insights/', 'src/', 'node_modules',
 ];
 
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** 纯字母数字标记（按词边界匹配）*/
+const SHAPE_MARKERS = CONCRETE_MARKERS.filter((m) => !/^[a-z0-9]+$/.test(m));
+const WORD_MARKER_RES = CONCRETE_MARKERS.filter((m) => /^[a-z0-9]+$/.test(m)).map((m) => [m, new RegExp(`(?<![a-z0-9])${escapeRe(m)}(?![a-z0-9])`)]);
+
 /**
  * 操作手册句式的强信号（出现在道/法命题里说明它降级成了操作）。
  *
  * 与 memory_insight 原有的 stepLike 保持同一套语感，但更严格：
  * 道层的命题不该出现任何「先…再…」「第一步」这类序列。
  */
-const PROCEDURE_MARKERS = /(^|\s)(\d+[.、)]|步骤|第[一二三四五六七八九十]步|命令行|执行命令|运行\s*`|点击|打开菜单|安装依赖|先.{0,12}再.{0,12}然后)/;
+// 「先…再…然后」三者齐全才算序列，漏掉了最常见的「先量化再干预」；数字步骤只认
+// 中文数字，漏掉了「第1步」。两条都补上（实测这四句原先全部放行）。
+const PROCEDURE_MARKERS = /(^|\s)(\d+[.、)]|步骤|第\s*[一二三四五六七八九十\d]+\s*步|命令行|执行命令|运行\s*`|点击|打开菜单|安装依赖|先.{0,12}再|先.{0,12}然后)/;
 
 /**
  * 判断一段文本是否含具体技术/项目标记。
+ *
+ * 匹配分两类，因为「子串」对两类标记的含义完全不同：
+ *   - **形状型**（带标点：`.js`、`ctx.`、`dsh-`、`functions/`）保持子串匹配——它们
+ *     本来就是形态；
+ *   - **词型**（纯字母数字：`dom`、`git`、`api`）按**词边界**匹配。用 `includes` 时
+ *     wisd**om** 会撞上 `dom`、leg**git**imate 会撞上 `git`，于是一条正经的英文道命题
+ *     被误判成"含具体技术名"而拒收——尺子量的是"有没有撞到英文短串"，不是"换个
+ *     领域是否依然成立"。
  *
  * @param text 待检查文本（命题本体）。
  * @returns 命中的标记列表（空数组 = 够抽象）。
  */
 export function concreteMarkersOf(text) {
 	const lower = String(text ?? '').toLowerCase();
-	return CONCRETE_MARKERS.filter((m) => lower.includes(m));
+	const out = [];
+	for (const [m, re] of WORD_MARKER_RES) if (re.test(lower)) out.push(m);
+	for (const m of SHAPE_MARKERS) if (lower.includes(m)) out.push(m);
+	return out;
 }
 
 /**
@@ -111,14 +129,20 @@ export function gateDao(input) {
 	// —— 硬条件 2：必须从 ≥5 条法萃取 ——
 	// 这是用户明确的规则：单条法直接升格只是换个说法，没有真正的抽象。
 	// 差距必须说清楚（还缺几条、现在有几条），否则模型只会反复试错。
-	if (from.length < MIN_DAO_SOURCES) {
+	// 硬条件 2 的计数必须**去重**：`from.length` 曾把「同一条法写 5 遍」算作 5 条
+	// 来源，于是规则明文要堵的那条路（单条法换个说法）成了唯一能过的路。返回的
+	// `count` 已经是去重值，但闸门判的是原数组长度 —— 判据与产出两处口径不一致，
+	// 而唯一读 count 的地方也没人用。
+	const unique = [...new Set(from)];
+	if (unique.length < MIN_DAO_SOURCES) {
 		return {
 			ok: false,
 			reason:
-				`道的萃取来源不足：只有 ${from.length} 条法，至少需要 ${MIN_DAO_SOURCES} 条。` +
+				`道的萃取来源不足：只有 ${unique.length} 条**不同的**法，至少需要 ${MIN_DAO_SOURCES} 条。` +
 				`道不是单条法的抽象，而是多条法共同指向的上位命题——单条抽取只是换了个说法。` +
 				`先让这 ${MIN_DAO_SOURCES} 条法稳定存在（insights/），再回头看它们的共同点。` +
-				`当前缺 ${MIN_DAO_SOURCES - from.length} 条。`,
+				`当前缺 ${MIN_DAO_SOURCES - unique.length} 条。` +
+				(from.length !== unique.length ? `（收到 ${from.length} 条，其中 ${from.length - unique.length} 条是重复的同一份法，不计数）` : ''),
 		};
 	}
 
@@ -157,12 +181,12 @@ export function gateDao(input) {
 	// —— 软条件：来源必须是真实的法 ——
 	// 目录由调用方校验（本函数保持纯），这里只检查形状。
 	const dupes = from.filter((s, i) => from.indexOf(s) !== i);
-	if (dupes.length) warnings.push(`来源法有重复项（${[...new Set(dupes)].join('、')}），已去重计数`);
-	if (from.length > MIN_DAO_SOURCES * 2) {
-		warnings.push(`${from.length} 条来源法：留意命题是否真的覆盖它们，还是把不相关的法硬凑进来`);
+	if (dupes.length) warnings.push(`来源法有重复项（${[...new Set(dupes)].join('、')}），只按去重后的 ${unique.length} 条计`);
+	if (unique.length > MIN_DAO_SOURCES * 2) {
+		warnings.push(`${unique.length} 条来源法：留意命题是否真的覆盖它们，还是把不相关的法硬凑进来`);
 	}
 
-	return { ok: true, warnings, count: new Set(from).size };
+	return { ok: true, warnings, count: unique.length };
 }
 
 /**

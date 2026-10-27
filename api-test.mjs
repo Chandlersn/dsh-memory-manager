@@ -542,6 +542,25 @@ ok(
 	`README's tool table lists exactly the registered tools (undocumented: ${undocumented.join(',') || 'none'}; stale: ${stale.join(',') || 'none'})`,
 );
 
+// 注入给模型的纪律文本也是「对外宣称」——它决定模型以为有哪些工具、道在哪一层。
+// 它长期写「十二个工具」且只列 12 个名字（漏 memory_dao / memory_inbox），四处文档
+// 守卫都不覆盖它，于是新工具落地后模型根本不知道它存在。纳入成员级核对。
+ok(
+	typeof mod.DISCIPLINE_TEXT === 'string' && mod.DISCIPLINE_TEXT.includes(`${cnWord}个工具`),
+	`the injected discipline claims ${cnWord} tools, matching the ${toolNames.length} registered`,
+);
+const disciplineMissing = toolNames.filter((n) => !mod.DISCIPLINE_TEXT.includes(n));
+ok(
+	disciplineMissing.length === 0,
+	`the discipline names every registered tool (missing: ${disciplineMissing.join(',') || 'none'})`,
+);
+// 道层的位置必须与实现一致：机制把道放在 dao/，纪律若说「道 = 共识区」，
+// 读过纪律的模型会把道写进共识区，正好绕开 memory_dao 的硬闸门。
+ok(
+	mod.DISCIPLINE_TEXT.includes('dao/') && mod.DISCIPLINE_TEXT.includes('memory_dao'),
+	'the discipline points 道 at dao/ and names memory_dao (it used to say 道 = MEMORY.md 共识区)',
+);
+
 // 规则范围也是数字宣称：README 两处写「R0–R22」，而 R23 落地后无人同步（本次
 // 真实发生）。规则号上限直接从源码里量——新增规则若不改 README，这里就红。
 const srcText = await readFile(path.join(pluginDir, 'server.js'), 'utf8');
