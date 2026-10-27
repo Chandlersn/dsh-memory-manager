@@ -779,26 +779,68 @@ window.__ModuleLoader__.load({
 			return h('div', { className: 'dmo-md' }, blocks);
 		}
 
+		/**
+		 * Split a zone section into its sub-tables.
+		 *
+		 * A zone section is NOT always one table: once it grows past ~40 rows the
+		 * server's `memory_index` writes `### 索引·<域>` sub-tables (and R5 nags
+		 * until it does), each carrying its OWN header row. Rendering the whole
+		 * `##` section as a single table therefore printed the column header
+		 * ("功能域" / "思想主题") twice and glued two tables together with no
+		 * separator — the duplication the panel showed for exactly those two
+		 * zones.
+		 *
+		 * @returns `[{ title, lines }]` — one entry per table, empty ones dropped.
+		 */
+		function subTablesOf(section) {
+			const parts = [];
+			let cur = { sub: '', lines: [] };
+			for (const line of String(section?.body ?? '').split('\n')) {
+				if (/^###\s/.test(line.trim())) {
+					parts.push(cur);
+					cur = { sub: line.trim().replace(/^###\s*/, ''), lines: [] };
+				} else cur.lines.push(line);
+			}
+			parts.push(cur);
+			const title = (sub) => {
+				// The heading is used AS WRITTEN: the old `replace(/^[^ ]*\s*/, '')`
+				// silently ate the leading name of any heading containing a space
+				// ("能力台账 细节子目录（…）" rendered as "细节子目录（…）").
+				const parent = String(section.heading ?? '').trim();
+				if (!sub) return parent;
+				// `索引·业务功能` → parent reads better than a bare sub-title.
+				return `${parent} · ${sub.replace(/^索引[·・]\s*/, '')}`;
+			};
+			return parts
+				.map((p) => ({ title: title(p.sub), lines: p.lines }))
+				.map((p) => ({
+					...p,
+					rows: p.lines
+						.map((l) => l.trim())
+						.filter((l) => l.startsWith('|'))
+						.map((l) => l.replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim()))
+						.filter((cells) => cells.length >= 2 && !cells.every((c) => /^[-: ]*$/.test(c))),
+				}))
+				.filter((p) => p.rows.length > 1); // a header alone is not a table
+		}
+
 		/** MEMORY.md navigation tables: each row opens its target file. */
 		function IndexTables({ text, onNavigate }) {
 			const { sections } = splitSections(text);
 			const wanted = sections.filter((s) => /功能模块|思想|能力|技能/.test(s.heading));
 			if (!wanted.length) return null;
+			const tables = wanted.flatMap((s) => subTablesOf(s));
+			if (!tables.length) return null;
 			return h(
 				'div',
 				{ style: { display: 'flex', flexDirection: 'column', gap: 10 } },
-				wanted.map((s) => {
-					const rows = s.body
-						.split('\n')
-						.map((l) => l.trim())
-						.filter((l) => l.startsWith('|'))
-						.map((l) => l.replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim()))
-						.filter((cells) => cells.length >= 2 && !cells.every((c) => /^[-: ]*$/.test(c)));
+				tables.map((t, ti) => {
+					const rows = t.rows.slice();
 					const head = rows.shift() ?? [];
 					return h(
 						'section',
-						{ key: s.heading },
-						h('h3', { className: 'dmo-h2' }, s.heading.replace(/^[^ ]*\s*/, '').replace(/⌃.*$/, '').trim() || s.heading),
+						{ key: `t${ti}` },
+						h('h3', { className: 'dmo-h2' }, t.title),
 						h(
 							'table',
 							{ className: 'dmo-table' },
@@ -2076,7 +2118,7 @@ window.__ModuleLoader__.load({
 			},
 			// Pure view logic, exposed so ui-test.mjs can assert the panel's
 			// parsing/folding behaviour without a browser.
-			__internalsForTest: { relTime, plain, parseIndexTables, parseProseSections, splitSections, resolveHref, defaultOpen, SearchPane, RecallPreviewCard, reverseBullets, highlight, tokenizeCode },
+			__internalsForTest: { relTime, plain, parseIndexTables, parseProseSections, splitSections, subTablesOf, resolveHref, defaultOpen, SearchPane, RecallPreviewCard, reverseBullets, highlight, tokenizeCode },
 		};
 	},
 });

@@ -419,6 +419,38 @@ ok(!idxRead.includes('记忆根：') && !idxRead.includes('索引行摘要只说
 ok(idxRead.includes('细节指针'), 'the detail-pointer section still renders on the index');
 ok(idxRead.includes('clickable'), 'index rows open their target file in-panel');
 
+// --- sub-tables: a zone section split by `### 索引·<域>` ----------------------
+// Once a zone grows past ~40 rows the server writes `### 索引·<域>` sub-tables
+// (R5 nags until it does), each with its OWN header row. Rendering the whole
+// `##` section as one table therefore printed the column header twice and glued
+// two tables together — the real duplication the panel showed for 功能域 and
+// 思想主题. One sub-table per `###`, one header each.
+const groupedSection = {
+	heading: '功能模块索引（functions/）',
+	body: [
+		'| 功能域 | 一句话状态 |', '|---|---|',
+		'| [甲](functions/甲.md) | 主表行 |',
+		'', '### 索引·业务功能', '',
+		'| 功能域 | 一句话状态 |', '|---|---|',
+		'| [乙](functions/乙.md) | 分组行 |',
+	].join('\n'),
+};
+const grouped = T.subTablesOf(groupedSection);
+ok(grouped.length === 2, `a grouped section yields one table per sub-heading (${grouped.length})`);
+ok(grouped[0].title === '功能模块索引（functions/）' && grouped[1].title === '功能模块索引（functions/） · 业务功能', `each sub-table carries a distinct title (${grouped.map((t) => t.title).join(' / ')})`);
+ok(grouped.every((t) => t.rows[0][0] === '功能域'), 'each sub-table keeps its own header row');
+ok(grouped.reduce((n, t) => n + t.rows.length - 1, 0) === 2, 'data rows are split across sub-tables, not concatenated');
+// A heading containing a space keeps its whole name: the old
+// `replace(/^[^ ]*\s*/, '')` ate "能力台账 " and titled the table "细节子目录（…）".
+const capSection = {
+	heading: '能力台账 细节子目录（可用工具 / MCP / CLI）',
+	body: ['| 能力 | 一句话用途 |', '|---|---|', '| [x](capabilities/x.md) | 用途 |'].join('\n'),
+};
+ok(T.subTablesOf(capSection)[0].title === '能力台账 细节子目录（可用工具 / MCP / CLI）', 'a spaced heading keeps its leading name');
+// An empty section (the dao list is bullets, not a table) renders no table at
+// all, instead of a headerless empty grid.
+ok(T.subTablesOf({ heading: '道层（最抽象的指导思想）', body: '- 一条\n- 两条' }).length === 0, 'a bullet-only section yields no table');
+
 // --- reader: insight + daily open every section ----------------------------
 const insRead = render({ kind: 'file', zone: 'insights', name: 'gamma.md' });
 ok(count(insRead, 'data-dmo="section"') === 4 && count(insRead, 'dmo-sec-body') === 4, 'insight sections all open (short file)');
