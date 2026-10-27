@@ -1108,6 +1108,61 @@ ok(!cCap.results.some((r) => r.message.includes('ffmpeg') && r.level === 'FAIL')
 	await rm(orphanRoot, { recursive: true, force: true });
 }
 
+// 22c) R24's extraction prompt must be CLEARABLE. It counts laws per source area
+// and suggests extracting a 道; but an area's law count only ever grows, so
+// counting ALL laws made the prompt permanent — a check that can never go green
+// is wallpaper, not a signal. Laws already claimed by a live dao no longer count.
+{
+	const daoRoot = await mkdtemp(path.join(tmpdir(), 'dsh-r24-'));
+	await mkdir(path.join(daoRoot, 'functions'), { recursive: true });
+	await mkdir(path.join(daoRoot, 'insights'), { recursive: true });
+	await mkdir(path.join(daoRoot, 'dao'), { recursive: true });
+	// MEMORY.md must exist: runHealthCheck returns early with R0 otherwise, and
+	// every later assertion in this block would pass vacuously.
+	await writeFile(
+		path.join(daoRoot, 'MEMORY.md'),
+		['# 索引', '', '## 功能模块索引（functions/）', '', '| 功能域 | 一句话状态 / 待验证 |', '|---|---|', '| [甲域](functions/甲域.md) | 甲的状态 |', '', '## 决策共识 / 规范', '', '- （空）', ''].join('\n'),
+		'utf8',
+	);
+	await writeFile(path.join(daoRoot, 'functions', '甲域.md'), '# 甲\n\n## 当前状态摘要（截至 2026-10-20）\n\n- 状态\n\n---\n\n## [2026-10-20] 块\n\n- **概括**：一块\n', 'utf8');
+	// 10 条法：5 条回链「甲域」且已被道认领，5 条回链「乙域」且无人认领。
+	const law = (n, area) => `# 法${n}\n\n> 来源：[functions/${area}.md](../functions/${area}.md)\n\n## 核心原则\n\n- 原则 ${n}。\n`;
+	for (let i = 1; i <= 10; i++) await writeFile(path.join(daoRoot, 'insights', `法${i}.md`), law(i, i <= 5 ? '甲域' : '乙域'), 'utf8');
+	// A 道 that claims the five 甲域 laws.
+	await writeFile(
+		path.join(daoRoot, 'dao', '已认领之道.md'),
+		[
+			'# 道 · 已认领之道', '',
+			'> 性质：道层。', '',
+			'## 命题', '',
+			'事情总是不声不响地坏掉', '',
+			'## 来源法', '',
+			...Array.from({ length: 5 }, (_, i) => `- [法${i + 1}](../insights/法${i + 1}.md)`), '',
+		].join('\n'),
+		'utf8',
+	);
+	const r24 = await mod.runHealthCheck(daoRoot, { ...mod.DEFAULTS, newFeatureGraceDays: 0 });
+	const prompt = r24.results.find((r) => r.rule === 'R24' && r.message.includes('尚未被任何道认领'))?.message ?? '';
+	ok(prompt.includes('乙域') && prompt.includes('5 条未认领'), `R24 prompts only for unclaimed clusters (${prompt.slice(0, 60)})`);
+	ok(!prompt.includes('甲域'), 'a fully claimed area is NOT suggested again (the prompt can go green)');
+	// Claim the 乙域 laws too: the prompt must disappear entirely.
+	await writeFile(
+		path.join(daoRoot, 'dao', '已认领之道.md'),
+		[
+			'# 道 · 已认领之道', '',
+			'> 性质：道层。', '',
+			'## 命题', '',
+			'事情总是不声不响地坏掉', '',
+			'## 来源法', '',
+			...Array.from({ length: 10 }, (_, i) => `- [法${i + 1}](../insights/法${i + 1}.md)`), '',
+		].join('\n'),
+		'utf8',
+	);
+	const r24b = await mod.runHealthCheck(daoRoot, { ...mod.DEFAULTS, newFeatureGraceDays: 0 });
+	ok(!r24b.results.some((r) => r.rule === 'R24' && r.message.includes('尚未被任何道认领')), 'R24 extraction prompt clears once every law is claimed');
+	await rm(daoRoot, { recursive: true, force: true });
+}
+
 // 23) memory_skill — the crystallization layer (MemOS-borrowed, file-discipline
 // adapted): nomination is mechanical over the usage ledger, crystallization is
 // the model's judgement, and the lifecycle candidate→active→retired decides what

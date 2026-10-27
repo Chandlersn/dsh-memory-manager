@@ -839,9 +839,18 @@ async function runHealthCheck(root, opts) {
 			add('WARN', 'R24', `dao/ 已 ${liveDao.length} 条 > 上限 ${MAX_DAO_ENTRIES}：道多了就不是道，是清单——合并或取代`);
 		}
 
-		// (d) 可萃取提示：法已够 5 条的中文主题簇
+		// (d) 可萃取提示：法已够 5 条、且**还没被任何道认领**的主题簇
 		// 这里不猜语义，只按「被其他法引用的来源域」聚类：同一个 functions/ 功能域
 		// 被 ≥5 条法回链，说明这批法讲的是同一个实践面，值得看能不能萃道。
+		//
+		// 但只数「尚未被认领」的法：已道化（被某条现存道的「来源法」列出）的法不再
+		// 计入。否则这条提示永远清不掉——功能域的法数量只会增不会减，萃完道它照样
+		// 报同样的清单，久而久之就成了背景噪音（一条永远红的检查等于没有检查）。
+		const claimed = new Set();
+		for (const { body } of liveDao) {
+			const srcSection = body.split('## 来源法')[1] ?? '';
+			for (const m of srcSection.matchAll(/\(\.\.\/insights\/([^)]+?)\.md\)/g)) claimed.add(m[1]);
+		}
 		const byArea = new Map();
 		let insightFiles = [];
 		try {
@@ -850,24 +859,26 @@ async function runHealthCheck(root, opts) {
 			/* insights/ 不存在 */
 		}
 		for (const f of insightFiles) {
+			const slug = f.replace(/\.md$/, '');
+			if (claimed.has(slug)) continue; // 已被某条道认领，不再提示
 			const body = (await readIfExists(path.join(root, 'insights', f))) ?? '';
 			if (/^>\s*⚠️\s*已被取代/m.test(body)) continue;
 			const srcLine = body.split('\n').find((l) => /来源[:：]/.test(l)) ?? '';
 			for (const m of srcLine.matchAll(/functions\/([^)\].]+?)\.md/g)) {
 				const area = m[1];
 				if (!byArea.has(area)) byArea.set(area, []);
-				byArea.get(area).push(f.replace(/\.md$/, ''));
+				byArea.get(area).push(slug);
 			}
 		}
 		const extractable = [...byArea.entries()].filter(([, laws]) => new Set(laws).size >= MIN_DAO_SOURCES);
 		if (extractable.length) {
-			const desc = extractable.map(([area, laws]) => `${area}（${new Set(laws).size} 条法）`).join('、');
+			const desc = extractable.map(([area, laws]) => `${area}（${new Set(laws).size} 条未认领）`).join('、');
 			// level 只能是 WARN / FAIL（宿主 schema 校验）——"建议"用 WARN 表达，
 			// 文案里说清它是机会而非缺陷，避免读数的人误判成故障。
 			add(
 				'WARN',
 				'R24',
-				`以下功能域已积累 ≥${MIN_DAO_SOURCES} 条法，可考虑萃取上层命题：${desc}——读这些法的「核心原则」，找它们共同指向的一个关于「世界是怎样的」的命题（不是更广的规则，是它们成立的前提）`,
+				`以下功能域有 ≥${MIN_DAO_SOURCES} 条法尚未被任何道认领，可考虑萃取上层命题：${desc}——读这些法的「核心原则」，找它们共同指向的一个关于「世界是怎样的」的命题（不是更广的规则，是它们成立的前提）`,
 			);
 		}
 	} catch {
