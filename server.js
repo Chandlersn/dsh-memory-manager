@@ -40,7 +40,7 @@ import {
 	localDateStr, normDate, oneLine, charLen, readIfExists, writeText, statExists, safeSlug,
 	splitIterationBlocks, dshHome, joinDshHome, resolveRoot, appendBlock, countHeadingDate, withPathLock,
 } from './src/util.js';
-import { usagePath, appendUsage, readUsage, summarizeUsage, insightTrust, trustLineFor, refreshTrustLine } from './src/usage.js';
+import { usagePath, appendUsage, readUsage, summarizeUsage, insightTrust, trustLineFor, refreshTrustLine, canonicalHref } from './src/usage.js';
 import {
 	memoryIndexTemplate, functionFileTemplate, dailyTemplate, insightTemplate, sepOf,
 	upsertIndexRow, appendUnderHeading, resolveOpenItems, refreshSummarySection, replaceSection,
@@ -60,7 +60,7 @@ import {
 	SKILL_TABLE_HEADING, SKILL_TABLE_HEADER, SKILL_NOMINATE, CAP_DIR, FED_TABLE_HEADING,
 	FED_TABLE_HEADER, FED_CONSENSUS_HEADING, DAILY_SECTION, DAILY_OPEN_SECTION, RESULT_LABEL,
 	GUARD_MARK, GUARD_LINE, MAX_BLOCK_CHARS, MAX_ROW_SUMMARY_CHARS, MAX_PRINCIPLE_CHARS,
-	MAX_CONSENSUS_CHARS, CONSENSUS_HEADING, LEGACY_TABLE_HEADERS,
+	MAX_CONSENSUS_CHARS, CONSENSUS_HEADING, LEGACY_TABLE_HEADERS, INSIGHT_BUDGET,
 } from './src/constants.js';
 
 // ---------------------------------------------------------------------------
@@ -353,11 +353,98 @@ async function runHealthCheck(root, opts) {
 		}
 	}
 
+	// R5-orphan: a zone file WITHOUT an index row is invisible to recall, and
+	// recall is the only way a memory ever reaches the model unprompted — an
+	// unindexed file is a memory that exists and will never be injected. The
+	// skill zone has had this check since 5.27.0 (R20e); the three older zones
+	// never did, so `memory_index`'s own description ("Unindexed-but-existing
+	// files are surfaced by memory_check (R5 orphan)") was a promise the code
+	// did not keep. Measured on a real root: 13 of 26 insight files were
+	// unindexed and memory_check reported 0 WARN.
+	//
+	// The index is parsed ONCE here (zone + href + slug per row) and reused by
+	// R23 below. Zone attribution is by the enclosing section heading, not by
+	// the href alone: a row can carry any link shape across generations, but it
+	// always sits under the table it belongs to.
+	const indexedByZone = { functions: new Set(), insights: new Set(), capabilities: new Set() };
+	const indexedHrefs = new Set();
+	{
+		const zoneOfHeading = (line) => {
+			if (line.startsWith(FUNC_TABLE_HEADING)) return 'functions';
+			if (line.startsWith(INSIGHT_TABLE_HEADING)) return 'insights';
+			if (line.startsWith(CAP_TABLE_HEADING)) return 'capabilities';
+			return null;
+		};
+		let currentZone = null;
+		for (const raw of memText.split('\n')) {
+			const s = raw.trim();
+			if (s.startsWith('## ')) {
+				currentZone = zoneOfHeading(s);
+				continue;
+			}
+			// `### 索引·<域>` sub-tables inherit the enclosing zone.
+			if (!s.startsWith('|') || !currentZone) continue;
+			const cells = s.replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
+			if (cells.length < 2 || cells.every((c) => /^[-: ]*$/.test(c))) continue;
+			// Any cell may carry the link: the 4-column generation kept it in cell 3,
+			// the 2/3-column one bakes it into cell 1.
+			let href;
+			for (const c of cells) {
+				const m = /\(([^)\s]+\.md)\)/.exec(c);
+				if (m) {
+					href = m[1].replace(/\\/g, '/');
+					indexedHrefs.add(href);
+					break;
+				}
+			}
+			const slug = cells[0].replace(/^\[([^\]]+)\]\([^)]*\)$/, '$1');
+			if (!slug || /^[-: ]*$/.test(slug)) continue;
+			indexedByZone[currentZone].add(slug);
+			// A row may point at another zone's file (a function row citing an
+			// insight); its HREF is what proves that file is indexed.
+			if (href) indexedHrefs.add(href);
+		}
+	}
+	{
+		const orphans = [];
+		for (const zone of ['functions', 'insights', 'capabilities']) {
+			let names = [];
+			try {
+				names = (await readdir(path.join(root, zone))).filter((f) => f.endsWith('.md'));
+			} catch {
+				continue; // zone absent
+			}
+			for (const f of names.sort()) {
+				const slug = f.replace(/\.md$/, '');
+				if (indexedHrefs.has(`${zone}/${f}`) || indexedByZone[zone].has(slug)) continue;
+				// A SUPERSEDED insight is decision history: indexing it would inject
+				// an overturned principle into recall as if it were live, so its
+				// absence from the index is correct, not a defect. R23 already
+				// excludes it from the budget for the same reason.
+				if (zone === 'insights') {
+					const body = (await readIfExists(path.join(root, zone, f))) ?? '';
+					if (/^>\s*⚠️\s*已被取代/m.test(body)) continue;
+				}
+				orphans.push(`${zone}/${f}`);
+			}
+		}
+		if (orphans.length) {
+			add(
+				'WARN',
+				'R5',
+				`${orphans.length} 个记忆文件没有索引行（召回只认索引行，这些永远不会被注入）：${orphans.slice(0, 6).join('、')}${orphans.length > 6 ? ` 等 ${orphans.length} 个` : ''} —— 稳定下来的跑 memory_index 收进索引；不该留的合并或删除`,
+			);
+		}
+	}
+
 	// Collected during the pass below so the temperature analysis can reuse these
 	// reads instead of hitting the disk a second time for every file.
 	const fnTexts = new Map();
 	const fnMtimes = new Map();
 	const insightTexts = [];
+	// Keyed by slug so the R23 source-count check reuses these reads instead of
+	// re-reading every insight file a second time.
+	const insightTextByFile = new Map();
 
 	for (const zone of ['functions', 'insights', 'capabilities', 'skills']) {
 		const dir = path.join(root, zone);
@@ -420,6 +507,7 @@ async function runHealthCheck(root, opts) {
 				}
 			} else if (zone === 'insights') {
 				insightTexts.push(text);
+				insightTextByFile.set(f.replace(/\.md$/, ''), text);
 			} else if (zone === 'skills') {
 				// 5.24.0: skills no longer live in the memory root — they are host
 				// bundles under <dshHome>/skills/<name>/. A file here is a LEFTOVER
@@ -554,14 +642,22 @@ async function runHealthCheck(root, opts) {
 			for (const e of usage) {
 				const href = String(e.href ?? '');
 				if (!href.startsWith('functions/')) continue;
-				const cur = perHref.get(href) ?? { uses: 0, corrections: 0 };
-				if (e.kind === 'recall' || e.kind === 'read') cur.uses++;
-				else if (e.kind === 'correction') cur.corrections++;
+				const cur = perHref.get(href) ?? { engages: 0, corrections: 0, recalls: 0 };
+				// SELF-REFERENCE FIX (2026-10-27): recall is the plugin's own action,
+				// so it must not sit in the denominator. It used to — a memory that
+				// was pushed 150 times and corrected twice scored a 1% correction
+				// rate and never tripped, while its engagement rate was 29%.
+				// `engages` = the model opened it or formed a verdict about it.
+				if (e.kind === 'read' || e.kind === 'positive') cur.engages++;
+				else if (e.kind === 'correction') {
+					cur.corrections++;
+					cur.engages++; // a correction IS engagement
+				} else if (e.kind === 'recall') cur.recalls++;
 				perHref.set(href, cur);
 			}
 			for (const [href, c] of perHref) {
-				if (c.corrections >= 3 && c.corrections / Math.max(1, c.uses + c.corrections) > 0.4) {
-					add('WARN', 'R18', `${href} 近 7 天被纠正 ${c.corrections} 次、使用 ${c.uses} 次（纠正率 > 40%）：熔断——先重构该域再继续追加迭代，别把问题压进历史`);
+				if (c.corrections >= 3 && c.corrections / Math.max(1, c.engages) > 0.4) {
+					add('WARN', 'R18', `${href} 近 7 天被纠正 ${c.corrections} 次、实际触及 ${c.engages} 次（纠正率 > 40%，召回注入 ${c.recalls} 次不计入）：熔断——先重构该域再继续追加迭代，别把问题压进历史`);
 				}
 			}
 		}
@@ -586,6 +682,99 @@ async function runHealthCheck(root, opts) {
 		}
 	} catch {
 		/* usage log is optional */
+	}
+
+	// R23 (the principle layer's retirement budget): every other zone can shrink
+	// — functions/ folds at maxFunctionBytes, skills retire, the index caps at
+	// maxIndexBytes — insights/ could only grow. Three measurable symptoms, all
+	// taken from files/ledger that already exist:
+	//   (a) count over budget: the layer is being used as a notebook;
+	//   (b) too many SINGLE-SOURCE principles: the plugin's own promotion gate
+	//       (>=2 unrelated areas) says those are 专项经验, not transferable 法 —
+	//       a majority of them means the zone is misnamed, not just large;
+	//   (c) dangling ledger hrefs: .usage.jsonl is the ONLY record of corrections
+	//       and confirmations (the input of trust, R22 and the layer suggestion),
+	//       so a href pointing at a file that no longer exists silently throws
+	//       away that principle's whole evidence history.
+	try {
+		const budget = opts.insightBudget ?? INSIGHT_BUDGET;
+		let insightNames = [];
+		try {
+			insightNames = (await readdir(path.join(root, 'insights'))).filter((f) => f.endsWith('.md'));
+		} catch {
+			/* zone absent */
+		}
+		if (insightNames.length) {
+			// A superseded principle is DECISION HISTORY, not a live entry: it keeps
+			// its file (the supersede stamp is a link, never a delete) but it must
+			// not consume the budget, or `supersedes` could never shrink the layer —
+			// the one operation the retirement check exists to make possible.
+			// Same for a file that is nothing but the stamp.
+			const liveNames = [];
+			const supersededNames = [];
+			for (const f of insightNames) {
+				const body = insightTextByFile.get(f.replace(/\.md$/, '')) ?? (await readIfExists(path.join(root, 'insights', f))) ?? '';
+				(/^>\s*⚠️\s*已被取代/m.test(body) ? supersededNames : liveNames).push(f);
+			}
+			if (liveNames.length > budget.maxInsights) {
+				add(
+					'WARN',
+					'R23',
+					`insights/ 已 ${liveNames.length} 条 > 预算 ${budget.maxInsights}${supersededNames.length ? `（另有 ${supersededNames.length} 条已被取代，不计入）` : ''}：思想层没有折叠机制，先合并同根因条目（memory_insight 同名主题重写原则本体）或 memory_insight(supersedes) 取代过时条目，再写新的`,
+				);
+			}
+			// (b) source count per principle, from the 来源 line the template writes.
+			const singleSource = [];
+			for (const f of liveNames) {
+				const body = insightTextByFile.get(f.replace(/\.md$/, '')) ?? (await readIfExists(path.join(root, 'insights', f))) ?? '';
+				const srcLine = body.split('\n').find((l) => /来源[:：]/.test(l)) ?? '';
+				const areas = new Set([...srcLine.matchAll(/functions\/([^)\].]+?)\.md/g)].map((m) => m[1]));
+				if (areas.size < 2) singleSource.push(f.replace(/\.md$/, ''));
+			}
+			const share = liveNames.length ? singleSource.length / liveNames.length : 0;
+			if (share > budget.maxSingleSourceShare) {
+				add(
+					'WARN',
+					'R23',
+					`insights/ 里 ${singleSource.length}/${liveNames.length} 条只有 1 个来源域（${Math.round(share * 100)}% > ${Math.round(budget.maxSingleSourceShare * 100)}%）：单源条目属专项经验，不是可跨域重套的「法」——要么补第二个无关来源域，要么降回 functions/ 迭代块`,
+				);
+			}
+		}
+		// (c) ledger integrity. Reads the WHOLE ledger, not the 30-day window:
+		// evidence from a renamed file is lost exactly when it is oldest.
+		const raw = await readIfExists(usagePath(root));
+		if (raw) {
+			const hrefs = new Set();
+			for (const line of raw.split('\n')) {
+				const s = line.trim();
+				if (!s) continue;
+				try {
+					const e = JSON.parse(s);
+					const h = String(e.href ?? '').trim();
+					if (h) hrefs.add(canonicalHref(h));
+				} catch {
+					/* skip corrupt line */
+				}
+			}
+			const missing = [];
+			for (const h of hrefs) {
+				// Only memory-root targets are checkable; skill bundles live outside
+				// the root and their absence is R20e's business.
+				if (!/^(functions|insights|capabilities|skills)\//.test(h)) continue;
+				if (/^skills\//.test(h)) continue;
+				if (await statExists(path.join(root, h))) continue;
+				missing.push(h);
+			}
+			if (missing.length >= (opts.insightBudget?.minLedgerMisses ?? INSIGHT_BUDGET.minLedgerMisses)) {
+				add(
+					'WARN',
+					'R23',
+					`.usage.jsonl 有 ${missing.length} 个 href 指向已不存在的文件（${missing.slice(0, 4).join('、')}${missing.length > 4 ? ' 等' : ''}）：该条目的认可/纠正记录已成孤儿，信任与分层建议都在读空——这些文件是被改名或删除了，确认它们的证据该归到哪个现存条目`,
+				);
+			}
+		}
+	} catch {
+		/* budget checks are best-effort */
 	}
 
 	const warnCount = results.filter((r) => r.level === 'WARN').length;
@@ -889,12 +1078,12 @@ function memoryUsageTool(opts) {
 	return defineTool({
 		name: 'memory_usage',
 		description:
-			'Record and read USAGE signals, the data that lets the memory sort itself. action=record logs one event against a memory file (kind: correction = the user corrected / rejected what was recalled or written; positive = explicit confirmation like "对了/就是这个"; recall/read are logged automatically). action=report aggregates the last N days per file and suggests a layer: 实验 (<3 uses), 专项 (>=3 uses + >=1 confirmation), 通用 (>=10 uses + >=2 confirmations + correction rate <20%). Layers are suggestions for the model to act on — this tool never moves files.',
+			'Record and read USAGE signals, the data that lets the memory sort itself. action=record logs one event against a memory file (kind: correction = the user corrected / rejected what was recalled or written; positive = explicit confirmation like "对了/就是这个"; recall/read are logged automatically). action=report aggregates the last N days per file and suggests a layer: 实验 (<3 uses), 专项 (>=3 uses + >=1 confirmation), 通用 (>=10 uses + >=2 confirmations + correction rate <20%). Uses count ENGAGEMENT only (read + verdicts): a recall injection is EXPOSURE, not use — counting it would let the plugin\'s own output inflate the popularity that decides what gets recalled next. Layers are suggestions for the model to act on — this tool never moves files.',
 		parameters: {
 			action: { type: 'string', required: true, enum: ['record', 'report'], description: 'record=记一次信号；report=按天聚合出分层建议。' },
 			href: { type: 'string', description: 'record 必填：目标记忆文件，如 `functions/批印坊工程加固.md`、`insights/逐帧渲染取帧三闸.md`、`2026-10-18.md`。' },
 			kind: { type: 'string', enum: ['correction', 'positive', 'recall', 'read'], description: 'record 必填：correction=用户纠正/否定，positive=用户明确认可，recall/read 一般由插件自动记录。' },
-			note: { type: 'string', description: 'record 可选：一句话说明（例如用户原话），便于日后复盘。' },
+			note: { type: 'string', description: 'record 强烈建议填写：一句话说明这次判定针对的是**哪件事**（例如用户原话）。它不只是备注——翻转计数靠它区分「同一结论被推翻」与「同一个文件被纠正了不同的事」；不写就只能按相邻判定猜，容易把无关纠正误报成结论不稳定。' },
 			days: { type: 'integer', description: 'report 的统计窗口（天，默认 30）。' },
 		},
 		output: {
@@ -913,6 +1102,7 @@ function memoryUsageTool(opts) {
 							properties: {
 								href: { type: 'string', required: true },
 								uses: { type: 'integer', required: true },
+								exposure: { type: 'integer', required: true },
 								recalls: { type: 'integer', required: true },
 								reads: { type: 'integer', required: true },
 								corrections: { type: 'integer', required: true },
@@ -935,9 +1125,9 @@ function memoryUsageTool(opts) {
 					return [{ type: 'text', text: v.warnings.length ? v.warnings.join('\n') : '已记录使用信号。' }];
 				}
 				if (!v.items.length) return [{ type: 'text', text: '还没有使用信号。信号来自召回注入、memory_read、以及你用 memory_usage(action=record) 记录的纠正/认可。' }];
-				const lines = [`近 ${v.days} 天使用信号（按使用次数排序）：`];
+				const lines = [`近 ${v.days} 天使用信号（按实际触及排序；召回注入只算曝光，不算使用）：`];
 				for (const it of v.items) {
-					lines.push(`- [${it.layer}] ${it.href} · 用 ${it.uses}（召回 ${it.recalls}/读 ${it.reads}）· 纠正 ${it.corrections} · 认可 ${it.positives} · 纠正率 ${it.badRate}${it.flips ? ` · 翻转 ${it.flips}` : ''}`);
+					lines.push(`- [${it.layer}] ${it.href} · 触及 ${it.uses}（读 ${it.reads} + 判断 ${it.corrections + it.positives}）· 曝光 ${it.exposure}（召回 ${it.recalls}）· 纠正 ${it.corrections} · 认可 ${it.positives} · 纠正率 ${it.badRate}${it.flips ? ` · 翻转 ${it.flips}` : ''}`);
 				}
 				for (const w of v.warnings) lines.push(`⚠ ${w}`);
 				lines.push('层只是建议：通用=可进默认推荐，专项=常规池，实验=仍在小范围验证。');
@@ -968,6 +1158,7 @@ function memoryUsageTool(opts) {
 			const items = summarizeUsage(entries).map((it) => ({
 				href: it.href,
 				uses: it.uses,
+				exposure: it.exposure,
 				recalls: it.recalls,
 				reads: it.reads,
 				corrections: it.corrections,
@@ -2885,7 +3076,7 @@ function renderInbox(args, value) {
 function memoryCheckTool(opts) {	return defineTool({
 		name: 'memory_check',
 		description:
-			'Lint the memory root (read-only): MEMORY.md size caps + rows missing one-line summaries (R5), dangling / root-escaping links (R10), function files reverse-linking to MEMORY.md detail (R8), function-file size (R9), over-detailed iteration blocks and index rows that were not distilled (R14), duplicated index rows or table sections (R15), head stable-state summary older than the newest iteration block or missing (R3), env-constant absolute paths that no longer exist (R16), a function area corrected over 40% of the time in the last 7 days (R18 circuit breaker), iteration date tags not append-ordered (R3), legacy/ files missing the 历史原貌 header (R13), credential material or personal identifiers in memory files (R21 memory defence). Guarded files (🛡 守护型) are exempt from the cold-memory rule. Run it after batch memory edits or when memory_check has never run on this root.',
+			'Lint the memory root (read-only): MEMORY.md size caps + rows missing one-line summaries + zone files with NO index row (R5 orphan — an unindexed file is invisible to recall), dangling / root-escaping links (R10), function files reverse-linking to MEMORY.md detail (R8), function-file size (R9), over-detailed iteration blocks and index rows that were not distilled (R14), duplicated index rows or table sections (R15), head stable-state summary older than the newest iteration block or missing (R3), env-constant absolute paths that no longer exist (R16), a function area corrected over 40% of the time in the last 7 days (R18 circuit breaker), iteration date tags not append-ordered (R3), legacy/ files missing the 历史原貌 header (R13), credential material or personal identifiers in memory files (R21 memory defence), the insight layer’s retirement budget — count over cap, too many single-source principles, dangling .usage.jsonl hrefs (R23). Guarded files (🛡 守护型) are exempt from the cold-memory rule. Run it after batch memory edits or when memory_check has never run on this root.',
 		parameters: {},
 		output: {
 			schema: {
@@ -3627,6 +3818,19 @@ export function apply(ctx, config) {
 		maxIndexHardBytes: Number.isFinite(config?.maxIndexHardBytes) ? config.maxIndexHardBytes : DEFAULTS.maxIndexHardBytes,
 		maxFunctionBytes: Number.isFinite(config?.maxFunctionBytes) ? config.maxFunctionBytes : DEFAULTS.maxFunctionBytes,
 		newFeatureGraceDays: Number.isFinite(config?.newFeatureGraceDays) ? config.newFeatureGraceDays : DEFAULTS.newFeatureGraceDays,
+		// R23's retirement budget for insights/ (count / single-source share /
+		// ledger misses). Configurable so tests can lower the caps instead of
+		// generating 25 fixture files.
+		insightBudget:
+			config?.insightBudget && typeof config.insightBudget === 'object'
+				? {
+						maxInsights: Number.isFinite(config.insightBudget.maxInsights) ? config.insightBudget.maxInsights : INSIGHT_BUDGET.maxInsights,
+						maxSingleSourceShare: Number.isFinite(config.insightBudget.maxSingleSourceShare)
+							? config.insightBudget.maxSingleSourceShare
+							: INSIGHT_BUDGET.maxSingleSourceShare,
+						minLedgerMisses: Number.isFinite(config.insightBudget.minLedgerMisses) ? config.insightBudget.minLedgerMisses : INSIGHT_BUDGET.minLedgerMisses,
+					}
+				: INSIGHT_BUDGET,
 		// Foreground recall budget (ms). Config may SHORTEN it but never extend
 		// past the default — recall must stay bounded no matter the config.
 		recallTimeoutMs: resolveRecallBudget(config?.recallTimeoutMs),

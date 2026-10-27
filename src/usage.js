@@ -67,7 +67,29 @@ export async function readUsage(root, days = 30) {
 	return out;
 }
 
-/** Aggregate usage per target and suggest a layer (实验 / 专项 / 通用). */
+/**
+ * Aggregate usage per target and suggest a layer (实验 / 专项 / 通用).
+ *
+ * SELF-REFERENCE FIX (2026-10-27): `recall` is the plugin's OWN action, not the
+ * user's. Counting it as a "use" put the same fact on both sides of every
+ * derived ratio — recall inflated the denominator of badRate (so a genuinely
+ * corrected memory looked fine), inflated the numerator of `uses` (so the same
+ * hot rows won the RRF ranking, were recalled more, and grew hotter), and
+ * satisfied the skill-nomination use floor. Measured on a real root: 627 of 667
+ * ledger lines were self-produced recalls; the one area with BOTH corrections
+ * reported a 1% correction rate that its engagement rate says is 29%.
+ *
+ * So the fields are now split by WHO produced them:
+ *   exposure  = recalls + reads   — how often the memory was PUT in front of the
+ *                                   model (demand created by the plugin)
+ *   engage    = reads + verdicts  — the model actually touched it
+ *   uses      = engage            — the ONLY thing layer suggestions / heat /
+ *                                   nomination may use (kept under the old name
+ *                                   so every consumer reads the honest number)
+ *   badRate   = corrections / (reads + corrections) — denominator EXCLUDES the
+ *                                   plugin's own recall, so recall can no longer
+ *                                   dilute a real correction rate
+ */
 export function summarizeUsage(entries) {
 	const map = new Map();
 	// Keep the correction/positive order per href so a flip (positive -> correction
@@ -89,7 +111,10 @@ export function summarizeUsage(entries) {
 		else if (e.kind === 'lifecycle') cur.lifecycle++;
 		if (e.kind === 'correction' || e.kind === 'positive') {
 			const seq = verdicts.get(href) ?? [];
-			seq.push({ kind: e.kind, ms: e.ms });
+			// The NOTE is what makes a flip meaningful (see the flips computation
+			// below): without it, two corrections about DIFFERENT subjects read as
+			// "the same conclusion was overturned twice".
+			seq.push({ kind: e.kind, ms: e.ms, note: String(e.note ?? '').trim() });
 			verdicts.set(href, seq);
 		}
 		cur.last = Math.max(cur.last, e.ms);
@@ -97,8 +122,15 @@ export function summarizeUsage(entries) {
 	}
 	const items = [...map.values()];
 	for (const it of items) {
-		const uses = it.recalls + it.reads;
-		const badRate = uses ? it.corrections / uses : it.corrections ? 1 : 0;
+		// Exposure is reported, never used as evidence of use.
+		it.exposure = it.recalls + it.reads;
+		// Engagement: the model opened the file or formed a verdict about it.
+		// A recall the model ignored is not a use — that is the whole point.
+		const uses = it.reads + it.corrections + it.positives;
+		// Denominator excludes recall: corrections measure the quality of what the
+		// model actually engaged with, not of everything the plugin pushed at it.
+		const engaged = it.reads + it.corrections;
+		const badRate = engaged ? it.corrections / engaged : it.corrections ? 1 : 0;
 		// Layer suggestion mirrors the article's data-driven promotion: usage wins,
 		// confirmation gates promotion, correction rate gates generality.
 		if (uses >= 10 && it.positives >= 2 && badRate < 0.2) it.layer = '通用';
@@ -106,12 +138,32 @@ export function summarizeUsage(entries) {
 		else it.layer = '实验';
 		it.uses = uses;
 		it.badRate = Number(badRate.toFixed(2));
+		// FLIPS measure ONE conclusion being overturned, not one FILE collecting
+		// verdicts about different subjects. The old count flipped on any
+		// correction→positive→correction sequence on the same href, which is how
+		// functions/memory-manager.md was reported as "结论被反复推翻（翻转 2 次）"
+		// from three verdicts about three unrelated matters (duplicate-row cleanup,
+		// then a capability-ledger semantics correction). A file is a container;
+		// only a repeated VERDICT ON THE SAME SUBJECT is instability.
+		//
+		// Two verdicts belong to the same subject when their notes share content:
+		// exact match, or one contains the other (short note inside a long one).
+		// A verdict without a note cannot be attributed to a subject, so it can
+		// only flip against an adjacent note-less verdict — that keeps the signal
+		// honest (we never invent a subject link we cannot see) while the tool's
+		// own description nudges the model to pass `note`.
 		const seq = (verdicts.get(it.href) ?? []).sort((a, b) => a.ms - b.ms);
+		const sameSubject = (a, b) => {
+			if (!a.note || !b.note) return !a.note && !b.note;
+			return a.note === b.note || a.note.includes(b.note) || b.note.includes(a.note);
+		};
 		let flips = 0;
-		for (let i = 1; i < seq.length; i++) if (seq[i].kind !== seq[i - 1].kind) flips++;
+		for (let i = 1; i < seq.length; i++) {
+			if (seq[i].kind !== seq[i - 1].kind && sameSubject(seq[i], seq[i - 1])) flips++;
+		}
 		it.flips = flips;
 	}
-	items.sort((a, b) => b.uses - a.uses || b.last - a.last);
+	items.sort((a, b) => b.uses - a.uses || b.exposure - a.exposure || b.last - a.last);
 	return items;
 }
 

@@ -1202,7 +1202,7 @@ window.__ModuleLoader__.load({
 																{ className: 'dmo-row-top' },
 																h('span', { className: 'dmo-zone-tag' }, ZONE_LABEL[zoneKey] ?? r.zone),
 																h('span', { className: 'dmo-row-name' }, label),
-																h('span', { className: 'dmo-row-meta' }, `融合分 ${r.fusedScore}`),
+																h('span', { className: 'dmo-row-meta' }, `得分 ${r.fusedScore}`),
 															),
 															h('div', { className: 'dmo-row-sum' }, r.summary),
 														),

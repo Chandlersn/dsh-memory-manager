@@ -542,6 +542,18 @@ ok(
 	`README's tool table lists exactly the registered tools (undocumented: ${undocumented.join(',') || 'none'}; stale: ${stale.join(',') || 'none'})`,
 );
 
+// 规则范围也是数字宣称：README 两处写「R0–R22」，而 R23 落地后无人同步（本次
+// 真实发生）。规则号上限直接从源码里量——新增规则若不改 README，这里就红。
+const srcText = await readFile(path.join(pluginDir, 'server.js'), 'utf8');
+const ruleNums = [...srcText.matchAll(/add\(\s*'(?:WARN|FAIL)'\s*,\s*'R(\d+)/g)].map((m) => Number(m[1]));
+const maxRule = Math.max(...ruleNums);
+const claimCn = /R0[–-]R(\d+)/.exec(readmeCn)?.[1];
+const claimEn = /R0[–-]R(\d+)/.exec(readmeEn)?.[1];
+ok(
+	claimCn === String(maxRule) && claimEn === String(maxRule),
+	`READMEs claim the same top lint rule the code implements (code R0-R${maxRule}; README.md R0-R${claimCn}; README.en.md R0-R${claimEn})`,
+);
+
 console.log(failures === 0 ? 'API ALL PASS' : `${failures} API FAILURES`);
 await rmTmp(tmpMem, { recursive: true, force: true });
 await rmTmp(tmpSkills, { recursive: true, force: true });

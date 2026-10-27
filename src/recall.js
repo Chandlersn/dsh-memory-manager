@@ -128,33 +128,53 @@ export function matchIndexRows(indexText, userTokens, limit = 3, usage) {
 		if (score > 0) scored.push({ name: c.name, summary: c.summary, href: c.href, zone: c.zone, score });
 	}
 	scored.sort((a, b) => b.score - a.score);
-	// ---- RRF fusion with the usage rank -------------------------------------
-	// Two independent rankings (lexical IDF, usage heat) are combined by
-	// Reciprocal Rank Fusion: a row's score is SUM(1/(k + rank_i)) over the
-	// rankings it appears in. RRF is scale-free, so the two signals need no
-	// normalization — the thing MemOS gets from blending FTS5 + vectors.
+	// ---- bounded multiplicative boost from the usage signal ----------------
+	// FEEDBACK LOOP FIX (2026-10-27), two separate defects:
+	//
+	// (1) SELF-REFERENCE. Heat used to be `uses + 2*positives`, and `uses`
+	//     included the plugin's own recalls — so a recalled row gained heat, and
+	//     heat got it recalled again. Measured on a real root: 627 of 667 ledger
+	//     lines were self-produced recalls; the top row was recalled 152 times
+	//     against 8 real engagements. Fixed in summarizeUsage: `uses` is now
+	//     ENGAGEMENT (read + verdicts), `exposure` is reported separately.
+	//
+	// (2) RRF DISCARDS MAGNITUDE. The previous fusion was Reciprocal Rank Fusion:
+	//     a row's rank replaced its score, so a decisive 4.0-vs-2.0 lexical win
+	//     collapsed into "adjacent ranks" and one usage term flipped it. A
+	//     tie-breaker had become a second opinion that could outvote the user's
+	//     actual words. RRF is right when blending two COMPARABLE retrievers
+	//     (FTS5 + vectors); here one signal is the user's text and the other is a
+	//     popularity prior, so they are not peers and must not be rank-fused.
+	//
+	// The fix keeps the lexical score's magnitude and applies usage as a BOUNDED
+	// multiplier: at most +15%, so it breaks ties and nudges close calls, and can
+	// never overturn a real relevance gap. With no usage data the score is exactly
+	// the lexical score, so behavior without history is unchanged.
 	let ranked = scored;
 	if (usage && usage.size) {
-		const k = 60; // standard RRF constant
-		const lexicalRank = new Map();
-		scored.forEach((r, i) => lexicalRank.set(r.href, i));
-		// Usage rank: heat = uses + 2*positives, demoted by correction rate.
+		const MAX_BOOST = 0.15;
+		// Heat: engagement + 2*positives, demoted by correction rate.
 		const heat = new Map();
+		let maxHeat = 0;
 		for (const [href, u] of usage) {
 			const penalty = 1 - Math.min(0.9, u.badRate ?? 0);
-			heat.set(href, (u.uses + 2 * (u.positives ?? 0)) * penalty);
+			const h = ((u.uses ?? 0) + 2 * (u.positives ?? 0)) * penalty;
+			if (h > 0) {
+				heat.set(href, h);
+				if (h > maxHeat) maxHeat = h;
+			}
 		}
-		const usageRank = new Map();
-		[...heat.entries()]
-			.sort((a, b) => b[1] - a[1])
-			.forEach(([href], i) => usageRank.set(href, i));
-		const fused = scored.map((r) => {
-			let s = 1 / (k + (lexicalRank.get(r.href) ?? scored.length));
-			if (usageRank.has(r.href)) s += 1 / (k + usageRank.get(r.href));
-			return { ...r, score: s, lexical: r.score };
-		});
-		fused.sort((a, b) => b.score - a.score);
-		ranked = fused;
+		if (maxHeat > 0) {
+			const boosted = scored.map((r) => {
+				const h = heat.get(r.href);
+				// Normalized to [0,1] against the hottest row, then scaled into the
+				// boost band. A row with no engagement gets exactly its lexical score.
+				const rel = h === undefined ? 0 : h / maxHeat;
+				return { ...r, score: r.score * (1 + MAX_BOOST * rel), lexical: r.score, heat: rel };
+			});
+			boosted.sort((a, b) => b.score - a.score);
+			ranked = boosted;
+		}
 	}
 	const best = ranked[0]?.score ?? 0;
 	const seen = new Set();

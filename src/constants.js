@@ -96,3 +96,17 @@ export const MAX_ROW_SUMMARY_CHARS = 110;
 export const MAX_PRINCIPLE_CHARS = 200;
 export const MAX_CONSENSUS_CHARS = 150;
 export const CONSENSUS_HEADING = '## 决策共识 / 规范';
+
+// The insight layer's RETIREMENT budget (R23). Every other zone has a shrinking
+// mechanism: functions/ folds at maxFunctionBytes, skills retire, the index
+// caps at maxIndexBytes. insights/ had none — a principle could only be added,
+// never merged or retired, so a root that keeps writing accumulates a pile
+// where most entries are single-source and half are invisible to recall.
+//   maxInsights          soft cap on the number of principle files
+//   maxSingleSourceShare the share of principles that may cite only ONE source
+//                        area (those are 专项经验, not transferable 法)
+//   minLedgerMisses      dangling .usage.jsonl hrefs before the evidence chain
+//                        is called broken (1 is noise from a rename, a few is
+//                        not: the ledger is the ONLY place corrections and
+//                        confirmations are recorded)
+export const INSIGHT_BUDGET = { maxInsights: 24, maxSingleSourceShare: 0.6, minLedgerMisses: 3 };

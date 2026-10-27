@@ -463,7 +463,7 @@ const previewView = serialize(
 	FakeReact.createElement(T.RecallPreviewCard, { res: previewRes, q: '重启 宿主', setQ: () => {}, onNavigate: () => {} }),
 );
 ok(count(previewView, 'data-dmo="preview-row"') === 2, `every recalled row renders (${count(previewView, 'data-dmo="preview-row"')})`);
-ok(previewView.includes('detached-restart') && previewView.includes('融合分 2.9'), 'a bundle row labels itself by its DIRECTORY name, with its score');
+ok(previewView.includes('detached-restart') && previewView.includes('得分 2.9'), 'a bundle row labels itself by its DIRECTORY name, with its score');
 ok(previewView.includes('名称命中') && previewView.includes('使用 6 次'), 'the reasons behind each recall land as chips');
 ok(previewView.includes('技能') || previewView.includes('功能'), 'rows carry their zone tags');
 const previewEmpty = serialize(

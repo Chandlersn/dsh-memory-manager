@@ -14,7 +14,7 @@ discipline injected into its system prompt.
 
 - Thirteen memory tools + an injected system-prompt discipline + a budgeted `agent/pre-step` recall hook + a read-only Web panel
 - Writing is filing: `summary` and `currentState` are required parameters, so the index row never drifts
-- Mechanical lint rules (R0–R22 plus temperature analysis; rule numbers grow, so no fixed count is claimed), so rot gets detected instead of remembered
+- Mechanical lint rules (R0–R23 plus temperature analysis; rule numbers grow, so no fixed count is claimed), so rot gets detected instead of remembered
 - **Capability ledger**: every EXTERNAL CLI / MCP / local tool you used is filed in `capabilities/` — look before
   you rediscover it (harness built-ins and the project's own scripts/APIs are NOT capabilities)
 - **Skill crystallization**: operations that keep being re-run and confirmed become callable procedures — each one
@@ -178,22 +178,34 @@ records *why* we believed it then.
 | `memory_skill` | **the crystallization layer** (the "use" step the data flow was missing): `candidates` nominates mechanically from usage signals (≥6 uses, ≥1 confirmation, correction rate <20%, not yet crystallized); `crystallize` writes a callable procedure to `skills/<name>.md` (when-to-use / numbered steps / pitfalls / verification + frontmatter router); `activate`/`retire` drive the lifecycle (candidate → active → retired, only active enters recall); `list`/`read` inspect |
 
 A discipline section is injected into the system prompt; the `agent/pre-step` hook scores the user's input
-against index rows and injects the matching rows as a single `recall` message. Ranking is **RRF fusion** of
-two independent rankings:
+against index rows and injects the matching rows as a single `recall` message. Ranking is **lexical-first,
+with usage as a bounded boost**:
 
 - **Lexical (IDF-weighted)**: tokens nearly every row carries (「功能」「记忆」) weigh little, rare tokens
   (「逐帧」「懒加载」) dominate; name/filename hits are doubled; rows under 40% of the best score are dropped
   and one file is injected once.
-- **Usage (`.usage.jsonl`)**: uses + confirmations form a heat score, demoted by the correction rate — a row
-  that keeps being corrected sinks. The two rankings are fused by RRF (`Σ 1/(60+rank)`), which needs no
-  normalization.
+- **Usage (`.usage.jsonl`)**: heat = real engagements + 2× confirmations, demoted by the correction rate.
+  It applies as a **multiplicative boost capped at +15%** — enough to break ties and nudge close calls, but
+  it can never overturn a real relevance gap (a 2× lexical win is not reversed by popularity).
+
+> Why not RRF: RRF (`Σ 1/(60+rank)`) suits blending two *peer* retrievers (FTS5 + vectors), at the cost of
+> discarding score magnitude and keeping only rank. Here one signal is the user's own words and the other is
+> a popularity prior — they are not peers, and rank fusion lets the prior outvote the user. Before 5.29.1 the
+> implementation was RRF, and a measured "lexical 4.0 vs 2.0" was flattened into adjacent ranks and reversed
+> by heat.
+>
+> A second fix from the same root: **a `recall` is not a use.** Recall is the plugin's own action; counting it
+> as `uses` let the plugin prove its own value with its own output (recalled → hotter → recalled more).
+> Measured on a real root: 627 of 667 ledger lines were self-produced recalls, the hottest row was recalled
+> 152 times against 8 real engagements, and a genuinely corrected memory had its bad rate diluted to 1%. Now
+> `uses` counts **engagement** only (reads + verdicts) and recall is reported separately as **exposure**.
 
 Three more behaviours: **decision repair** — an area corrected repeatedly in the last 7 days (≥2 corrections,
 bad rate ≥30%) is forced into the NEXT step's recall even without a lexical hit, marked "read this before
 acting"; **3s foreground budget** — the whole attempt has an absolute deadline, and a timeout injects
 *nothing* (no partial recall, no added latency); config may shorten but never extend it; **recall preview** —
 `GET /api/memory-org/recall-preview?q=…` runs the same pipeline and explains each row (name hits / lexical
-score / usage signals) with its fused score, so recall quality is debuggable instead of guessed at.
+score / usage signals) with its final score, so recall quality is debuggable instead of guessed at.
 
 Once per batch per session, a failure there never affects the step, and files the user already cited are not
 re-injected. The panel's `/search` and `memory_search` share the same ranker.
@@ -205,18 +217,25 @@ recorded. Signals land in `<memory-root>/.usage.jsonl` (a dot-file: no zone list
 
 | Signal | Source | Meaning |
 |---|---|---|
-| `recall` | logged by `agent/pre-step` injection | demand side: this memory really reached the model |
-| `read` | logged when `memory_read` opens a specific file | demand side: the model went to look |
+| `recall` | logged by `agent/pre-step` injection | **exposure**, not use: the plugin put it in front of the model |
+| `read` | logged when `memory_read` opens a specific file | **engagement**: the model went to look |
 | `correction` | model calls `memory_usage(record, kind=correction)` | quality side: the user corrected/rejected it |
 | `positive` | model calls `memory_usage(record, kind=positive)` | quality side: explicit confirmation ("that's it") |
+
+**A `recall` counts as exposure, never as a use**: recall is the plugin's own action, and treating it as
+"used" would let the plugin prove its own value with its own output. `memory_usage(report)` therefore shows
+two columns — **engagement** (reads + verdicts) and **exposure** (recall injections) — and layer suggestions
+plus heat read engagement only. The correction rate's denominator excludes recall too
+(`corrections / (reads + corrections)`); otherwise a memory that is injected a lot and corrected occasionally
+has its rate diluted to single digits and never trips any check.
 
 `memory_usage(action=report)` aggregates and suggests a layer — the "let the data sort it" idea, deliberately
 reduced to **advice, never automatic file moves**:
 
-- **experiment**: fewer than 3 uses
-- **specialist**: ≥3 uses and at least one confirmation
-- **general**: ≥10 uses, ≥2 confirmations, correction rate under 20%
-- correction rate over 40% with ≥3 uses → rebuild before appending; lint **R18** reports the breaker
+- **experiment**: fewer than 3 engagements
+- **specialist**: ≥3 engagements and at least one confirmation
+- **general**: ≥10 engagements, ≥2 confirmations, correction rate under 20%
+- correction rate over 40% with ≥3 corrections → rebuild before appending; lint **R18** reports the breaker
 - **verdict flips**: how often a memory goes back and forth between confirmation and correction.
   Two or more flips means the conclusion itself is unstable (not occasional bad luck) — the report names it:
   "settle which verdict holds, then decide which version to keep". It covers what the correction rate cannot:

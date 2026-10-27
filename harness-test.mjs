@@ -241,6 +241,30 @@ const badUsage = new Map([
 ]);
 const demoted = mod.matchIndexRows(fusionIndex, mod.tokensOf('逐帧 渲染'), 3, badUsage);
 ok(demoted[0]?.href === 'functions/冷门域.md', `high correction rate demotes a hot row (${demoted[0]?.href})`);
+// SELF-REFERENCE FIX (2026-10-27): recall exposure is NOT use. A row pushed at
+// the model 150 times without a single engagement must not outrank one that was
+// actually read — otherwise the plugin's own injections manufacture the
+// popularity that decides what it injects next (the loop that grew the insight
+// layer to 26 entries with 13 of them invisible).
+const exposureOnly = new Map([
+	['functions/冷门域.md', { uses: 0, exposure: 150, positives: 0, badRate: 0 }],
+	['functions/热门域.md', { uses: 4, exposure: 4, positives: 1, badRate: 0 }],
+]);
+const exposureRanked = mod.matchIndexRows(fusionIndex, mod.tokensOf('逐帧 渲染'), 3, exposureOnly);
+ok(exposureRanked[0]?.href === 'functions/热门域.md', `engagement beats pure recall exposure (${exposureRanked[0]?.href})`);
+// The usage signal is a TIE-BREAKER, never a second opinion: with a decisive
+// lexical gap, the more-engaged row must not displace the better match.
+// NOTE the fixture must produce an ACTUAL lexical gap — two rows that both match
+// every query token score identically, and breaking that tie by usage is exactly
+// what the fusion is FOR. The gap here comes from name tokens: 「精确域」matches
+// 逐帧/渲染 in both cells, 「沾边域」matches only in its summary.
+const wideIndex = [
+	'| 逐帧渲染域 | 逐帧 渲染 | [functions/逐帧渲染域.md](functions/逐帧渲染域.md) |',
+	'| 沾边域 | 逐帧 渲染 之外还有一大堆无关词 面板 记忆 索引 折叠 迁移 | [functions/沾边域.md](functions/沾边域.md) |',
+].join('\n');
+const decisive = new Map([['functions/沾边域.md', { uses: 99, exposure: 99, positives: 10, badRate: 0 }]]);
+const decisiveRanked = mod.matchIndexRows(wideIndex, mod.tokensOf('逐帧 渲染'), 3, decisive);
+ok(decisiveRanked[0]?.href === 'functions/逐帧渲染域.md', `a decisive lexical match survives the usage tie-breaker (${decisiveRanked[0]?.href})`);
 
 // 3f) Insight trust (Hindsight borrow): a principle is a belief that carries
 // proof counts, computed from the SAME usage evidence the panel and R18 use —
@@ -772,6 +796,27 @@ const target = rep.items.find((i) => i.href === 'functions/检索目标.md');
 ok(target && target.corrections >= 1 && target.positives >= 1, `usage report aggregates correction/positive (${target?.corrections}/${target?.positives})`);
 ok(target.layer === '专项' || target.layer === '实验', `layer suggestion present (${target?.layer})`);
 ok(rep.items.some((i) => i.href.startsWith('functions/')), 'report lists function targets');
+// FLIPS must mean "one conclusion overturned", not "one file collected verdicts
+// about different subjects". Real root case: three verdicts about three unrelated
+// matters (duplicate-row cleanup / then capability-ledger semantics) were reported
+// as 结论被反复推翻（翻转 2 次）. Notes that share content = same subject (flip);
+// notes about different matters = not a flip.
+for (const [kind, note] of [
+	['correction', '能力台账把插件自身脚本登记进去了'],
+	['positive', '这次对了'],
+	['correction', '另一件事：召回排序有问题'],
+]) {
+	await US.execute({ action: 'record', href: 'functions/多主题域.md', kind, note }, exec);
+}
+const repMulti = await US.execute({ action: 'report', days: 30 }, exec);
+const multiItem = repMulti.items.find((i) => i.href === 'functions/多主题域.md');
+ok(multiItem?.flips === 0, `verdicts about DIFFERENT subjects do not count as flips (flips=${multiItem?.flips})`);
+// Narrow to the FLIP warning: this fixture also trips the correction-rate warning
+// (2 corrections / 3 engagements), which is a different and correct complaint.
+ok(
+	!repMulti.warnings.some((w) => w.includes('多主题域') && w.includes('反复推翻')),
+	'a file with unrelated corrections is not named as an unstable conclusion',
+);
 // circuit breaker: 3 corrections with few uses trips R18
 await US.execute({ action: 'record', href: 'functions/熔断域.md', kind: 'correction' }, exec);
 await US.execute({ action: 'record', href: 'functions/熔断域.md', kind: 'correction' }, exec);
@@ -938,6 +983,131 @@ ok(!cCap.results.some((r) => r.message.includes('ffmpeg') && r.level === 'FAIL')
 	ok(!cSec2.results.some((r) => r.rule === 'R21' && r.level === 'FAIL' && r.message.includes('防线测试')), 'fenced credential example is not a leak');
 }
 
+// 22b) R5 orphan + R23 insight budget — the RETIREMENT side of the layered flow.
+// Every other zone could shrink (functions/ folds, skills retire, the index caps);
+// insights/ could only grow, and an unindexed file is invisible to recall. Both
+// holes were measured on a real root: 13 of 26 insight files unindexed while
+// memory_check reported 0 WARN. Each case below is a hand-written OLD-generation
+// artifact (a file on disk, a ledger line) — not something the tools just wrote.
+{
+	const orphanRoot = await mkdtemp(path.join(tmpdir(), 'dsh-orphan-'));
+	await mkdir(path.join(orphanRoot, 'functions'), { recursive: true });
+	await mkdir(path.join(orphanRoot, 'insights'), { recursive: true });
+	await mkdir(path.join(orphanRoot, 'capabilities'), { recursive: true });
+	// The index names ONE function row (2-column, link baked into the name cell)
+	// and one insight row; everything else on disk is deliberately unindexed.
+	await writeFile(
+		path.join(orphanRoot, 'MEMORY.md'),
+		[
+			'# 索引', '', '## 功能模块索引（functions/）', '',
+			'| 功能域 | 一句话状态 / 待验证 |', '|---|---|',
+			'| [已索引功能](functions/已索引功能.md) | 进了索引 |',
+			'', '## 创新优化思想索引（insights/）', '',
+			'| 思想主题 | 一句话内涵 / 解决的权衡 |', '|---|---|',
+			'| [已索引思想](insights/已索引思想.md) | 进了索引 |',
+			'', '## 决策共识 / 规范', '', '- ', '',
+		].join('\n'),
+		'utf8',
+	);
+	const fnHead = (d) => `# 测试\n\n## 当前状态摘要（截至 ${d}）\n\n- 状态\n\n---\n\n## [${d}] 块\n\n- **概括**：一块\n`;
+	await writeFile(path.join(orphanRoot, 'functions', '已索引功能.md'), fnHead('2026-10-20'), 'utf8');
+	await writeFile(path.join(orphanRoot, 'functions', '未索引功能.md'), fnHead('2026-10-20'), 'utf8');
+	await writeFile(
+		path.join(orphanRoot, 'insights', '已索引思想.md'),
+		'# 思想\n\n> 来源：[functions/已索引功能.md](../functions/已索引功能.md)\n\n## 核心原则\n\n- 一条原则。\n',
+		'utf8',
+	);
+	await writeFile(
+		path.join(orphanRoot, 'insights', '未索引思想.md'),
+		'# 思想\n\n> 来源：[functions/已索引功能.md](../functions/已索引功能.md)\n\n## 核心原则\n\n- 一条原则。\n',
+		'utf8',
+	);
+	// A third principle so the count-budget branch (3 > 2) can fire independently
+	// of the single-source branch.
+	await writeFile(
+		path.join(orphanRoot, 'insights', '第三条思想.md'),
+		'# 思想\n\n> 来源：[functions/已索引功能.md](../functions/已索引功能.md)、[functions/未索引功能.md](../functions/未索引功能.md)\n\n## 核心原则\n\n- 一条跨域原则。\n',
+		'utf8',
+	);
+	await writeFile(path.join(orphanRoot, 'capabilities', '未索引能力.md'), '# 能力\n\n- 一句话\n', 'utf8');
+	const oh = await mod.runHealthCheck(orphanRoot, { ...mod.DEFAULTS, newFeatureGraceDays: 0 });
+	const orphanMsgs = oh.results.filter((r) => r.rule === 'R5' && r.message.includes('没有索引行'));
+	ok(orphanMsgs.length === 1, `R5-orphan fires once for the batch (${oh.results.filter((r) => r.rule === 'R5').length} R5)`);
+	const om = orphanMsgs[0]?.message ?? '';
+	ok(om.includes('insights/未索引思想.md') && om.includes('functions/未索引功能.md') && om.includes('capabilities/未索引能力.md'), 'R5-orphan names every unindexed file across the three zones');
+	ok(!om.includes('insights/已索引思想.md') && !om.includes('functions/已索引功能.md'), 'R5-orphan leaves indexed files alone');
+
+	// A superseded principle must NOT be pushed into the index: indexing it would
+	// inject an overturned principle into recall as if it were live. Its absence
+	// is correct, so R5-orphan has to skip it (R23 excludes it from the budget
+	// for the same reason).
+	await writeFile(
+		path.join(orphanRoot, 'insights', '已取代未索引.md'),
+		'# 思想\n\n> ⚠️ 已被取代 → [第三条思想.md](第三条思想.md)（2026-10-20）。以下内容保留作为决策历史。\n\n> 来源：[functions/已索引功能.md](../functions/已索引功能.md)\n\n## 核心原则\n\n- 旧原则。\n',
+		'utf8',
+	);
+	const withSup = await mod.runHealthCheck(orphanRoot, { ...mod.DEFAULTS, newFeatureGraceDays: 0 });
+	const supMsg = withSup.results.find((r) => r.rule === 'R5' && r.message.includes('没有索引行'))?.message ?? '';
+	ok(!supMsg.includes('已取代未索引'), 'R5-orphan does not demand an index row for a superseded principle');
+	await rm(path.join(orphanRoot, 'insights', '已取代未索引.md'), { force: true });
+
+	// R23 (a) count over budget: 3 live files > 2 with a lowered cap.
+	const tiny = await mod.runHealthCheck(orphanRoot, { ...mod.DEFAULTS, newFeatureGraceDays: 0, insightBudget: { maxInsights: 2, maxSingleSourceShare: 0.6, minLedgerMisses: 3 } });
+	ok(tiny.results.some((r) => r.rule === 'R23' && r.message.includes('条 > 预算')), 'R23 flags the insight count over budget');
+
+	// R23 (b) single-source share: 2 of 3 insights cite ONE area -> 67% > 60%,
+	// while the third cites two — the share is a ratio, not a per-file verdict.
+	ok(
+		tiny.results.some((r) => r.rule === 'R23' && r.message.includes('2/3 条只有 1 个来源域')),
+		`R23 flags a single-source majority by ratio (${tiny.results.filter((r) => r.rule === 'R23').length} R23)`,
+	);
+
+	// R23 must NOT count a superseded principle: the stamp is decision history,
+	// and if it consumed the budget then `supersedes` could never bring the layer
+	// back under the cap — the one operation this check exists to enable.
+	await writeFile(
+		path.join(orphanRoot, 'insights', '已取代思想.md'),
+		'# 思想\n\n> ⚠️ 已被取代 → [第三条思想.md](第三条思想.md)（2026-10-20）。以下内容保留作为决策历史。\n\n> 来源：[functions/已索引功能.md](../functions/已索引功能.md)\n\n## 核心原则\n\n- 旧原则。\n',
+		'utf8',
+	);
+	const withSuperseded = await mod.runHealthCheck(orphanRoot, { ...mod.DEFAULTS, newFeatureGraceDays: 0, insightBudget: { maxInsights: 3, maxSingleSourceShare: 0.6, minLedgerMisses: 3 } });
+	ok(
+		!withSuperseded.results.some((r) => r.rule === 'R23' && r.message.includes('条 > 预算')),
+		'a superseded principle does not consume the count budget',
+	);
+	await rm(path.join(orphanRoot, 'insights', '已取代思想.md'), { force: true });
+
+	// R23 (c) dangling ledger hrefs: the ledger is the ONLY record of corrections
+	// and confirmations, so a href whose file is gone loses that evidence silently.
+	await writeFile(
+		path.join(orphanRoot, '.usage.jsonl'),
+		[
+			JSON.stringify({ t: '2026-10-20T00:00:00.000Z', href: 'insights/已索引思想.md', kind: 'recall' }),
+			JSON.stringify({ t: '2026-10-20T00:00:01.000Z', href: 'insights/改名前的思想.md', kind: 'correction' }),
+			JSON.stringify({ t: '2026-10-20T00:00:02.000Z', href: 'insights/删除的思想.md', kind: 'positive' }),
+			JSON.stringify({ t: '2026-10-20T00:00:03.000Z', href: 'functions/也不存在了.md', kind: 'recall' }),
+			// Skill bundles live OUTSIDE the root: their absence is R20e's business,
+			// never a dangling ledger href here.
+			JSON.stringify({ t: '2026-10-20T00:00:04.000Z', href: 'skills/some-bundle/SKILL.md', kind: 'recall' }),
+		].join('\n') + '\n',
+		'utf8',
+	);
+	const lh = await mod.runHealthCheck(orphanRoot, { ...mod.DEFAULTS, newFeatureGraceDays: 0 });
+	const ledgerMsg = lh.results.find((r) => r.rule === 'R23' && r.message.includes('.usage.jsonl'));
+	ok(Boolean(ledgerMsg), 'R23 flags dangling ledger hrefs');
+	ok(ledgerMsg.message.includes('3 个') && ledgerMsg.message.includes('改名前的思想'), `R23 counts only root-zone misses (${ledgerMsg?.message.slice(0, 60)})`);
+	ok(!ledgerMsg.message.includes('some-bundle'), 'R23 never reports a skill bundle as a dangling ledger href');
+	// Below the noise floor: a single miss is a rename in progress, not a defect.
+	await writeFile(
+		path.join(orphanRoot, '.usage.jsonl'),
+		JSON.stringify({ t: '2026-10-20T00:00:01.000Z', href: 'insights/改名前的思想.md', kind: 'correction' }) + '\n',
+		'utf8',
+	);
+	const oneMiss = await mod.runHealthCheck(orphanRoot, { ...mod.DEFAULTS, newFeatureGraceDays: 0 });
+	ok(!oneMiss.results.some((r) => r.rule === 'R23' && r.message.includes('.usage.jsonl')), 'R23 stays silent under minLedgerMisses');
+	await rm(orphanRoot, { recursive: true, force: true });
+}
+
 // 23) memory_skill — the crystallization layer (MemOS-borrowed, file-discipline
 // adapted): nomination is mechanical over the usage ledger, crystallization is
 // the model's judgement, and the lifecycle candidate→active→retired decides what
@@ -947,12 +1117,20 @@ ok(!cCap.results.some((r) => r.message.includes('ffmpeg') && r.level === 'FAIL')
 // source that exists (else R10 dangles), and the same slug as the nominated
 // href is what proves de-nomination is keyed on the EVIDENCE, not the name.
 await T.memory_write.execute({ feature: '分离延迟重启', title: '建立被提名域', summary: '反复重跑的操作，等待结晶', result: 'done' }, exec);
-for (let i = 0; i < 8; i++) await US.execute({ action: 'record', href: 'functions/分离延迟重启.md', kind: i < 2 ? 'positive' : 'recall' }, exec);
+// NOMINATION COUNTS ENGAGEMENT, NOT EXPOSURE (2026-10-27): this fixture used to
+// reach the >=6 use floor with recalls alone — i.e. the plugin could nominate a
+// procedure for crystallization purely by having injected it, without the model
+// ever opening it. Reads + verdicts are what a "repeatedly re-run procedure"
+// actually looks like.
+for (let i = 0; i < 6; i++) await US.execute({ action: 'record', href: 'functions/分离延迟重启.md', kind: i < 2 ? 'positive' : 'read' }, exec);
+// Exposure with no engagement must NOT nominate, however large it gets.
+for (let i = 0; i < 20; i++) await US.execute({ action: 'record', href: 'functions/只被召回域.md', kind: 'recall' }, exec);
 for (let i = 0; i < 4; i++) await US.execute({ action: 'record', href: 'functions/弱信号域.md', kind: 'recall' }, exec);
 await US.execute({ action: 'record', href: 'functions/弱信号域.md', kind: 'correction' }, exec);
 const sk1 = await T.memory_skill.execute({ action: 'candidates' }, exec);
-ok(sk1.candidates.some((c) => c.href === 'functions/分离延迟重启.md' && c.uses >= 6 && c.positives >= 1), `nomination lists a high-usage confirmed area (${sk1.candidates.length})`);
+ok(sk1.candidates.some((c) => c.href === 'functions/分离延迟重启.md' && c.uses >= 6 && c.positives >= 1), `nomination lists a high-engagement confirmed area (${sk1.candidates.length})`);
 ok(!sk1.candidates.some((c) => c.href === 'functions/弱信号域.md'), 'nomination skips low-usage / corrected areas');
+ok(!sk1.candidates.some((c) => c.href === 'functions/只被召回域.md'), 'nomination ignores pure recall exposure (the self-reference fix)');
 const skCry = await T.memory_skill.execute(
 	{
 		action: 'crystallize',
