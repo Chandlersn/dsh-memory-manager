@@ -110,3 +110,9 @@ export const CONSENSUS_HEADING = '## 决策共识 / 规范';
 //                        not: the ledger is the ONLY place corrections and
 //                        confirmations are recorded)
 export const INSIGHT_BUDGET = { maxInsights: 24, maxSingleSourceShare: 0.6, minLedgerMisses: 3 };
+
+// R25: how many evidence-bearing files may vanish before the check speaks. One
+// disappearance is a rename in progress (the ledger gets rewritten by hand); a
+// batch is either a deliberate consolidation or an accident — and both deserve a
+// sentence in the report, because the health check cannot tell them apart.
+export const VANISHED_FILES_WARN = 3;

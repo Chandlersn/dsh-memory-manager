@@ -61,7 +61,7 @@ import {
 	SKILL_TABLE_HEADING, SKILL_TABLE_HEADER, SKILL_NOMINATE, CAP_DIR, FED_TABLE_HEADING,
 	FED_TABLE_HEADER, FED_CONSENSUS_HEADING, DAILY_SECTION, DAILY_OPEN_SECTION, RESULT_LABEL,
 	GUARD_MARK, GUARD_LINE, MAX_BLOCK_CHARS, MAX_ROW_SUMMARY_CHARS, MAX_PRINCIPLE_CHARS,
-	MAX_CONSENSUS_CHARS, CONSENSUS_HEADING, LEGACY_TABLE_HEADERS, INSIGHT_BUDGET,
+	MAX_CONSENSUS_CHARS, CONSENSUS_HEADING, LEGACY_TABLE_HEADERS, INSIGHT_BUDGET, VANISHED_FILES_WARN,
 } from './src/constants.js';
 
 // ---------------------------------------------------------------------------
@@ -776,6 +776,46 @@ async function runHealthCheck(root, opts) {
 		}
 	} catch {
 		/* budget checks are best-effort */
+	}
+
+	// R25 (2026-10-28): 一次删掉很多记忆文件时，必须有人说话。
+	// 起因是真实事故：一次「思想层收敛」删掉 24 个文件（insights 25→4、dao 3→0），
+	// 而 memory_check 只报了一条不相干的 R14 —— 删除本身零告警。那次是**有意的**
+	// 且内容确实并回了 functions/，但体检无从分辨「有意收敛」与「误删/覆盖」：
+	// 两者的表现完全一样。这条不阻止删除（收敛是正当操作），只要求留下可核对的痕迹。
+	//
+	// 判据是「台账里存在过、现在不在」：删文件前它必然被读过或召回记过账。
+	// 已存在的 24 个删除样本里，有证据的占绝大多数；剩下一两个从未被碰过的文件
+	// 漏报可以接受——噪声下限比误报阈值更重要。
+	try {
+		const rawAll = await readIfExists(usagePath(root));
+		if (rawAll) {
+			const seen = new Set();
+			for (const line of rawAll.split('\n')) {
+				const s = line.trim();
+				if (!s) continue;
+				try {
+					const e = JSON.parse(s);
+					const h = canonicalHref(String(e.href ?? '').trim());
+					if (/^(functions|insights|capabilities|dao)\/[^/]+\.md$/.test(h)) seen.add(h);
+				} catch {
+					/* skip corrupt line */
+				}
+			}
+			const vanished = [];
+			for (const h of seen) if (!(await statExists(path.join(root, h)))) vanished.push(h);
+			// 台账里的 href 若被人工重定向过（收敛时做过），这里就看不到删除；
+			// 那是正确的——证据已归到现存条目，不算消失。
+			if (vanished.length >= VANISHED_FILES_WARN) {
+				add(
+					'WARN',
+					'R25',
+					`有 ${vanished.length} 个曾经有使用证据的记忆文件不见了（${vanished.slice(0, 4).join('、')}${vanished.length > 4 ? ' 等' : ''}）：若是有意收敛，确认它们的结论已写进现存文件（functions/ 迭代块或更上层）；若是误删/覆盖，现在恢复还来得及（记忆根有 git）`,
+				);
+			}
+		}
+	} catch {
+		/* 删除检测是增强检查，失败不影响其余体检 */
 	}
 
 	// R24 (2026-10-27): the 道 layer's own integrity + extraction prompt.

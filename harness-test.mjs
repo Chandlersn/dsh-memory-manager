@@ -1192,6 +1192,36 @@ ok(!cCap.results.some((r) => r.message.includes('ffmpeg') && r.level === 'FAIL')
 	ok(cHead.results.some((r) => r.rule === 'R24' && r.message.includes('无标题之道')), 'R24 flags a dao without a 命题 section (the check used to skip it silently)');
 }
 
+// 22e) R25: a batch of evidence-bearing files disappearing must be reported.
+// Real incident (2026-10-27): a deliberate "insight layer consolidation" deleted
+// 24 files (insights 25→4, dao 3→0) and memory_check reported only an unrelated
+// R14 — the deletion itself was silent. Deliberate or accidental, the health
+// check cannot tell them apart, so it must at least say something.
+{
+	const vanishRoot = await mkdtemp(path.join(tmpdir(), 'dsh-r25-'));
+	await mkdir(path.join(vanishRoot, 'functions'), { recursive: true });
+	await mkdir(path.join(vanishRoot, 'insights'), { recursive: true });
+	await writeFile(path.join(vanishRoot, 'MEMORY.md'), ['# 索引', '', '## 功能模块索引（functions/）', '', '| 功能域 | 一句话状态 |', '|---|---|', '| [保留域](functions/保留域.md) | 留着 |', ''].join('\n'), 'utf8');
+	await writeFile(path.join(vanishRoot, 'functions', '保留域.md'), '# 保留域\n\n## 当前状态摘要（截至 2026-10-27）\n\n- 状态\n', 'utf8');
+	// Ledger records evidence for four files; all four exist right now.
+	const names = ['消失一', '消失二', '消失三', '消失四'];
+	for (const n of names) await writeFile(path.join(vanishRoot, 'functions', `${n}.md`), `# ${n}\n\n## 当前状态摘要（截至 2026-10-27）\n\n- 状态\n`, 'utf8');
+	const ledger = ['保留域', ...names].map((n, i) => JSON.stringify({ t: `2026-10-2${i}T00:00:00.000Z`, href: `functions/${n}.md`, kind: 'read' }));
+	await writeFile(path.join(vanishRoot, '.usage.jsonl'), ledger.join('\n') + '\n', 'utf8');
+	const before = await mod.runHealthCheck(vanishRoot, { ...mod.DEFAULTS, newFeatureGraceDays: 0 });
+	ok(!before.results.some((r) => r.rule === 'R25'), 'R25 silent when the evidence files still exist');
+	// Now "consolidate": the four files are gone, the ledger still remembers them.
+	for (const n of names) await rm(path.join(vanishRoot, 'functions', `${n}.md`), { force: true });
+	const r25 = await mod.runHealthCheck(vanishRoot, { ...mod.DEFAULTS, newFeatureGraceDays: 0 });
+	ok(r25.results.some((r) => r.rule === 'R25' && r.message.includes('消失一')), 'R25 flags evidence-bearing files that vanished');
+	// Rewriting the ledger to point at the survivor is the CORRECT consolidation
+	// (evidence moved, nothing lost) — and then the check must fall silent.
+	await writeFile(path.join(vanishRoot, '.usage.jsonl'), ledger.map((l) => l.replace(/functions\/消失[一二三四]\.md/g, 'functions/保留域.md')).join('\n') + '\n', 'utf8');
+	const after = await mod.runHealthCheck(vanishRoot, { ...mod.DEFAULTS, newFeatureGraceDays: 0 });
+	ok(!after.results.some((r) => r.rule === 'R25'), 'R25 clears once the ledger is redirected to the surviving file');
+	await rm(vanishRoot, { recursive: true, force: true });
+}
+
 // 23) memory_skill — the crystallization layer (MemOS-borrowed, file-discipline
 // adapted): nomination is mechanical over the usage ledger, crystallization is
 // the model's judgement, and the lifecycle candidate→active→retired decides what
