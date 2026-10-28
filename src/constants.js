@@ -97,7 +97,9 @@ export const ZONE_ALT = FILE_ZONES.join('|');
 export const SEARCH_ZONES = [...FILE_ZONES, 'daily'];
 
 export const DAO_DIR = 'dao';
-export const DAO_TABLE_HEADING = '## 道层（最抽象的指导思想）';
+// （DAO_TABLE_HEADING 已删除：道层小节的括号部分在不同记忆里写法不同——
+// （最抽象的指导思想）/（`dao/`），真实判据是 `^##\s*道层` 词干匹配；一个
+// 从不与真实标题相等的完整常量只会制造「startsWith 静默失效」的同型 bug。）
 
 // federation (three-tier mode): project truth sources -> federation layer -> global
 export const FED_TABLE_HEADING = '## 项目索引（联邦层）';

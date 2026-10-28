@@ -62,7 +62,7 @@ import {
 	FED_TABLE_HEADER, FED_CONSENSUS_HEADING, DAILY_SECTION, DAILY_OPEN_SECTION, RESULT_LABEL,
 	GUARD_MARK, GUARD_LINE, MAX_BLOCK_CHARS, MAX_ROW_SUMMARY_CHARS, MAX_PRINCIPLE_CHARS,
 	MAX_CONSENSUS_CHARS, CONSENSUS_HEADING, LEGACY_TABLE_HEADERS, INSIGHT_BUDGET, VANISHED_FILES_WARN,
-	MEMORY_ZONES, FILE_ZONES, INDEXED_ZONES, ZONE_ALT, SEARCH_ZONES, DAO_DIR, DAO_TABLE_HEADING,
+	MEMORY_ZONES, FILE_ZONES, INDEXED_ZONES, ZONE_ALT, SEARCH_ZONES, DAO_DIR,
 } from './src/constants.js';
 
 // Derived zone matchers — built ONCE from MEMORY_ZONES so a new layer cannot be
@@ -384,10 +384,11 @@ async function runHealthCheck(root, opts) {
 			if (line.startsWith(INSIGHT_TABLE_HEADING)) return 'insights';
 			if (line.startsWith(CAP_TABLE_HEADING)) return 'capabilities';
 			// The dao layer's own section: rows here are `- **名**（[正文](dao/x.md)）`
-			// bullets rather than table rows, but its HREFS still count as "indexed"
-			// (handled by the generic href scan below), and naming it keeps a future
-			// dao table from silently landing in no zone at all.
-			if (line.startsWith(DAO_TABLE_HEADING)) return 'dao';
+			// bullets rather than table rows, and their HREFS count as "indexed"
+			// (the bullet scan below). The heading's parenthetical differs across
+			// roots (（最抽象的指导思想） / （`dao/`）), so match the stem, not the
+			// full constant — a strict startsWith silently un-recognizes a real root.
+			if (/^##\s*道层/.test(line)) return 'dao';
 			return null;
 		};
 		let currentZone = null;
@@ -395,6 +396,16 @@ async function runHealthCheck(root, opts) {
 			const s = raw.trim();
 			if (s.startsWith('## ')) {
 				currentZone = zoneOfHeading(s);
+				continue;
+			}
+			// The dao section registers its entries as BULLETS (`- **名**（[正文]
+			// (dao/x.md)）`) — and both bullet spellings occur in real roots. An href
+			// on any line of a zone's section counts as indexed for that zone: the
+			// old table-only scan contradicted R24 and the panel (a hand-registered
+			// 道 read as "never indexed" and got demanded an index row that the dao
+			// table does not have).
+			if (currentZone === 'dao') {
+				for (const m of s.matchAll(/\((dao\/[^)\s]+\.md)\)/g)) indexedHrefs.add(m[1]);
 				continue;
 			}
 			// `### 索引·<域>` sub-tables inherit the enclosing zone.
@@ -3478,7 +3489,12 @@ function memoryIndexTool(opts) {
 		description:
 			'Upsert ONE row into the MEMORY.md index (the integration layer). Call it when a feature area or insight theme has STABILIZED (>=2 iteration blocks, or clearly a standalone topic) — not per write. The row summary is distilled from the area\'s iteration-block summaries: one sentence saying what this feature IS. Zones: zone=functions or zone=insights. Unindexed-but-existing files are surfaced by memory_check (R5 orphan) so nothing silently falls out of the index.',
 		parameters: {
-			zone: { type: 'string', required: true, enum: [...INDEXED_ZONES], description: '收进哪张索引表。' },
+			// The tool's execute body only routes functions/insights to their table
+			// (a ternary, twice). Enumerating more zones here would make the SCHEMA
+			// promise what the implementation does not: passing `dao` silently wrote a
+			// functions-style table row under the wrong heading. 道层 rows are hand
+			// bullets and are validated by R24 / R5 instead; keep the enum honest.
+			zone: { type: 'string', required: true, enum: ['functions', 'insights'], description: '收进哪张索引表。' },
 			name: { type: 'string', required: true, description: '功能域或思想主题 slug（functions/ 或 insights/ 下的既有文件名，不含 .md）。' },
 			summary: { type: 'string', required: true, description: '索引行摘要：一句话（≤60 字）说清"这是什么/解决什么"，供检索时判断相关性；从各迭代块的概括中提炼，不复制细节。' },
 			group: { type: 'string', description: '可选：功能表已按 `### 索引·<域>` 分组时，指定这一行落到哪个子分区（如「基础设施」「业务功能」）；缺省写入无标题的总表。' },

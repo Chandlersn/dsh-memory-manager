@@ -1163,6 +1163,28 @@ ok(!cCap.results.some((r) => r.message.includes('ffmpeg') && r.level === 'FAIL')
 	await rm(daoRoot, { recursive: true, force: true });
 }
 
+// 22c2) R5 and R24 must agree on what "the dao is registered" MEANS. The dao
+// section registers its entries as bullets, and BOTH spellings occur in real
+// roots; the heading's parenthetical also differs across roots. The table-only
+// href scan said "never indexed" while R24/the panel said "right there" — two
+// answers to one question.
+for (const [form, bullet] of [
+	['bold+正文 link', '- **被登记的道** — 命题是一句话（[正文](dao/被登记的道.md)）'],
+	['link form (old gen)', '- **[被登记的道](dao/被登记的道.md)** — 命题是一句话（5 条法）'],
+]) {
+	const daoIdx = await mkdtemp(path.join(tmpdir(), 'dsh-r5dao-'));
+	await mkdir(path.join(daoIdx, 'dao'), { recursive: true });
+	await writeFile(
+		path.join(daoIdx, 'dao', '被登记的道.md'),
+		'# 道\n\n> 性质：道层。\n\n## 命题\n\n命题是一句话\n\n## 来源法\n\n- [a](../insights/a.md)\n- [b](../insights/b.md)\n- [c](../insights/c.md)\n- [d](../insights/d.md)\n- [e](../insights/e.md)\n',
+		'utf8',
+	);
+	await writeFile(path.join(daoIdx, 'MEMORY.md'), ['# 索引', '', '## 道层（`dao/`）', '', bullet, '', '## 决策共识 / 规范', '', '- x', ''].join('\n'), 'utf8');
+	const h = await mod.runHealthCheck(daoIdx, { ...mod.DEFAULTS, newFeatureGraceDays: 0 });
+	ok(!h.results.some((r) => r.rule === 'R5' && r.message.includes('被登记的道')), `R5 accepts a bullet-registered dao (${form})`);
+	await rm(daoIdx, { recursive: true, force: true });
+}
+
 // 22d) memory_dao 的**写入路径**：此前 execute 从未被任何测试调用过——重复来源能凑数、
 // 上限口径与 R24 不一致、description 承诺写 MEMORY.md 却不写，三者都因此长期无人发现。
 {

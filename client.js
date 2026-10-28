@@ -263,11 +263,28 @@ window.__ModuleLoader__.load({
 					zone = hit ? hit[1] : null;
 					continue;
 				}
-				// dao rows are `- **名**（[正文](dao/x.md)）` bullets, not table rows.
+				// dao rows are bullets, not table rows — and BOTH spellings occur in
+				// real roots: `- **[名](dao/名.md)** — 命题` (the older index generation)
+				// and `- **名** — 命题（[正文](dao/名.md)）` (memory_dao-era guidance).
+				// Key by whatever `dao/<slug>.md` links exist on the line, so the
+				// lookup slug always matches the zone list's file name; the old
+				// bold-text-first pattern keyed link-form rows under the RAW markdown
+				// text — present but never found, an empty zone list again.
 				if (zone === 'dao') {
-					const bm = /^-\s*\*\*([^*]+)\*\*/.exec(line);
-					const bh = /\(([^)\s]+\.md)\)/.exec(line);
-					if (bm && bh) out.dao[bm[1].trim()] = { summary: plain(line.replace(/^-\s*/, '')), href: bh[1] };
+					if (!line.startsWith('-')) continue;
+					const links = [...line.matchAll(/\[[^\]]+\]\((dao\/[^)\s]+\.md)\)/g)];
+					const summary = plain(line.replace(/^-\s*/, ''));
+					if (links.length) {
+						// Key by the FILE name in the href — that is what the zone list
+						// reports and what summaryOf() looks up by.
+						for (const [, href] of links) {
+							const slug = href.split('/').pop().replace(/\.md$/, '');
+							out.dao[slug] = { summary, href };
+						}
+					} else {
+						const bold = /^-\s*\*\*([^*]+)\*\*/.exec(line);
+						if (bold) out.dao[bold[1].trim()] = { summary, href: `dao/${bold[1].trim()}.md` };
+					}
 					continue;
 				}
 				if (!zone || !line.startsWith('|')) continue;
