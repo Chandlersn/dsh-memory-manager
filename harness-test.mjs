@@ -1196,6 +1196,17 @@ ok(!cCap.results.some((r) => r.message.includes('ffmpeg') && r.level === 'FAIL')
 	ok(daoRead.found && String(daoRead.content).includes('事情总是不声不响地坏掉'), 'memory_read(kind=dao) reads the file');
 	const daoList = await T.memory_read.execute({ kind: 'dao' }, exec);
 	ok(daoList.listing.some((x) => x.name === '集成之道'), 'memory_read(kind=dao) lists the layer');
+	// 每个 kind 必须读**自己**的目录。旧实现的 kind→目录是嵌套三元、默认分支是
+	// capabilities/，于是新增 kind 会静默读到能力台账——找不到就报「记忆还是空的」。
+	const kindDirs = { function: 'functions', insight: 'insights', dao: 'dao', capability: 'capabilities' };
+	const wrongDir = [];
+	for (const [k, dir] of Object.entries(kindDirs)) {
+		const r = await T.memory_read.execute({ kind: k, name: '集成之道' }, exec);
+		const p = String(r.path ?? '').replace(/\\/g, '/');
+		if (r.found || p.includes(`/${dir}/`)) continue;
+		wrongDir.push(`${k}→${p}`);
+	}
+	ok(wrongDir.length === 0, `every memory_read kind resolves its OWN directory (${wrongDir.join(', ') || 'all correct'})`);
 	ok((await mod.zoneCounts(root, skillRoot)).dao >= 1, 'zoneCounts counts the dao layer (the rail badge used to miss it)');
 	const daoSearch = await T.memory_search.execute({ q: '不声不响', zone: 'dao' }, exec);
 	ok(daoSearch.hits.length >= 1 && daoSearch.hits.every((h) => h.zone === 'dao'), 'memory_search accepts zone=dao');
