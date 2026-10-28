@@ -453,6 +453,33 @@ ok(T.subTablesOf(capSection)[0].title === '能力台账 细节子目录（可用
 // all, instead of a headerless empty grid.
 ok(T.subTablesOf({ heading: '道层（最抽象的指导思想）', body: '- 一条\n- 两条' }).length === 0, 'a bullet-only section yields no table');
 
+// --- heading COLLISION: 道层（最抽象的指导思想）contains 「思想」 ---------------
+// The panel used `includes('思想')` to pick the insight section, so the dao
+// section — whose title literally contains 思想 — was parsed as insights and its
+// rows were silently dropped (no error, just an empty zone list). Substring
+// keyword matching breaks the moment two headings share a word; the fix is an
+// ordered exact-prefix table.
+const collisionIndex = [
+	'## 道层（最抽象的指导思想）', '',
+	'- **静默失效** — 失败多数不是做错了，而是做不成却不告诉你（[正文](dao/静默失效.md)）', '',
+	'## 创新优化思想索引（insights/）', '',
+	'| 思想主题 | 一句话内涵 |', '|---|---|',
+	'| [某思想](insights/某思想.md) | 内涵 |', '',
+].join('\n');
+const ct = T.parseIndexTables(collisionIndex);
+ok(Object.keys(ct.dao).length === 1 && ct.dao['静默失效'], `道层 is parsed as dao, not insights (dao=${Object.keys(ct.dao).join(',')})`);
+ok(ct.dao['静默失效'].href === 'dao/静默失效.md', 'a dao bullet keeps its target href');
+ok(ct.insights['某思想']?.summary === '内涵' && Object.keys(ct.insights).length === 1, `insight rows stay in insights (${Object.keys(ct.insights).join(',')})`);
+// defaultOpen must also treat the dao section as an index section (it contains
+// 思想, so the old substring rule matched it as an insight index — harmless there
+// but a sign the same bug class was copied around).
+{
+	const secs = [{ heading: '道层（最抽象的指导思想）' }, { heading: '细节指针' }];
+	const open = T.defaultOpen('index', secs, 'x'.repeat(5000));
+	ok(open[0] === true, 'the dao section starts expanded on the index page');
+	ok(open[1] === false, 'a non-index section stays collapsed');
+}
+
 // --- reader: insight + daily open every section ----------------------------
 const insRead = render({ kind: 'file', zone: 'insights', name: 'gamma.md' });
 ok(count(insRead, 'data-dmo="section"') === 4 && count(insRead, 'dmo-sec-body') === 4, 'insight sections all open (short file)');

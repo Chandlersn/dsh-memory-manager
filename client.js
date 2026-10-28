@@ -243,20 +243,31 @@ window.__ModuleLoader__.load({
 		 * insights / capabilities / skills.
 		 */
 		function parseIndexTables(text) {
-			const out = { functions: {}, insights: {}, capabilities: {}, skills: {} };
+			const out = { functions: {}, insights: {}, dao: {}, capabilities: {}, skills: {} };
 			let zone = null;
+			// 小节 → 分区，用**有序的精确前缀**判定，不用 `includes`。
+			// 起因：`## 道层（最抽象的指导思想）` 里含「思想」二字，被 `includes('思想')`
+			// 先命中，于是整节被当成 insights 解析——道层永远解析不出行，且失败得
+			// 无声无息（没有报错，只是空）。关键字子串判定在标题互相包含时必然出错。
+			const HEADING_ZONE = [
+				['功能模块', 'functions'],
+				['道层', 'dao'],
+				['创新优化思想', 'insights'],
+				['技能台账', 'skills'],
+				['能力台账', 'capabilities'],
+			];
 			for (const raw of String(text ?? '').split('\n')) {
 				const line = raw.trim();
 				if (line.startsWith('## ')) {
-					zone = line.includes('功能模块')
-						? 'functions'
-						: line.includes('思想')
-							? 'insights'
-							: line.includes('技能')
-								? 'skills'
-								: line.includes('能力')
-									? 'capabilities'
-									: null;
+					const hit = HEADING_ZONE.find(([kw]) => line.includes(kw));
+					zone = hit ? hit[1] : null;
+					continue;
+				}
+				// dao rows are `- **名**（[正文](dao/x.md)）` bullets, not table rows.
+				if (zone === 'dao') {
+					const bm = /^-\s*\*\*([^*]+)\*\*/.exec(line);
+					const bh = /\(([^)\s]+\.md)\)/.exec(line);
+					if (bm && bh) out.dao[bm[1].trim()] = { summary: plain(line.replace(/^-\s*/, '')), href: bh[1] };
 					continue;
 				}
 				if (!zone || !line.startsWith('|')) continue;
@@ -350,12 +361,16 @@ window.__ModuleLoader__.load({
 		}
 
 		/** Per-kind first-open policy: never dump 20KB of history on the reader. */
+		/** Index sections that start expanded: the tables, and the dao list. */
+		const INDEX_OPEN_RE = /^(功能模块索引|创新优化思想索引|道层|能力台账|技能台账)/;
 		function defaultOpen(kind, sections, text) {
 			const open = {};
 			const small = String(text ?? '').length < 4000;
 			sections.forEach((s, i) => {
 				if (kind === 'functions') open[i] = small || i === 0; // reversed: index 0 is the newest
-				else if (kind === 'index') open[i] = /功能模块|思想|能力|技能/.test(s.heading);
+				// 精确前缀而非关键字子串：道层标题含「思想」二字，子串匹配会把
+				// 「道层（最抽象的指导思想）」当成思想索引。
+				else if (kind === 'index') open[i] = INDEX_OPEN_RE.test(s.heading);
 				else open[i] = true;
 			});
 			return open;
@@ -831,7 +846,10 @@ window.__ModuleLoader__.load({
 		/** MEMORY.md navigation tables: each row opens its target file. */
 		function IndexTables({ text, onNavigate }) {
 			const { sections } = splitSections(text);
-			const wanted = sections.filter((s) => /功能模块|思想|能力|技能/.test(s.heading));
+			// 只挑**表格**类小节；道层是 bullet 列表，由索引页的普通小节卡渲染，
+			// 不在这里（subTablesOf 本来也会把它过滤成空，但精确前缀让意图明确，
+			// 也避免标题里含「思想」的道层被误收进来）。
+			const wanted = sections.filter((s) => /^(功能模块索引|创新优化思想索引|能力台账|技能台账)/.test(s.heading));
 			if (!wanted.length) return null;
 			const tables = wanted.flatMap((s) => subTablesOf(s));
 			if (!tables.length) return null;
@@ -1001,11 +1019,10 @@ window.__ModuleLoader__.load({
 							'div',
 							{ style: { display: 'flex', flexDirection: 'column', gap: 6 } },
 							sections
-								// The four index tables render as tables above, and the
-								// consensus + environment-constant blocks now live on the
-								// overview — neither repeats here. The detail-pointer block
-								// stays: it is only on the index.
-								.filter((s) => !/功能模块|思想|能力|技能|共识|环境常量/.test(s.heading))
+								// 表格类小节与「共识/环境常量」都在别处渲染，索引页不重复。
+								// 判据用精确前缀而不是关键字子串：`## 道层（最抽象的指导思想）`
+								// 含「思想」二字，用子串匹配会把道层整节误过滤掉。
+								.filter((s) => !/^(功能模块索引|创新优化思想索引|能力台账|技能台账|决策共识|环境常量)/.test(s.heading))
 								.map((s, i) => h(Card, { key: `x${i}`, tight: true }, h('h3', { className: 'dmo-h2' }, s.heading), h(MarkdownBody, { text: s.body, zone: '', onNavigate }))),
 						)
 					: h(
@@ -1821,6 +1838,9 @@ window.__ModuleLoader__.load({
 			const inboxRes = useApi(`${API}/inbox?v=${tick}`, fixtures);
 			const funcs = useApi(`${API}/list?zone=functions&v=${tick}`, fixtures);
 			const insights = useApi(`${API}/list?zone=insights&v=${tick}`, fixtures);
+			// 道层也要取：少了这一行，点侧栏「道」会直接抛 TypeError（lists.dao
+			// 未定义 → rowsOf 里 .map 崩），而不是显示空列表。
+			const daos = useApi(`${API}/list?zone=dao&v=${tick}`, fixtures);
 			const caps = useApi(`${API}/list?zone=capabilities&v=${tick}`, fixtures);
 			const skills = useApi(`${API}/list?zone=skills&v=${tick}`, fixtures);
 			const dailies = useApi(`${API}/list?zone=daily&v=${tick}`, fixtures);
@@ -1874,7 +1894,7 @@ window.__ModuleLoader__.load({
 			const health = ws ? { initialized: ws.initialized, failCount: ws.failCount, warnCount: ws.warnCount, results: ws.results ?? ws.problems ?? [] } : null;
 			const indexText = indexFile.data?.text ?? '';
 			const tables = parseIndexTables(indexText);
-			const lists = { functions: funcs.data?.files ?? [], insights: insights.data?.files ?? [], capabilities: caps.data?.files ?? [], skills: skills.data?.files ?? [], daily: dailies.data?.files ?? [] };
+			const lists = { functions: funcs.data?.files ?? [], insights: insights.data?.files ?? [], dao: daos.data?.files ?? [], capabilities: caps.data?.files ?? [], skills: skills.data?.files ?? [], daily: dailies.data?.files ?? [] };
 
 			useEffect(() => {
 				const t = setTimeout(() => setLive(query.trim()), 350);
@@ -1887,7 +1907,9 @@ window.__ModuleLoader__.load({
 
 			const summaryOf = (zone, name) => {
 				const slug = String(name ?? '').replace(/\.md$/, '');
-				const table = zone === 'functions' ? tables.functions : zone === 'insights' ? tables.insights : zone === 'capabilities' ? tables.capabilities : zone === 'skills' ? tables.skills : null;
+				// One lookup, keyed by zone: the old ternary chain had no dao branch, so
+				// a 道 row listed with an empty summary (present but unexplained).
+				const table = Object.prototype.hasOwnProperty.call(tables, zone) ? tables[zone] : null;
 				return table?.[slug]?.summary ?? '';
 			};
 			const rowsOf = (zone) => {
@@ -1932,7 +1954,13 @@ window.__ModuleLoader__.load({
 			const fileRes = useApi(fileUrl, fixtures);
 			const fileMeta = !opened ? null : opened.zone === '' ? null : (lists[opened.zone] ?? []).find((f) => f.name === opened.name) ?? null;
 			const fileText = opened ? (opened.zone === '' ? indexText : fileRes.data?.text ?? null) : null;
-			const kind = !opened ? null : opened.zone === '' ? 'index' : opened.zone === 'functions' ? 'functions' : opened.zone === 'insights' ? 'insights' : opened.zone === 'capabilities' ? 'capabilities' : opened.zone === 'skills' ? 'skills' : 'daily';
+			// zone → reader kind. The trailing fallback used to be 'daily', so ANY zone
+			// not listed in the chain (dao/ when it was added) silently rendered as a
+			// daily log: wrong reader, wrong section grouping, wrong empty-state copy.
+			// Derived from ZONE_DIR so a new zone cannot fall through to the wrong
+			// reader again.
+			const kindOfZone = (z) => (z === '' ? 'index' : Object.prototype.hasOwnProperty.call(ZONE_DIR, z) ? z : 'daily');
+			const kind = !opened ? null : kindOfZone(opened.zone);
 
 			const activeKey = view.kind === 'overview' ? 'overview' : view.kind === 'inbox' ? 'inbox' : view.kind === 'zone' ? view.zone : view.kind === 'bundle' ? 'skills' : view.zone === '' ? 'index' : view.zone;
 
