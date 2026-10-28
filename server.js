@@ -1034,7 +1034,18 @@ function memoryReadTool(opts) {
 			},
 			render: (_args, v) => {
 				if (!v.found && v.listing.length === 0) {
-					return [{ type: 'text', text: `未找到：${v.path}。记忆还是空的——先用 memory_write 记录第一次迭代。` }];
+					// 「记忆还是空的」是错的：这里只知道**这个分区**是空的。整库为空时
+					// 该提示第一次写入，但某个分区为空（如 dao/ 还没凑够 5 条法）是完全
+					// 正常的状态，报「记忆是空的」会让人以为数据丢了。
+					const isIndex = String(v.path ?? '').endsWith('MEMORY.md');
+					return [
+						{
+							type: 'text',
+							text: isIndex
+								? `未找到：${v.path}。记忆库还没有建档——先用 memory_write 记录第一次迭代。`
+								: `这个分区还是空的：${v.path}（目录存在，暂无 .md 文件）。记忆库其余部分不受影响；若这是道层，空着可能正是闸门的答案——道须从 ≥5 条法萃取。`,
+						},
+					];
 				}
 				if (v.content) return [{ type: 'text', text: v.content }];
 				if (v.listing.length) {

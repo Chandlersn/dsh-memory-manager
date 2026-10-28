@@ -1207,6 +1207,16 @@ ok(!cCap.results.some((r) => r.message.includes('ffmpeg') && r.level === 'FAIL')
 		wrongDir.push(`${k}→${p}`);
 	}
 	ok(wrongDir.length === 0, `every memory_read kind resolves its OWN directory (${wrongDir.join(', ') || 'all correct'})`);
+	// 空分区 ≠ 空记忆库。dao/ 收敛后为空是闸门给出的正确答案（法层只有 4 条，
+	// 凑不够 5 条），但旧文案对任何空分区都说「记忆还是空的——先记录第一次迭代」，
+	// 会让人以为整库数据丢了。本块的 dao/ 已被上面的用例写入，所以直接构造
+	// render 的输入（空 listing + 路径是分区目录）来测文案分支。
+	{
+		const fake = { found: false, path: path.join(root, 'dao'), content: '', listing: [] };
+		const emptyMsg = T.memory_read.output.render({}, fake).map((b) => b.text).join('');
+		ok(!emptyMsg.includes('记忆还是空的'), `an empty zone does not claim the whole memory is empty (${emptyMsg.slice(0, 36)}…)`);
+		ok(emptyMsg.includes('这个分区还是空的'), 'an empty zone says only that zone is empty');
+	}
 	ok((await mod.zoneCounts(root, skillRoot)).dao >= 1, 'zoneCounts counts the dao layer (the rail badge used to miss it)');
 	const daoSearch = await T.memory_search.execute({ q: '不声不响', zone: 'dao' }, exec);
 	ok(daoSearch.hits.length >= 1 && daoSearch.hits.every((h) => h.zone === 'dao'), 'memory_search accepts zone=dao');
