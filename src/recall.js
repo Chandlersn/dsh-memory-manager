@@ -78,9 +78,15 @@ export function matchIndexRows(indexText, userTokens, limit = 3, usage) {
 		// accepted too so an old root keeps recalling.
 		const anyHref = cells.map((c) => /\(([^)\s]+\.md)\)/.exec(c)?.[1]).find(Boolean);
 		const isSkillHref = Boolean(anyHref) && (/^skills\//.test(anyHref) || /(?:^|\/)SKILL\.md$/.test(anyHref));
-		const href = anyHref && (isSkillHref || /^(functions|insights|capabilities)\//.test(anyHref)) ? anyHref : undefined;
+		// Zone → row kind, from ONE map. `dao/` was absent from the old inline
+		// allow-list, so a dao row (if anyone hand-wrote one) was dropped here: the
+		// layer was writable but unreachable by the only path that puts memory in
+		// front of the model.
+		const ZONE_KIND = { functions: 'function', insights: 'insight', dao: 'dao', capabilities: 'capability' };
+		const zoneKey = Boolean(anyHref) && !isSkillHref ? anyHref.split('/')[0] : null;
+		const href = anyHref && (isSkillHref || ZONE_KIND[zoneKey]) ? anyHref : undefined;
 		if (!href) continue;
-		const zone = isSkillHref ? 'skill' : href.startsWith('insights/') ? 'insight' : href.startsWith('functions/') ? 'function' : null;
+		const zone = isSkillHref ? 'skill' : ZONE_KIND[zoneKey];
 		if (!zone) continue;
 		// A skill row carries its lifecycle in a status cell. Only ACTIVE skills
 		// are recallable — a candidate is an unverified procedure and must not

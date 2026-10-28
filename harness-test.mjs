@@ -1190,6 +1190,18 @@ ok(!cCap.results.some((r) => r.message.includes('ffmpeg') && r.level === 'FAIL')
 	await writeFile(path.join(root, 'dao', '无标题之道.md'), '# 道 · 无标题\n\n这条没有命题小节，抽象度检查会整条跳过。\n', 'utf8');
 	const cHead = await T.memory_check.execute({}, exec);
 	ok(cHead.results.some((r) => r.rule === 'R24' && r.message.includes('无标题之道')), 'R24 flags a dao without a 命题 section (the check used to skip it silently)');
+	// dao 必须像其他层一样**可读、可数、可搜、可记证据**。此前它只被 memory_dao 与
+	// R24 认识：能写但读不到，是「半个功能」。这几条断言锁住整条接线。
+	const daoRead = await T.memory_read.execute({ kind: 'dao', name: '集成之道' }, exec);
+	ok(daoRead.found && String(daoRead.content).includes('事情总是不声不响地坏掉'), 'memory_read(kind=dao) reads the file');
+	const daoList = await T.memory_read.execute({ kind: 'dao' }, exec);
+	ok(daoList.listing.some((x) => x.name === '集成之道'), 'memory_read(kind=dao) lists the layer');
+	ok((await mod.zoneCounts(root, skillRoot)).dao >= 1, 'zoneCounts counts the dao layer (the rail badge used to miss it)');
+	const daoSearch = await T.memory_search.execute({ q: '不声不响', zone: 'dao' }, exec);
+	ok(daoSearch.hits.length >= 1 && daoSearch.hits.every((h) => h.zone === 'dao'), 'memory_search accepts zone=dao');
+	await T.memory_usage.execute({ action: 'record', href: 'dao/集成之道.md', kind: 'positive', note: '道层也能留证据' }, exec);
+	const daoUsage = await T.memory_usage.execute({ action: 'report', days: 30 }, exec);
+	ok(daoUsage.items.some((i) => i.href === 'dao/集成之道.md'), 'the usage ledger accepts dao/ hrefs');
 }
 
 // 22e) R25: a batch of evidence-bearing files disappearing must be reported.

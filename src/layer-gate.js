@@ -225,28 +225,12 @@ export function gateFa(input) {
 	return { ok: true, tier, warnings };
 }
 
-/**
- * 道层的**反向校验**：给定一批法，找出哪些被判为"够格的萃取簇"。
- *
- * 用途：memory_check 用它报告「哪些法主题已经凑够 5 条、可以萃取道了」，
- * 让「该萃取了」这件事变成系统主动提示，而不是等人想起来。
- *
- * @param laws 法条目列表 `{ slug, tags }`；`tags` 是主题标签（由调用方归类）。
- * @returns 按标签分组的簇，只保留达到阈值的。
- */
-export function extractableClusters(laws) {
-	const groups = new Map();
-	for (const law of Array.isArray(laws) ? laws : []) {
-		for (const tag of Array.isArray(law?.tags) ? law.tags : []) {
-			const key = String(tag ?? '').trim();
-			if (!key) continue;
-			if (!groups.has(key)) groups.set(key, []);
-			groups.get(key).push(String(law.slug ?? ''));
-		}
-	}
-	const out = [];
-	for (const [tag, members] of groups) {
-		if (members.length >= MIN_DAO_SOURCES) out.push({ tag, members, count: members.length });
-	}
-	return out.sort((a, b) => b.count - a.count);
-}
+// REMOVED (2026-10-28): `extractableClusters(laws)` — a reverse "which clusters
+// are ready to extract" helper. It was exported, unit-tested, and **never called
+// by production code**: its input was `{ slug, tags }`, but an insight file has
+// no tags field at all (the template writes 来源/核心原则/适用面/待观察). So it
+// modelled a data shape that does not exist, and its docstring claimed a consumer
+// (memory_check) that instead grew a different implementation based on 来源
+// lines. Keeping it meant two answers to "which laws are ready" — the exact
+// 规格单一真值源 failure this memory root already warns about. R24(d) is the one
+// implementation; this file keeps only the gates.

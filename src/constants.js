@@ -73,6 +73,32 @@ export const SKILL_NOMINATE = { minUses: 6, minPositives: 1, maxBadRate: 0.2 };
 
 export const CAP_DIR = 'capabilities';
 
+// ---------------------------------------------------------------------------
+// THE zone list — single source of truth (2026-10-28)
+// ---------------------------------------------------------------------------
+// Before this, the same set of directory names was written out in ~20 places
+// (six literal arrays, six regexes, the client's three keyword regexes, two
+// enums, the panel's zone whitelist…). Adding `dao/` therefore did NOT add it:
+// every reader kept its own stale copy, so the fourth memory layer was writable
+// but invisible — no count, no listing, no search, no memory_read, and the
+// usage ledger rejected its hrefs. A layer that only one tool knows about is
+// half-built, and the reason was never a missing feature: it was the copies.
+//
+// Now: one list, derived views below. Add a zone HERE and every consumer
+// follows (including the guards that enumerate what must be indexed).
+export const MEMORY_ZONES = ['functions', 'insights', 'dao', 'capabilities', 'skills'];
+/** Zones that live as <zone>/<slug>.md inside the memory root (skills do not). */
+export const FILE_ZONES = MEMORY_ZONES.filter((z) => z !== 'skills');
+/** Zones whose files must each have an index row (skills have their own check). */
+export const INDEXED_ZONES = FILE_ZONES;
+/** `functions|insights|dao|capabilities` — for href/regex matching. */
+export const ZONE_ALT = FILE_ZONES.join('|');
+/** Zones plus the raw daily layer — what memory_search accepts. */
+export const SEARCH_ZONES = [...FILE_ZONES, 'daily'];
+
+export const DAO_DIR = 'dao';
+export const DAO_TABLE_HEADING = '## 道层（最抽象的指导思想）';
+
 // federation (three-tier mode): project truth sources -> federation layer -> global
 export const FED_TABLE_HEADING = '## 项目索引（联邦层）';
 export const FED_TABLE_HEADER = '| 项目 | 记忆规模 | 来源副本 |';

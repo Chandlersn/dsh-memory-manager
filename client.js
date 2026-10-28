@@ -37,13 +37,16 @@ window.__ModuleLoader__.load({
 			{ key: 'index', label: '索引', icon: '☰' },
 			{ key: 'functions', label: '功能', icon: '⬡' },
 			{ key: 'insights', label: '思想', icon: '✦' },
+			// 道层（dao/）——最抽象的一层。此前它没有导航项，所以即使文件存在，
+			// 面板里也点不到：能写不能看，等于半个功能。
+			{ key: 'dao', label: '道', icon: '☯' },
 			{ key: 'capabilities', label: '能力', icon: '⚒' },
 			{ key: 'skills', label: '技能', icon: '⌘' },
 			{ key: 'daily', label: '每日', icon: '◷' },
 			{ key: 'inbox', label: '收件箱', icon: '✉' },
 		];
-		const ZONE_LABEL = { functions: '功能', insights: '思想', capabilities: '能力', skills: '技能', daily: '每日', '': '索引' };
-		const ZONE_DIR = { functions: 'functions', insights: 'insights', capabilities: 'capabilities', skills: 'skills', daily: '' };
+		const ZONE_LABEL = { functions: '功能', insights: '思想', dao: '道', capabilities: '能力', skills: '技能', daily: '每日', '': '索引' };
+		const ZONE_DIR = { functions: 'functions', insights: 'insights', dao: 'dao', capabilities: 'capabilities', skills: 'skills', daily: '' };
 
 		const css = `
 /* Host-aligned visuals: metrics and tokens are copied from the shipped primitives
@@ -339,6 +342,7 @@ window.__ModuleLoader__.load({
 			const p = clean.replace(/^(\.\.\/)+/, '').replace(/^\.\//, '');
 			if (p.startsWith('functions/')) return { zone: 'functions', name: p.slice(10) };
 			if (p.startsWith('insights/')) return { zone: 'insights', name: p.slice(9) };
+			if (p.startsWith('dao/')) return { zone: 'dao', name: p.slice(4) };
 			if (/^\d{4}-\d{2}-\d{2}\.md$/.test(p)) return { zone: 'daily', name: p };
 			if (p === 'MEMORY.md') return { zone: '', name: null };
 			if (/^[^/]+\.md$/.test(p) && zone !== undefined) return { zone, name: p };

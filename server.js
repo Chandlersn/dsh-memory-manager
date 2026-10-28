@@ -62,7 +62,16 @@ import {
 	FED_TABLE_HEADER, FED_CONSENSUS_HEADING, DAILY_SECTION, DAILY_OPEN_SECTION, RESULT_LABEL,
 	GUARD_MARK, GUARD_LINE, MAX_BLOCK_CHARS, MAX_ROW_SUMMARY_CHARS, MAX_PRINCIPLE_CHARS,
 	MAX_CONSENSUS_CHARS, CONSENSUS_HEADING, LEGACY_TABLE_HEADERS, INSIGHT_BUDGET, VANISHED_FILES_WARN,
+	MEMORY_ZONES, FILE_ZONES, INDEXED_ZONES, ZONE_ALT, SEARCH_ZONES, DAO_DIR, DAO_TABLE_HEADING,
 } from './src/constants.js';
+
+// Derived zone matchers — built ONCE from MEMORY_ZONES so a new layer cannot be
+// half-wired again (that is exactly how `dao/` ended up writable but unreadable).
+const ZONE_RE = new RegExp(`^(${ZONE_ALT})/`); // hrefs inside a file zone
+const ZONE_RE_SKILLS = new RegExp(`^(${ZONE_ALT}|skills)/`); // …or a skill bundle
+const ZONE_RE_SKILLS_NC = new RegExp(`^(?:${ZONE_ALT}|skills)/`); // no capture
+const ZONE_RE_FILE_EXACT = new RegExp(`^(${ZONE_ALT})/[^/]+\\.md$`); // <zone>/<slug>.md
+const ZONE_RE_FI = /^(functions|insights)\//; // the two table zones only
 
 // ---------------------------------------------------------------------------
 // locating the Host installation
@@ -367,13 +376,18 @@ async function runHealthCheck(root, opts) {
 	// R23 below. Zone attribution is by the enclosing section heading, not by
 	// the href alone: a row can carry any link shape across generations, but it
 	// always sits under the table it belongs to.
-	const indexedByZone = { functions: new Set(), insights: new Set(), capabilities: new Set() };
+	const indexedByZone = Object.fromEntries(INDEXED_ZONES.map((z) => [z, new Set()]));
 	const indexedHrefs = new Set();
 	{
 		const zoneOfHeading = (line) => {
 			if (line.startsWith(FUNC_TABLE_HEADING)) return 'functions';
 			if (line.startsWith(INSIGHT_TABLE_HEADING)) return 'insights';
 			if (line.startsWith(CAP_TABLE_HEADING)) return 'capabilities';
+			// The dao layer's own section: rows here are `- **名**（[正文](dao/x.md)）`
+			// bullets rather than table rows, but its HREFS still count as "indexed"
+			// (handled by the generic href scan below), and naming it keeps a future
+			// dao table from silently landing in no zone at all.
+			if (line.startsWith(DAO_TABLE_HEADING)) return 'dao';
 			return null;
 		};
 		let currentZone = null;
@@ -408,7 +422,7 @@ async function runHealthCheck(root, opts) {
 	}
 	{
 		const orphans = [];
-		for (const zone of ['functions', 'insights', 'capabilities']) {
+		for (const zone of INDEXED_ZONES) {
 			let names = [];
 			try {
 				names = (await readdir(path.join(root, zone))).filter((f) => f.endsWith('.md'));
@@ -447,7 +461,7 @@ async function runHealthCheck(root, opts) {
 	// re-reading every insight file a second time.
 	const insightTextByFile = new Map();
 
-	for (const zone of ['functions', 'insights', 'capabilities', 'skills']) {
+	for (const zone of MEMORY_ZONES) {
 		const dir = path.join(root, zone);
 		let files = [];
 		try {
@@ -761,7 +775,7 @@ async function runHealthCheck(root, opts) {
 			for (const h of hrefs) {
 				// Only memory-root targets are checkable; skill bundles live outside
 				// the root and their absence is R20e's business.
-				if (!/^(functions|insights|capabilities|skills)\//.test(h)) continue;
+				if (!ZONE_RE_SKILLS.test(h)) continue;
 				if (/^skills\//.test(h)) continue;
 				if (await statExists(path.join(root, h))) continue;
 				missing.push(h);
@@ -797,7 +811,7 @@ async function runHealthCheck(root, opts) {
 				try {
 					const e = JSON.parse(s);
 					const h = canonicalHref(String(e.href ?? '').trim());
-					if (/^(functions|insights|capabilities|dao)\/[^/]+\.md$/.test(h)) seen.add(h);
+					if (ZONE_RE_FILE_EXACT.test(h)) seen.add(h);
 				} catch {
 					/* skip corrupt line */
 				}
@@ -986,8 +1000,8 @@ function memoryReadTool(opts) {
 			kind: {
 				type: 'string',
 				required: true,
-				enum: ['index', 'function', 'insight', 'capability', 'skill', 'daily'],
-				description: 'index=MEMORY.md; function=functions/<name>.md; insight=insights/<name>.md; capability=capabilities/<name>.md (CLI/MCP ledger); skill=<skillRoot>/<name>/SKILL.md (the host bundle — one store, no memory-root copy); daily=YYYY-MM-DD.md (latest when date omitted).',
+				enum: ['index', 'function', 'insight', 'dao', 'capability', 'skill', 'daily'],
+				description: 'index=MEMORY.md; function=functions/<name>.md; insight=insights/<name>.md; dao=dao/<name>.md (最抽象层); capability=capabilities/<name>.md (CLI/MCP ledger); skill=<skillRoot>/<name>/SKILL.md (the host bundle — one store, no memory-root copy); daily=YYYY-MM-DD.md (latest when date omitted).',
 			},
 			name: {
 				type: 'string',
@@ -1074,8 +1088,12 @@ function memoryReadTool(opts) {
 				await appendUsage(root, { href: `skills/${sName}/SKILL.md`, kind: 'read' });
 				return { found: true, path: p, content: text, listing: [] };
 			}
-			if (args.kind === 'function' || args.kind === 'insight' || args.kind === 'capability') {
-				const dir = path.join(root, args.kind === 'function' ? 'functions' : args.kind === 'insight' ? 'insights' : CAP_DIR);
+			if (args.kind === 'function' || args.kind === 'insight' || args.kind === 'dao' || args.kind === 'capability') {
+				// kind → directory, from ONE map: this used to be a nested ternary whose
+				// default was CAP_DIR, so any new kind silently read capabilities/.
+				const KIND_DIR = { function: 'functions', insight: 'insights', dao: DAO_DIR, capability: CAP_DIR };
+				const hrefZone = KIND_DIR[args.kind];
+				const dir = path.join(root, hrefZone);
 				if (!args.name) {
 					const listing = await listMdDir(dir);
 					return { found: listing.length > 0, path: dir, content: '', listing };
@@ -1090,7 +1108,6 @@ function memoryReadTool(opts) {
 				// The usage href must name the zone that was ACTUALLY read — this
 				// once mapped every capability read onto insights/, polluting the
 				// usage ledger that drives nomination.
-				const hrefZone = args.kind === 'function' ? 'functions' : args.kind === 'insight' ? 'insights' : 'capabilities';
 				await appendUsage(root, { href: `${hrefZone}/${slug}.md`, kind: 'read' });
 				return { found: true, path: p, content: text, listing: [] };
 			}
@@ -1127,7 +1144,7 @@ function memorySearchTool(opts) {
 			'Ranked full-text search across the ENTIRE memory root (index, functions/, insights/, daily logs) and return the best matching lines with their zone, file, line number, section heading and a snippet. Use it when you remember something was recorded but cannot tell which function area or which day: memory_read kind=index only scans one-line summaries, while this scans the bodies. Ranking is lexical (query substring, token hits, section heading, file name) with per-file caps, so a broad keyword does not return one file\'s whole history. Read the file afterwards with memory_read before re-deriving anything. Temporal queries (「上个月怎么解决的」) use after/before: every hit carries its attributed date (iteration-block tag → file-head date → filename → mtime) and the bounds filter inclusively.',
 		parameters: {
 			q: { type: 'string', required: true, description: '检索词：一个词或短句（≥2 字符）。中文子串与英文单词都支持。' },
-			zone: { type: 'string', enum: ['all', 'functions', 'insights', 'capabilities', 'skills', 'daily'], description: '限定检索分区，缺省 all（含索引）。能力台账（CLI/MCP/本地工具）在 capabilities，技能程序在 skills。' },
+			zone: { type: 'string', enum: ['all', ...SEARCH_ZONES], description: '限定检索分区，缺省 all（含索引）。能力台账（CLI/MCP/本地工具）在 capabilities，技能程序在 skills。' },
 			limit: { type: 'integer', description: '最多返回多少条命中（默认 20，最大 50）。' },
 			after: { type: 'string', description: '时间下限 YYYY-MM-DD（含）：只看这天及之后的内容。迭代块按 [日期] 标签归属，文件其余按头部「截至」日期，每日按文件名，无日期文件按 mtime——问“上个月怎么解决的”用它。' },
 			before: { type: 'string', description: '时间上限 YYYY-MM-DD（含）。与 after 成对使用框出一个区间。' },
@@ -1171,7 +1188,7 @@ function memorySearchTool(opts) {
 			const root = resolveRoot(opts);
 			const q = oneLine(args.q);
 			if (charLen(q) < 2) throw new Error('q must be at least 2 characters');
-			const zone = ['functions', 'insights', 'capabilities', 'skills', 'daily'].includes(args.zone) ? args.zone : 'all';
+			const zone = SEARCH_ZONES.includes(args.zone) ? args.zone : 'all';
 			const limit = Math.min(Math.max(1, Number(args.limit) || 20), 50);
 			// Date bounds: accept YYYY-MM-DD (tolerating spaces) or reject loudly —
 			// a silently-ignored `after: 上个月` would return everything and be
@@ -1320,8 +1337,8 @@ function memoryUsageTool(opts) {
 				// evidence gate reads positives on `skills/<name>/SKILL.md`, and until
 				// now the contract REJECTED exactly that href (hit twice in practice).
 				const skillM = /^skills\/([^/]+)\/SKILL\.md$/.exec(href);
-				if (!/^(functions|insights|capabilities)\/[^/]+\.md$/.test(href) && !/^\d{4}-\d{2}-\d{2}\.md$/.test(href) && !skillM) {
-					throw new Error('href 必须是 functions/<名>.md、insights/<名>.md、capabilities/<名>.md、skills/<技能>/SKILL.md 或 YYYY-MM-DD.md');
+				if (!ZONE_RE_FILE_EXACT.test(href) && !/^\d{4}-\d{2}-\d{2}\.md$/.test(href) && !skillM) {
+					throw new Error('href 必须是 functions/<名>.md、insights/<名>.md、dao/<名>.md、capabilities/<名>.md、skills/<技能>/SKILL.md 或 YYYY-MM-DD.md');
 				}
 				if (skillM && !isSkillName(skillM[1])) throw new Error(`技能名必须是 kebab-case，收到：${skillM[1]}`);
 				const kind = ['correction', 'positive', 'recall', 'read'].includes(args.kind) ? args.kind : null;
@@ -1563,7 +1580,7 @@ export function srcsOfExisting(text) {
 	return m
 		.split(',')
 		.map((s) => s.trim().replace(/^['"]|['"]$/g, ''))
-		.filter((s) => /^(functions|insights|capabilities)\//.test(s));
+		.filter((s) => ZONE_RE.test(s));
 }
 
 function skillTemplate(name, f) {
@@ -1629,7 +1646,7 @@ function skillTemplate(name, f) {
 function nominateSkillCandidates(usageItems, skillSources) {
 	const out = [];
 	for (const it of usageItems) {
-		if (!/^(functions|insights)\//.test(it.href)) continue;
+		if (!ZONE_RE_FI.test(it.href)) continue;
 		if (it.uses < SKILL_NOMINATE.minUses) continue;
 		if (it.positives < SKILL_NOMINATE.minPositives) continue;
 		if (it.badRate >= SKILL_NOMINATE.maxBadRate) continue;
@@ -2099,7 +2116,7 @@ function memorySkillTool(opts, hooks = {}) {
 				const srcLines = srcs.map((s) => {
 					if (s.includes('](')) return `- ${s}`; // an authored markdown link passes through
 					const rel = s.trim().replace(/^\.\.?\//, '').replace(/\.md$/i, '');
-					const label = rel.replace(/^(?:functions|insights|capabilities|skills)\//, '');
+					const label = rel.replace(ZONE_RE_SKILLS_NC, '');
 					// ABSOLUTE link into the memory root (5.27.0): the bundle lives at
 					// <dshHome>/skills/<name>/, NOT under the memory root — the old
 					// `../functions/x.md` resolved to <dshHome>/skills/functions/x.md,
@@ -3050,7 +3067,7 @@ function indexRowsOf(indexText) {
 		// is configurable — the real one is <dshHome>/skills, tests inject a temp
 		// dir); the legacy `skills/<name>.md` form stays accepted.
 		const isSkillHref = Boolean(anyHref) && (/^skills\//.test(anyHref) || /(?:^|\/)SKILL\.md$/.test(anyHref));
-		const href = anyHref && (isSkillHref || /^(functions|insights|capabilities)\//.test(anyHref)) ? anyHref : undefined;
+		const href = anyHref && (isSkillHref || ZONE_RE.test(anyHref)) ? anyHref : undefined;
 		if (!href) continue;
 		const zone = isSkillHref ? 'skill' : href.startsWith('insights/') ? 'insight' : href.startsWith('functions/') ? 'function' : null;
 		if (!zone) continue;
@@ -3095,10 +3112,10 @@ async function searchMemory(root, rawQuery, { zone = 'all', limit = 20, after = 
 	const q = String(rawQuery ?? '').trim().toLowerCase();
 	if (q.length < 2) return [];
 	const tokens = tokensOf(q);
-	const zones = zone === 'all' ? ['index', 'functions', 'insights', 'capabilities', 'skills', 'daily'] : [zone];
+	const zones = zone === 'all' ? ['index', ...MEMORY_ZONES, 'daily'] : [zone];
 	const files = [];
 	if (zones.includes('index')) files.push({ zone: 'index', name: 'MEMORY.md', file: path.join(root, 'MEMORY.md') });
-	for (const z of ['functions', 'insights', 'capabilities', 'skills']) {
+	for (const z of MEMORY_ZONES) {
 		if (!zones.includes(z)) continue;
 		// 5.24.0: skills search their host bundles (<name>/SKILL.md), the memory
 		// root no longer holds a skills/ directory.
@@ -3450,7 +3467,7 @@ function memoryIndexTool(opts) {
 		description:
 			'Upsert ONE row into the MEMORY.md index (the integration layer). Call it when a feature area or insight theme has STABILIZED (>=2 iteration blocks, or clearly a standalone topic) — not per write. The row summary is distilled from the area\'s iteration-block summaries: one sentence saying what this feature IS. Zones: zone=functions or zone=insights. Unindexed-but-existing files are surfaced by memory_check (R5 orphan) so nothing silently falls out of the index.',
 		parameters: {
-			zone: { type: 'string', required: true, enum: ['functions', 'insights'], description: '收进哪张索引表。' },
+			zone: { type: 'string', required: true, enum: [...INDEXED_ZONES], description: '收进哪张索引表。' },
 			name: { type: 'string', required: true, description: '功能域或思想主题 slug（functions/ 或 insights/ 下的既有文件名，不含 .md）。' },
 			summary: { type: 'string', required: true, description: '索引行摘要：一句话（≤60 字）说清"这是什么/解决什么"，供检索时判断相关性；从各迭代块的概括中提炼，不复制细节。' },
 			group: { type: 'string', description: '可选：功能表已按 `### 索引·<域>` 分组时，指定这一行落到哪个子分区（如「基础设施」「业务功能」）；缺省写入无标题的总表。' },
@@ -3638,10 +3655,13 @@ async function zoneCounts(root, skillRoot = '') {
 			return 0;
 		}
 	};
+	// Derived from FILE_ZONES so a new layer is counted here for free — `dao/` was
+	// missing from this literal, so the rail badge never saw it (a layer you can
+	// write but not count reads as "the feature does not exist").
+	const byZone = {};
+	for (const z of FILE_ZONES) byZone[z] = await count(path.join(root, z), (n) => n.endsWith('.md'));
 	return {
-		functions: await count(path.join(root, 'functions'), (n) => n.endsWith('.md')),
-		insights: await count(path.join(root, 'insights'), (n) => n.endsWith('.md')),
-		capabilities: await count(path.join(root, 'capabilities'), (n) => n.endsWith('.md')),
+		...byZone,
 		// 5.24.0: skills are host bundles — the badge counts directories that
 		// actually carry a SKILL.md.
 		skills: await countBundles(skillRoot || path.join(dshHome(), 'skills')),
@@ -3725,7 +3745,7 @@ function memoryPanelApi(opts, connection, inbox) {
 					return json(res, 400, { error: 'invalid file name' });
 				}
 				const zone = url.searchParams.get('zone') ?? '';
-				if (!['', 'functions', 'insights', 'capabilities', 'skills', 'daily'].includes(zone)) {
+				if (!['', ...SEARCH_ZONES].includes(zone)) {
 					return json(res, 400, { error: 'invalid zone' });
 				}
 				if (zone === 'daily' && !/^\d{4}-\d{2}-\d{2}\.md$/.test(name)) {
@@ -3986,7 +4006,7 @@ function memoryPanelApi(opts, connection, inbox) {
 			}
 			if (seg === 'list') {
 				const zone = url.searchParams.get('zone');
-				if (!['functions', 'insights', 'capabilities', 'skills', 'daily'].includes(zone)) return json(res, 400, { error: 'invalid zone' });
+				if (!SEARCH_ZONES.includes(zone)) return json(res, 400, { error: 'invalid zone' });
 				// 5.24.0: skills are host bundles, not memory-root files. The panel
 				// skill zone IS the library endpoint (/skills); /list?zone=skills
 				// keeps answering with bundle SKILL.md rows so an older caller
@@ -4044,7 +4064,7 @@ function memoryPanelApi(opts, connection, inbox) {
 				// file order, so a hit in the first file always outranked a better
 				// one further down.
 				const zoneParam = url.searchParams.get('zone');
-				const zone = ['functions', 'insights', 'capabilities', 'skills', 'daily'].includes(zoneParam) ? zoneParam : 'all';
+				const zone = SEARCH_ZONES.includes(zoneParam) ? zoneParam : 'all';
 				const hits = await searchMemory(root, q, { zone, limit: 60, skillRoot: opts.skillRoot });
 				return json(res, 200, { hits });
 			}

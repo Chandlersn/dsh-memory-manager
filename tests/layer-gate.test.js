@@ -16,7 +16,6 @@ import {
 	gateFa,
 	concreteMarkersOf,
 	looksLikeProcedure,
-	extractableClusters,
 } from '../src/layer-gate.js';
 
 let failures = 0;
@@ -130,20 +129,11 @@ ok(gateFa({ principle: 'p', sources: ['a', 'a'] }).tier === '专项', '重复来
 	ok(r.ok && r.warnings.join().includes('操作手册'), '操作手册句式 → 法层警告（不拒绝）');
 }
 
-console.log('\n--- 可萃取簇：系统主动提示"该萃道了" ---');
-{
-	const c = extractableClusters(laws(6).map((s) => ({ slug: s, tags: ['静默失效'] })));
-	ok(c.length === 1 && c[0].count === 6, '≥5 条法共享标签 → 提名');
-}
-ok(extractableClusters(laws(4).map((s) => ({ slug: s, tags: ['x'] }))).length === 0, '<5 条 → 不提名');
-{
-	const c = extractableClusters([
-		...laws(5).map((s) => ({ slug: `a${s}`, tags: ['小簇'] })),
-		...laws(8).map((s) => ({ slug: `b${s}`, tags: ['大簇'] })),
-	]);
-	ok(c[0].tag === '大簇' && c[1].tag === '小簇', '多簇按成员数降序');
-}
-ok(extractableClusters([{ slug: 'x' }, { slug: 'y', tags: [] }]).length === 0, '无标签条目被忽略');
+// 「哪些法已够 5 条、可萃取」的判据只有一处：memory_check 的 R24(d)，它按
+// insights 文件里真实存在的「来源：」行聚类。这里原本还测一个 extractableClusters
+// —— 输入是 `{ slug, tags }`，而 insights 文件根本没有 tags 字段，且它在生产代码里
+// 零调用。两个实现回答同一个问题 = 第二真值源，已删除（2026-10-28）。
+// R24(d) 的行为由 harness-test.mjs 的 22c 覆盖（含「可清零」这条关键性质）。
 
 console.log(failures === 0 ? '\nlayer-gate: ALL PASS' : `\nlayer-gate: ${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

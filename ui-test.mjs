@@ -206,8 +206,10 @@ const count = (s, needle) => s.split(needle).length - 1;
 
 // --- overview ---------------------------------------------------------------
 const overview = render({ kind: 'overview' });
-ok(count(overview, 'data-dmo="nav-item"') === 8, `rail has 8 destinations (${count(overview, 'data-dmo="nav-item"')})`);
-ok(overview.includes('功能') && overview.includes('思想') && overview.includes('每日') && overview.includes('索引') && overview.includes('能力') && overview.includes('技能'), 'rail labels for every zone');
+// 9 = 总览/索引/功能/思想/道/能力/技能/每日/收件箱。「道」是 5.29.6 加的：dao/ 这层
+// 此前能写但没有导航项，面板里点不到——能写不能看等于半个功能。
+ok(count(overview, 'data-dmo="nav-item"') === 9, `rail has 9 destinations (${count(overview, 'data-dmo="nav-item"')})`);
+ok(overview.includes('功能') && overview.includes('思想') && overview.includes('每日') && overview.includes('索引') && overview.includes('能力') && overview.includes('技能') && overview.includes('道'), 'rail labels for every zone (including 道)');
 ok(count(overview, 'data-dmo="growth-card"') === 5, `overview shows all five zone count cards (${count(overview, 'data-dmo="growth-card"')})`);
 ok(overview.includes('能力台账') && overview.includes('技能库'), 'the added capability/skill cards label their zones');
 ok(overview.includes('WARN 1') && overview.includes('冷记忆 1'), 'health chips carry the warning and the cold count');
@@ -579,8 +581,9 @@ ok(!overview.includes('data-dmo="nav-count-inbox">3<'), 'the badge counts only u
 
 // 导航接线（2026-10-26 真 bug）：早期 click 处理器只认 overview/index，
 // 其余一律 setView({kind:'zone'}) —— 点「收件箱」会落到 zone 分支渲染空白。
-// 这里钉住 rail 确实带第 8 项且标签正确，防止再被塞回 zone 分支。
-ok(count(overview, 'data-dmo="nav-item"') === 8, `rail renders 8 items so the inbox entry exists`);
+// 这里钉住 rail 确实带收件箱项且标签正确，防止再被塞回 zone 分支。
+// 数量 9 = 8 个分区 + 收件箱；新增分区时这里要同步（断言会提醒）。
+ok(count(overview, 'data-dmo="nav-item"') === 9, `rail renders 9 items so the inbox entry exists`);
 ok(overview.includes('收件箱'), 'the rail labels the inbox entry');
 
 // --- pure logic -------------------------------------------------------------
