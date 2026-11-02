@@ -490,7 +490,7 @@ async function runHealthCheck(root, opts) {
 				// an overturned principle into recall as if it were live, so its
 				// absence from the index is correct, not a defect. R23 already
 				// excludes it from the budget for the same reason.
-				if (zone === 'insights') {
+				if (zone === 'insights' || zone === 'dao') {
 					const body = (await readIfExists(path.join(root, zone, f))) ?? '';
 					if (/^>\s*⚠️\s*已被取代/m.test(body)) continue;
 				}
