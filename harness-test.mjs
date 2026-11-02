@@ -1197,13 +1197,13 @@ for (const [form, bullet] of [
 	// 同一条法写 5 遍：硬闸门必须拒绝（这条此前是唯一能过的路）
 	let dupThrew = 0;
 	try {
-		await T.memory_dao.execute({ name: '重复来源道', proposition: '事情总是不声不响地坏掉', extractedFrom: [lawSlugs[0], lawSlugs[0], lawSlugs[0], lawSlugs[0], lawSlugs[0]], body: '## 三种形态\n\n- 一种\n' }, exec);
+		await T.memory_dao.execute({ name: '重复来源道', proposition: '事情总是不声不响地坏掉', extractedFrom: [lawSlugs[0], lawSlugs[0], lawSlugs[0], lawSlugs[0], lawSlugs[0]], body: '## 三种形态\n\n- 一种：自证。\n- 两种：外物。\n\n## 依据展开\n\n这几条法共同指向同一件事，因此合起来成为一条道。\n\n## 边界\n\n- 当产出者不在回路之内时，此判据不成立。\n' }, exec);
 	} catch {
 		dupThrew++;
 	}
 	ok(dupThrew === 1, 'memory_dao rejects duplicate-only sources through the real execute path');
 	// 5 条不同的法 → 写入 dao/<name>.md
-	await T.memory_dao.execute({ name: '集成之道', proposition: '事情总是不声不响地坏掉', extractedFrom: lawSlugs, body: '## 三种形态\n\n- 一种\n' }, exec);
+	await T.memory_dao.execute({ name: '集成之道', proposition: '事情总是不声不响地坏掉', extractedFrom: lawSlugs, body: '## 三种形态\n\n- 一种：自证。\n- 两种：外物。\n\n## 依据展开\n\n这几条法共同指向同一件事，因此合起来成为一条道。\n\n## 边界\n\n- 当产出者不在回路之内时，此判据不成立。\n' }, exec);
 	ok(await statExists(path.join(root, 'dao', '集成之道.md')), 'memory_dao writes dao/<name>.md through the execute path');
 	// 工具不写 MEMORY.md（description 曾谎称会写），所以体检必须点名未被登记的道
 	const cDao = await T.memory_check.execute({}, exec);

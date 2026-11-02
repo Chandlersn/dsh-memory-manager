@@ -32,6 +32,7 @@
  */
 
 import { concreteMarkersOf, looksLikeProcedure, daoSourceSlugs, MIN_DAO_SOURCES, MIN_FA_SOURCES } from './layer-gate.js';
+import { checkDaoBody } from './dao-shape.js';
 
 /** 各层定义里的硬阈值（与体检 R14 同源，改一处要同时改体检）。 */
 export const BLOCK_MAX_CHARS = 900;
@@ -264,6 +265,11 @@ export function checkArtifact(input) {
 		// "哪里不成立"就证明它没被想清楚 —— 那不是道，是一句漂亮话。
 		const daoBd = boundaryDefect(content, '道');
 		if (daoBd) fail(daoBd.code, daoBd.message);
+		// 道体结构：命题之外还得说清"世界长什么样"与"这几条法如何共同逼出它"。
+		// 此前这两节只写在参数说明文字里、代码零实现，于是正文塞满操作步骤也放行。
+		const shape = checkDaoBody(content);
+		for (const x of shape.findings) fail(x.code, x.message);
+		for (const x of shape.notes) note(x.code, x.message);
 	}
 
 	if (layer === '器') {

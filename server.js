@@ -53,6 +53,7 @@ import { gateDao, gateFa, concreteMarkersOf, MIN_DAO_SOURCES, MAX_DAO_ENTRIES, d
 // 层级自检（2026-11-02 用户要求）：落盘后回读产物，按该层自己的定义核一遍。
 // 与 layer-gate（写入前准入）分工：准入看输入，自检看**磁盘上的产物**。
 import { checkArtifact, selfCheckLine, selfCheckWarnings } from './src/layer-selfcheck.js';
+import { checkDaoBody } from './src/dao-shape.js';
 
 /**
  * 层级自检结果的输出形状（2026-11-02）。
@@ -2811,6 +2812,20 @@ function memoryDaoTool(opts) {
 				);
 			}
 			const date = normDate(args.date);
+
+			// —— 写入前：道体结构必须符合「道」的定义（2026-11-02 机制补强）——
+			//
+			// 「三种形态 / 推理用法 / 依据展开 / 边界」此前只写在参数说明文字里、
+			// 代码零实现，于是"正文塞满操作步骤"的道照样被放行。现在写之前就拦：
+			// 结构不对直接拒绝，不让它先落盘再靠回执事后提醒。
+			const shapePreview = checkDaoBody(body);
+			if (shapePreview.findings.length > 0) {
+				throw new Error(
+					'道体结构不符合「道」的定义：\n' +
+						shapePreview.findings.map((f) => `  - ${f.message}`).join('\n') +
+						'\n道描述「世界是怎样的」，不是「该怎么做」——操作步骤属法层或共识区。',
+				);
+			}
 
 			// —— 校验来源法真实存在（目录校验不做进纯函数，这里做）——
 			const requested = (Array.isArray(args.extractedFrom) ? args.extractedFrom : []).map((s) => safeSlug(s));
