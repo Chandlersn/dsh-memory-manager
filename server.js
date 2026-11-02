@@ -53,7 +53,7 @@ import { gateDao, gateFa, concreteMarkersOf, MIN_DAO_SOURCES, MAX_DAO_ENTRIES, d
 // 层级自检（2026-11-02 用户要求）：落盘后回读产物，按该层自己的定义核一遍。
 // 与 layer-gate（写入前准入）分工：准入看输入，自检看**磁盘上的产物**。
 import { checkArtifact, selfCheckLine, selfCheckWarnings } from './src/layer-selfcheck.js';
-import { checkDaoBody } from './src/dao-shape.js';
+import { checkDaoBody, philosophicalShape } from './src/dao-shape.js';
 
 /**
  * 层级自检结果的输出形状（2026-11-02）。
@@ -2819,6 +2819,18 @@ function memoryDaoTool(opts) {
 			// 代码零实现，于是"正文塞满操作步骤"的道照样被放行。现在写之前就拦：
 			// 结构不对直接拒绝，不让它先落盘再靠回执事后提醒。
 			const shapePreview = checkDaoBody(body);
+			// 命题的哲学形态也必须**写入前**就查：此前它只在 selfcheck 里，
+			// 于是"工程结论式命题"能落盘、事后才报 ⛔（真机验证过：探针确实写进了磁盘）。
+			const phPreview = philosophicalShape(proposition);
+			if (!phPreview.ok) {
+				throw new Error(
+					'命题缺少哲学形态：' +
+						(phPreview.has.length === 0
+							? '对立/条件/拒绝裁判/生成性四件全缺——它是一条工程结论，不是道。'
+							: '已具备 ' + phPreview.has.join('/') + '，但缺生成性或对立之一。') +
+						'道要能说"世界在演化出什么"或"两极如何同时在场"，静态断言不是道。',
+				);
+			}
 			if (shapePreview.findings.length > 0) {
 				throw new Error(
 					'道体结构不符合「道」的定义：\n' +

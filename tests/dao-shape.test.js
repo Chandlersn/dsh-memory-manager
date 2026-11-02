@@ -10,7 +10,7 @@
  * 本套件钉住"道体该长什么样"，重点是**拒绝路径**：道变成操作手册、
  * 描述节夹带规范、推演退化成清单 —— 三种都要被挡。
  */
-import { checkDaoBody, daoBodySections } from '../src/dao-shape.js';
+import { checkDaoBody, daoBodySections, philosophicalShape } from '../src/dao-shape.js';
 
 let failures = 0;
 function ok(cond, label) {
@@ -26,7 +26,7 @@ function goodBody() {
 		'',
 		'## 命题',
 		'',
-		'世界是这样的。',
+		'秩序与混乱在信息密度足够高时会互相转化，各自长出不同的结构。',
 		'',
 		'## 三种形态',
 		'',
@@ -111,6 +111,50 @@ console.log('\n--- 分节工具 ---');
 	const secs = daoBodySections(goodBody());
 	ok(secs.length === 4, `daoBodySections 切出 4 节：命题/三种形态/依据展开/边界（实际 ${secs.length}）`);
 	ok(secs.some((s) => s.heading.includes('三种形态')), '节标题正确保留');
+}
+
+
+
+// ---------------------------------------------------------------------------
+// 2026-11-02 用户：「道，要包含哲学的韵味。」
+// 范例：智慧是自组织的秩序 / 对立和矛盾在某种条件下可以同时存在，不是判断正误，
+// 而是都能演化出不同的结果。
+//
+// 判据用**用户的范例本身**校准过三版：四件全齐会判死范例1，生成性必需仍会判死它，
+// 最终定为「生成性 或 对立 任一在场」——这两者才是哲学命题与工程结论的分水岭。
+// ---------------------------------------------------------------------------
+console.log('\n--- 哲学韵味：用户的两个范例都必须通过 ---');
+{
+	ok(philosophicalShape('智慧是自组织的秩序').ok, '范例1「智慧是自组织的秩序」→ 通过（只有生成性也算）');
+	ok(
+		philosophicalShape('对立和矛盾在某种条件下是可以同时存在的，不是判断正误，而是都能演化和推理出有不同的结果').ok,
+		'范例2「对立与矛盾共存」→ 通过（四件俱全）',
+	);
+	ok(philosophicalShape('秩序与混乱是一体两面').ok, '只有对立 → 通过（对立也是分水岭之一）');
+}
+{
+	ok(!philosophicalShape('所有系统最终都会腐烂').ok, '静态断言「所有系统最终都会腐烂」→ 拒绝（无生成性、无对立）');
+	ok(
+		!philosophicalShape('裁判长在回路之内，它出具的报告就必然偏向回路，本身不携带信息').ok,
+		'工程式命题（缺陷+必然结论）→ 拒绝',
+	);
+}
+{
+	const prop = philosophicalShape('智慧是自组织的秩序');
+	ok(prop.missing.includes('tension'), '缺什么要逐项报出来（范例1 缺对立）');
+	ok(prop.missing.includes('refusesVerdict'), '范例1 也缺拒绝裁判');
+}
+
+
+{
+	// 走完整 checkDaoBody：静态命题必须被**闸门**拦住，而不只是纯函数返回 false。
+	// 变异测试暴露过这个缺口：只测 philosophicalShape 时，把闸门那段删掉测试仍全绿。
+	const staticBody = goodBody().replace(
+		'秩序与混乱在信息密度足够高时会互相转化，各自长出不同的结构。',
+		'所有系统最终都会腐烂。',
+	);
+	const r = checkDaoBody(staticBody);
+	ok(has(r, 'dao-not-philosophical'), '静态命题经 checkDaoBody → 判 dao-not-philosophical（闸门链路生效）');
 }
 
 console.log(failures === 0 ? '\ndao-shape: ALL PASS' : `\ndao-shape: ${failures} FAILED`);

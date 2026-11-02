@@ -126,7 +126,7 @@ const faFile = (srcCount, principle = '判据要先量分布再定，不先发�
 // ---------------------------------------------------------------------------
 console.log('\n--- 道层：命题 + ≥5 条来源法；锚必须扛住正文撞前缀 ---');
 
-const daoFile = (name = '某道', links = 5, extraHeading = '', proposition = '失败多半不是做错，而是做不成却不告诉你') =>
+const daoFile = (name = '某道', links = 5, extraHeading = '', proposition = '失败与成功在反馈缺失时会互相转化，各自演化出不同的结局') =>
 	[
 		`# 道 · ${name}`,
 		'',
@@ -244,7 +244,7 @@ console.log('\n--- 边界节：说不出"何时不成立"就不合格 ---');
 	const daoWithBoundary = (extra) => daoFile('某道', 5) + (extra ?? '\n## 边界\n\n- 当产出者不在被检回路之内时，这条判据失效，需改用外物形态。\n');
 	ok(checkArtifact({ layer: '道', content: daoWithBoundary(), relPath: 'dao/x.md' }).ok, '道：有边界 → 通过');
 
-	const daoNoBoundary = ['# 道 · 某道', '', '## 命题', '', '某抽象命题', '', '## 来源法', '', '- [法1](../insights/法1.md)', '- [法2](../insights/法2.md)', '- [法3](../insights/法3.md)', '- [法4](../insights/法4.md)', '- [法5](../insights/法5.md)', ''].join('\n');
+	const daoNoBoundary = ['# 道 · 某道', '', '## 命题', '', '秩序与混乱会互相转化，各自演化出不同的结构', '', '## 来源法', '', '- [法1](../insights/法1.md)', '- [法2](../insights/法2.md)', '- [法3](../insights/法3.md)', '- [法4](../insights/法4.md)', '- [法5](../insights/法5.md)', ''].join('\n');
 	const oneSided = checkArtifact({ layer: '法', content: faFile(2).replace(/\n## (?:适用面|边界)[\s\S]*$/, '\n') + '\n## 适用面\n\n- 适用于一切需要汇总的场合，非常通用。\n', relPath: 'insights/x.md' });
 	ok(!oneSided.ok && has(oneSided, 'boundary-one-sided'), '法：只有正向适用范围、没写反面 → 拒绝（模板会自动补标题，只有内容能证明想过）');
 
