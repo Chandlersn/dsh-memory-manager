@@ -49,7 +49,10 @@ import {
 import { selfReload, isReloading } from './src/reload.js';
 import { tokensOf, matchIndexRows, buildRecallMessage, skillNameOf } from './src/recall.js';
 import { redactSecrets, scanSecrets } from './src/secrets.js';
-import { gateDao, gateFa, concreteMarkersOf, MIN_DAO_SOURCES, MAX_DAO_ENTRIES } from './src/layer-gate.js';
+import { gateDao, gateFa, concreteMarkersOf, MIN_DAO_SOURCES, MAX_DAO_ENTRIES, daoSourceSlugs, daoReservedHeadingCollisions } from './src/layer-gate.js';
+// 层级自检（2026-11-02 用户要求）：落盘后回读产物，按该层自己的定义核一遍。
+// 与 layer-gate（写入前准入）分工：准入看输入，自检看**磁盘上的产物**。
+import { checkArtifact, selfCheckLine, selfCheckWarnings } from './src/layer-selfcheck.js';
 import { isSkillName, registerMemorySkillBridge, parseSkillText, isPublishable, skillAppliesToProject, PROVIDER_NAME } from './src/host-skill.js';
 import { resolveDshRoot, setHostRoot, loadHost, defineTool, createUserMessage } from './src/host.js';
 // 健康探针与问题收件箱（2026-10-26）：让记忆系统参与插件互查互治，
@@ -910,8 +913,10 @@ async function runHealthCheck(root, opts) {
 
 		// (b) 来源法的存活
 		for (const { slug, body } of liveDao) {
-			const srcSection = body.split('## 来源法')[1] ?? '';
-			const refs = [...srcSection.matchAll(/\(\.\.\/insights\/([^)]+?)\.md\)/g)].map((m) => m[1]);
+			// 锚的唯一实现见 layer-gate.daoSourceSlugs —— 2026-11-02 事故：
+			// 这里曾用 `body.split('## 来源法')[1]`，而正文里的「## 来源法逐条」
+			// 会先被切断，导致依据齐全的道被读成 0 条、误报"依据不足"。
+			const refs = daoSourceSlugs(body);
 			if (refs.length < MIN_DAO_SOURCES) {
 				add('WARN', 'R24', `dao/${slug}.md 只列出 ${refs.length} 条来源法（< ${MIN_DAO_SOURCES}）：道的依据不足，确认它是否被拆散或手工删减过`);
 				continue;
@@ -940,8 +945,9 @@ async function runHealthCheck(root, opts) {
 		// 报同样的清单，久而久之就成了背景噪音（一条永远红的检查等于没有检查）。
 		const claimed = new Set();
 		for (const { body } of liveDao) {
-			const srcSection = body.split('## 来源法')[1] ?? '';
-			for (const m of srcSection.matchAll(/\(\.\.\/insights\/([^)]+?)\.md\)/g)) claimed.add(m[1]);
+			// 同一份锚实现（见上）：认领统计与"依据存活"必须读到同一批 slug，
+			// 否则会出现"依据够、但认领数不足"这种自相矛盾的提示。
+			for (const slug of daoSourceSlugs(body)) claimed.add(slug);
 		}
 		const byArea = new Map();
 		let insightFiles = [];
@@ -1842,11 +1848,17 @@ function memoryCapabilityTool(opts) {
 				opts.dropRecallCaches?.();
 			});
 			const st = await stat(p);
+			// —— 写入后：从磁盘回读，按「器层定义」自检（2026-11-02）——
+			// 器层台账的价值全在"下次不必重新摸索"：缺「调用方式」它就没用。
+			const onDiskCap = (await readIfExists(p)) ?? '';
+			const capCheck = checkArtifact({ layer: '器', content: onDiskCap, relPath: `capabilities/${name}.md` });
+			warnings.push(...selfCheckWarnings(capCheck));
 			return {
 				action: 'record',
 				file: p,
 				created,
 				items: [{ name, kind, summary, invocation, updated: st.mtime.toISOString() }],
+				selfCheck: capCheck,
 				warnings,
 			};
 		},
@@ -2185,7 +2197,13 @@ function memorySkillTool(opts, hooks = {}) {
 				const st = await stat(p);
 				const item = { name, status: priorStatus, summary, updated: st.mtime.toISOString() };
 				await syncIndexRow(item);
-				return { action: 'crystallize', file: p, created, status: priorStatus, items: [item], warnings };
+				// —— 写入后：从磁盘回读，按「技能层定义」自检（2026-11-02）——
+				// 技能是**宿主目录包**，靠 frontmatter 被宿主发现：缺 name/status
+				// 或 name 不是 kebab-case，它会静静地不被加载 —— 结晶等于白做。
+				const onDiskSkill = (await readIfExists(p)) ?? '';
+				const skillCheck = checkArtifact({ layer: '技能', content: onDiskSkill, relPath: `skills/${name}/SKILL.md` });
+				warnings.push(...selfCheckWarnings(skillCheck));
+				return { action: 'crystallize', file: p, created, status: priorStatus, items: [item], selfCheck: skillCheck, warnings };
 			}
 			if (args.action === 'activate' || args.action === 'retire') {
 				const text = await readIfExists(p);
@@ -2466,12 +2484,22 @@ function memoryWriteTool(opts) {
 				if (!resolvedIn.length) warnings.push(`resolve: ${target} 在每日日志的待观察区没有未解决条目（可能已勾掉或不存在）`);
 			}
 
+			// —— 写入后：从磁盘回读，按「术层定义」自检（用户 2026-11-02 要求）——
+			//
+			// 术层最常见的腐坏是"块变成过程流水"（超 900 字、缺判据小节），
+			// 而它本该是**蒸馏后的结论**。回读产物而不是查内存中间态：
+			// 与体检 R14 读同一份字节。
+			const onDiskFn = (await readIfExists(fnPath)) ?? '';
+			const selfCheck = checkArtifact({ layer: '术', content: onDiskFn, relPath: `functions/${feature}.md` });
+			warnings.push(...selfCheckWarnings(selfCheck));
+
 			return {
 				featureFile: fnPath,
 				appendedHeading: heading,
 				createdFunctionFile: created,
 				functionBytes: fnBytes,
 				resolvedDailyLogs: resolvedIn,
+				selfCheck,
 				warnings,
 			};
 		},
@@ -2615,11 +2643,19 @@ function memoryInsightTool(opts) {
 			// Omit `supersededFile` entirely when nothing was superseded: an
 			// `undefined` property makes the tool result non-lossless JSON, which
 			// the Host rejects even though the write already succeeded.
+			//
+			// —— 写入后：从磁盘回读，按「法层定义」自检（用户 2026-11-02 要求）——
+			// 法最常坏在两处：来源回链不足（降级成专项却当普适原则用）、
+			// 核心原则写成步骤（那是术）。回读磁盘字节，与体检同源。
+			const onDiskInsight = (await readIfExists(p)) ?? '';
+			const selfCheck = checkArtifact({ layer: '法', content: onDiskInsight, relPath: `insights/${theme}.md` });
+			warnings.push(...selfCheckWarnings(selfCheck));
 			const out = {
 				insightFile: p,
 				linkedSources: linked.map((s) => `functions/${s}.md`),
 				skippedSources: skipped.map((s) => `functions/${s}.md`),
 				trust,
+				selfCheck,
 				warnings,
 			};
 			if (supersededFile) out.supersededFile = supersededFile;
@@ -2648,7 +2684,7 @@ function memoryDaoTool(opts) {
 			name: { type: 'string', required: true, description: '道名 slug（文件名，不含 .md），如「静默失效」「判据在真实路径上」。' },
 			proposition: { type: 'string', required: true, description: '命题本体：一句话说清"世界是怎样的"。不得含具体技术/项目/文件名，不得含操作步骤。' },
 			extractedFrom: { type: 'array', required: true, description: '萃取来源：insights/ 里的**法** slug 列表。至少 5 条（硬闸门）。道不直接从 functions/ 萃取——中间必须隔着法。', items: { type: 'string' } },
-			body: { type: 'string', required: true, description: '正文（Markdown）：三种形态 / 推理用法 / 来源法逐条 / 边界。命题一句话在这里展开成可用的推理前提。' },
+			body: { type: 'string', required: true, description: '正文（Markdown）：三种形态 / 推理用法 / 依据展开 / 边界。命题一句话在这里展开成可用的推理前提。**不要再写「## 来源法」标题**——那一节由本工具按 extractedFrom 追加并读取，正文再写一个会被静默忽略（该用「## 依据展开」）。' },
 			date: { type: 'string', description: 'YYYY-MM-DD；缺省今天。' },
 			supersedes: { type: 'string', description: '可选：被本道取代的旧道名。旧文件保留并打取代标记。' },
 		},
@@ -2683,7 +2719,22 @@ function memoryDaoTool(opts) {
 			const name = safeSlug(args.name);
 			const proposition = oneLine(args.proposition);
 			const body = String(args.body ?? '').trim();
-			if (!body) throw new Error('body is required: a 道 需要正文展开（形态/推理用法/来源法/边界），否则只是一句口号');
+			if (!body) throw new Error('body is required: a 道 需要正文展开（形态/推理用法/依据展开/边界），否则只是一句口号');
+
+			// —— 写入前：正文不得与模板保留节撞车（2026-11-02 事故）——
+			//
+			// 模板会把「## 来源法」追加到文件末尾。正文若自带一个同前缀的小节
+			// （例如「## 来源法逐条」），它的链接**永远不会被读到** —— 作者以为
+			// 登记了依据、系统只看到模板那一节。这里直接拒绝，让它改名（例如
+			// 「## 依据展开」），而不是等体检报"依据不足"再回头猜。
+			const collisions = daoReservedHeadingCollisions(body);
+			if (collisions.length) {
+				throw new Error(
+					`正文里有与模板保留节撞车的标题：${collisions.join('、')}。` +
+						'「## 来源法」是模板追加并读取的节，正文再写一个会被静默忽略（链接读不到）。' +
+						'请把正文那一节改名为「## 依据展开」之类的标题后重写。',
+				);
+			}
 			const date = normDate(args.date);
 
 			// —— 校验来源法真实存在（目录校验不做进纯函数，这里做）——
@@ -2775,11 +2826,21 @@ function memoryDaoTool(opts) {
 				}
 			}
 
+			// —— 写入后：从磁盘回读，按「道层定义」自检（用户 2026-11-02 要求）——
+			//
+			// 回执此前只说"道已沉淀"，而落盘的东西读不读得出依据是另一回事
+			// （真机事故：模板节被正文撞前缀 → 依据读成 0 条，回执照样报成功）。
+			// 自检读的是**磁盘字节**，与体检 R24 同一套锚 —— 写者不给自己背书。
+			const onDisk = (await readIfExists(targetPath)) ?? '';
+			const selfCheck = checkArtifact({ layer: '道', content: onDisk, relPath: `dao/${name}.md` });
+			warnings.push(...selfCheckWarnings(selfCheck));
+
 			return {
 				daoFile: targetPath,
 				name,
 				extractedFrom: existingLaws.map((s) => `insights/${s}.md`),
 				missingLaws: missingLaws.map((s) => `insights/${s}.md`),
+				selfCheck,
 				warnings,
 			};
 		},
@@ -3608,6 +3669,7 @@ const DISCIPLINE_TEXT = [
 	'- **先查后写**：涉及"项目里怎么做 / 为什么这么做 / 环境常量"时，先 `memory_read kind=index`（行内摘要判断相关性，再打开对应文件）；只记得片段、说不清在哪个域或哪天时用 `memory_search`（全库排序检索，返回命中的分区/文件/行号/小节/片段）。**动手前先查 `memory_capability`**：外部 CLI / MCP / 已装软件都在 `capabilities/` 台账里，能省下一整轮摸索。不要凭空重推已有结论。',
 	'- **用到的外部工具要登记**：只有**项目外部**的工具才进台账——第三方 CLI / MCP / 已装软件，且调用它需要摸索（确切命令、前提、踩过的坑）。不登记：harness 自带工具（shell/文件/网络等，模型本来就会）、本项目自己的脚本与 API（那是 functions/ 迭代块）。台账按工具一文件、就地更新——**不是流水账，是索引**。下次同类任务先 `action=list`，不要重新摸索同一个工具。',
 	'- **蒸馏不搬过程**：迭代块只写结论；逐条实现清单、调试经过属于每日原始层与会话/代码。块 >900 字或概括 >110 字写入告警，体检 R14 复查。',
+	'- **蒸馏后必须自检（2026-11-02 用户要求）**：`memory_write` / `memory_insight` / `memory_dao` / `memory_capability` / `memory_skill` 的回执里都带 `selfCheck`——它是**从磁盘回读产物、按该层自己的定义**核出来的结果（术=块只装结论、法=来源≥2 且原则非步骤、道=命题+≥5 条来源法、器=调用方式在场、技能=frontmatter/name/status 合规）。**`selfCheck.ok` 为假时不得当成已完成**：按它点名的那一项修正后重写，再向用户汇报。绿灯只证"写过了"，不证"写出的东西符合它那一层"。',
 	'- **经验三分**：会**重跑**的操作进 functions/；会**重套**的原则用 memory_insight 进 insights/；**反复重跑且被验证**的操作程序用 memory_skill 结晶为宿主技能目录包（`<dshHome>/skills/<kebab>/`，`agent_created: true` 是归属标记）；跨功能共识与环境常量只在 MEMORY.md。',
 	'- **使用信号让记忆自己排序**：召回命中与 memory_read 会自动记信号；用户纠正/明确认可时用 `memory_usage(action=record, kind=correction|positive)` 记一笔（这是分层判断里唯一不能自动获得的信号）。`memory_usage(action=report)` 给出 实验/专项/通用 建议；某域近 7 天纠正率 >40% 时体检 R18 报熔断——先重构再追加。',
 	'- **守护型**：低频但高价值的记忆（安全审计、关键踩坑、兜底规则）用 `memory_write(guard=true)` 标记，体检的冷记忆规则会跳过它——不要因为"很久没写"就删掉兜底经验。',

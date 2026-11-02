@@ -234,3 +234,70 @@ export function gateFa(input) {
 // lines. Keeping it meant two answers to "which laws are ready" — the exact
 // 规格单一真值源 failure this memory root already warns about. R24(d) is the one
 // implementation; this file keeps only the gates.
+
+/**
+ * 道文件的来源法节标题 —— **写入方（模板）与读取方（R24 / 自检）共用的唯一锚**。
+ *
+ * ## 为什么单独抽出来（2026-11-02 真机事故）
+ *
+ * 读取方曾用 `body.split('## 来源法')[1]` 取节。模板把这一节写在**文件末尾**，
+ * 而正文里若带一个「## 来源法逐条」小节，`split` 会**先**在它上面切断 ——
+ * 于是 `[1]` 拿到的是正文那一段（里面没有链接），来源法读出 **0 条**，
+ * 报出"道的依据不足"。道是自己刚萃出来的、依据齐全（7 条法），却被告知缺依据。
+ *
+ * 根因不是谁写错了，而是**锚不唯一**：`## 来源法` 是 `## 来源法逐条` 的前缀。
+ *
+ * 修法：锚必须是**整行精确匹配**，且取**最后一个**匹配（模板永远追加在末尾）。
+ * 这条判据只在这里实现一次，写入方与读取方都调它 —— 避免"同一判据两处实现"。
+ */
+export const DAO_SOURCE_HEADING = '## 来源法';
+
+/**
+ * 取出道文件的来源法节正文。
+ *
+ * 只认**整行等于** `## 来源法` 的标题（`## 来源法逐条` 不匹配），
+ * 并在多个匹配中取最后一个 —— 模板追加的那一节。
+ *
+ * @param body 道文件全文。
+ * @returns 该节正文（不含标题）；没有这一节时返回空串。
+ */
+export function daoSourceSection(body) {
+	const lines = String(body ?? '').split('\n');
+	let start = -1;
+	for (let i = 0; i < lines.length; i++) {
+		if (lines[i].replace(/\s+$/u, '') === DAO_SOURCE_HEADING) start = i;
+	}
+	if (start === -1) return '';
+	let end = start + 1;
+	while (end < lines.length && !lines[end].startsWith('## ')) end++;
+	return lines.slice(start + 1, end).join('\n');
+}
+
+/**
+ * 取出道文件列出的来源法 slug 列表（按出现顺序，去重）。
+ *
+ * @param body 道文件全文。
+ * @returns 来源法 slug 数组。
+ */
+export function daoSourceSlugs(body) {
+	const section = daoSourceSection(body);
+	const slugs = [...section.matchAll(/\(\.\.\/insights\/([^)]+?)\.md\)/g)].map((m) => m[1]);
+	return [...new Set(slugs)];
+}
+
+/**
+ * 正文里**与模板保留节撞车**的标题（写入前自检用）。
+ *
+ * 判据不是"读不出来"（`daoSourceSection` 已能扛前缀撞车），而是
+ * **会被静默忽略**：正文自带的 `## 来源法` 节里的链接不会被读取，
+ * 作者以为登记了、系统看不到 —— 静默丢弃比报错更难查。
+ *
+ * @param body 待写入的用户正文（模板追加的那一节不在此列）。
+ * @returns 撞车的标题行数组。
+ */
+export function daoReservedHeadingCollisions(body) {
+	return String(body ?? '')
+		.split('\n')
+		.filter((line) => line.startsWith('## 来源法'))
+		.map((line) => line.trim());
+}
