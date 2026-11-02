@@ -53,6 +53,45 @@ import { gateDao, gateFa, concreteMarkersOf, MIN_DAO_SOURCES, MAX_DAO_ENTRIES, d
 // 层级自检（2026-11-02 用户要求）：落盘后回读产物，按该层自己的定义核一遍。
 // 与 layer-gate（写入前准入）分工：准入看输入，自检看**磁盘上的产物**。
 import { checkArtifact, selfCheckLine, selfCheckWarnings } from './src/layer-selfcheck.js';
+
+/**
+ * 层级自检结果的输出形状（2026-11-02）。
+ *
+ * 五个写入工具的回执都带这个字段。**必须在这里声明**：宿主的输出校验是
+ * additionalProperties:false 且递归生效 —— 上一次真机调用就是因为 execute
+ * 多返回了一个未声明的 selfCheck，整个回执被宿主拒收（写成功了、回执报错，
+ * 最容易被误当成“写失败”）。同一条教训在 5.11.3 出现过（trust 字段），
+ * 这次是它在自检字段上重演 —— schema 与 execute 的返回必须成对维护。
+ */
+const SELF_CHECK_SCHEMA = {
+	type: 'object',
+	required: true,
+	additionalProperties: false,
+	properties: {
+		ok: { type: 'boolean', required: true },
+		layer: { type: 'string', required: true },
+		relPath: { type: 'string', required: true },
+		findings: {
+			type: 'array',
+			required: true,
+			items: {
+				type: 'object',
+				additionalProperties: false,
+				properties: { code: { type: 'string', required: true }, message: { type: 'string', required: true } },
+			},
+		},
+		notes: {
+			type: 'array',
+			required: true,
+			items: {
+				type: 'object',
+				additionalProperties: false,
+				properties: { code: { type: 'string', required: true }, message: { type: 'string', required: true } },
+			},
+		},
+	},
+};
+
 import { isSkillName, registerMemorySkillBridge, parseSkillText, isPublishable, skillAppliesToProject, PROVIDER_NAME } from './src/host-skill.js';
 import { resolveDshRoot, setHostRoot, loadHost, defineTool, createUserMessage } from './src/host.js';
 // 健康探针与问题收件箱（2026-10-26）：让记忆系统参与插件互查互治，
@@ -1748,13 +1787,20 @@ function memoryCapabilityTool(opts) {
 						},
 					},
 					content: { type: 'string' },
-					warnings: { type: 'array', required: true, items: { type: 'string' } },
+										selfCheck: SELF_CHECK_SCHEMA,
+warnings: { type: 'array', required: true, items: { type: 'string' } },
 				},
 			},
 			render: (_args, v) => {
 				if (v.action === 'read') return [{ type: 'text', text: v.content || '（空）' }];
 				if (v.action === 'record') {
 					const lines = [`已登记能力：${v.file}${v.created ? '（新建）' : '（更新）'}`];
+					// 自检结果必须显示：合格给一句确认（含"其实只是专项"这类说明），不合格逐项点名。
+					if (v.selfCheck) {
+						lines.push(v.selfCheck.ok ? `✓ ${v.selfCheck.layer}层自检通过` : `⛔ ${v.selfCheck.layer}层自检未过：`);
+						for (const n of v.selfCheck.notes ?? []) lines.push(`  ℹ ${n.message}`);
+						for (const f of v.selfCheck.findings ?? []) lines.push(`  ✗ ${f.message}`);
+					}
 					for (const w of v.warnings) lines.push(`⚠ ${w}`);
 					lines.push('ℹ 下次做任务前先 memory_capability(action=list) 看有没有现成的。');
 					return [{ type: 'text', text: lines.join('\n') }];
@@ -1948,7 +1994,8 @@ function memorySkillTool(opts, hooks = {}) {
 						},
 					},
 					content: { type: 'string' },
-					warnings: { type: 'array', required: true, items: { type: 'string' } },
+										selfCheck: SELF_CHECK_SCHEMA,
+warnings: { type: 'array', required: true, items: { type: 'string' } },
 				},
 			},
 			render: (args, v) => {
@@ -2329,6 +2376,7 @@ function memoryWriteTool(opts) {
 					createdFunctionFile: { type: 'boolean', required: true },
 					functionBytes: { type: 'integer', required: true },
 					resolvedDailyLogs: { type: 'array', required: true, items: { type: 'string' } },
+					selfCheck: SELF_CHECK_SCHEMA,
 					warnings: { type: 'array', required: true, items: { type: 'string' } },
 				},
 			},
@@ -2339,6 +2387,18 @@ function memoryWriteTool(opts) {
 				];
 				if (v.resolvedDailyLogs.length) lines.push(`✅ 已勾掉待观察项：${v.resolvedDailyLogs.join('、')}`);
 				lines.push('ℹ 索引行未自动写入——功能域稳定后用 memory_index 收进索引；每日记录是原始层，由模型自主维护。');
+				// 自检结果必须显示：合格给一句确认（含"其实只是专项"这类说明），不合格逐项点名。
+				if (v.selfCheck) {
+					lines.push(v.selfCheck.ok ? `✓ ${v.selfCheck.layer}层自检通过` : `⛔ ${v.selfCheck.layer}层自检未过：`);
+					for (const n of v.selfCheck.notes ?? []) lines.push(`  ℹ ${n.message}`);
+					for (const f of v.selfCheck.findings ?? []) lines.push(`  ✗ ${f.message}`);
+				}
+				// 自检结果必须显示：合格给一句确认（含"其实只是专项"这类说明），不合格逐项点名。
+				if (v.selfCheck) {
+					lines.push(v.selfCheck.ok ? `✓ ${v.selfCheck.layer}层自检通过` : `⛔ ${v.selfCheck.layer}层自检未过：`);
+					for (const n of v.selfCheck.notes ?? []) lines.push(`  ℹ ${n.message}`);
+					for (const f of v.selfCheck.findings ?? []) lines.push(`  ✗ ${f.message}`);
+				}
 				for (const w of v.warnings) lines.push(`⚠ ${w}`);
 				return [{ type: 'text', text: lines.join('\n') }];
 			},
@@ -2538,6 +2598,7 @@ function memoryInsightTool(opts) {
 					// returns must be declared here or the Host rejects the receipt
 					// (the 5.11.3 lesson, in reverse).
 					trust: { type: 'object', required: true, additionalProperties: false, properties: { level: { type: 'string', required: true }, positives: { type: 'number', required: true }, corrections: { type: 'number', required: true } } },
+					selfCheck: SELF_CHECK_SCHEMA,
 					warnings: { type: 'array', required: true, items: { type: 'string' } },
 				},
 			},
@@ -2546,6 +2607,12 @@ function memoryInsightTool(opts) {
 				if (v.linkedSources.length) lines.push(`回链来源：${v.linkedSources.join('、')}`);
 				if (v.skippedSources.length) lines.push(`⚠ 来源不存在，未回链：${v.skippedSources.join('、')}`);
 				if (v.supersededFile) lines.push(`⚠️ 旧思想已标记取代：${v.supersededFile}`);
+				// 自检结果必须显示：合格给一句确认（含"其实只是专项"这类说明），不合格逐项点名。
+				if (v.selfCheck) {
+					lines.push(v.selfCheck.ok ? `✓ ${v.selfCheck.layer}层自检通过` : `⛔ ${v.selfCheck.layer}层自检未过：`);
+					for (const n of v.selfCheck.notes ?? []) lines.push(`  ℹ ${n.message}`);
+					for (const f of v.selfCheck.findings ?? []) lines.push(`  ✗ ${f.message}`);
+				}
 				for (const w of v.warnings) lines.push(`⚠ ${w}`);
 				return [{ type: 'text', text: lines.join('\n') }];
 			},
@@ -2697,6 +2764,7 @@ function memoryDaoTool(opts) {
 					name: { type: 'string', required: true },
 					extractedFrom: { type: 'array', required: true, items: { type: 'string' } },
 					missingLaws: { type: 'array', required: true, items: { type: 'string' } },
+					selfCheck: SELF_CHECK_SCHEMA,
 					warnings: { type: 'array', required: true, items: { type: 'string' } },
 				},
 			},
@@ -2706,6 +2774,13 @@ function memoryDaoTool(opts) {
 					`萃取自 ${v.extractedFrom.length} 条法：${v.extractedFrom.join('、')}`,
 				];
 				if (v.missingLaws.length) lines.push(`⚠ 来源法不存在：${v.missingLaws.join('、')}`);
+				// 自检结果必须**显示出来**：字段存在但没人看见，等于没做。
+				// 合格时给一句确认（含"其实只是专项"这类说明），不合格时逐项点名。
+				if (v.selfCheck) {
+					lines.push(v.selfCheck.ok ? `✓ ${v.selfCheck.layer}层自检通过` : `⛔ ${v.selfCheck.layer}层自检未过：`);
+					for (const n of v.selfCheck.notes ?? []) lines.push(`  ℹ ${n.message}`);
+					for (const f of v.selfCheck.findings ?? []) lines.push(`  ✗ ${f.message}`);
+				}
 				for (const w of v.warnings) lines.push(`⚠ ${w}`);
 				return [{ type: 'text', text: lines.join('\n') }];
 			},
