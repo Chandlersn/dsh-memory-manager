@@ -31,7 +31,7 @@
     "node": ">=22.12"
   },
   "scripts": {
-    "test": "node tests/layer-gate.test.js && node tests/layer-selfcheck.test.js && node tests/dao-shape.test.js && node harness-test.mjs && node api-test.mjs && node ui-test.mjs"
+    "test": "node tests/layer-gate.test.js && node tests/layer-selfcheck.test.js && node tests/dao-shape.test.js && node tests/coverage.test.js && node harness-test.mjs && node api-test.mjs && node ui-test.mjs"
   },
   "exports": {
     ".": "./server.js",

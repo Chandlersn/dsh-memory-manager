@@ -279,6 +279,35 @@ export function checkArtifact(input) {
 			const section = content.split(/^##\s*调用方式/mu)[1] ?? '';
 			if (!/^\s*[-*]\s*\S/mu.test(section)) fail('empty-invocation', '「## 调用方式」下没有任何条目');
 		}
+		// 器的定义是"确切调用 + 前提 + 踩过的坑"三件（见 memory_capability 的
+		// description）。只查调用方式，等于只验了三件里的一件——而"前提"与"坑"
+		// 恰恰是下次能省下摸索的那部分。缺了它们，这份台账就退化成命令清单。
+		//
+		// ⚠️ 标题匹配要容忍实际写法：`## 前提 / 环境` 带空格与斜杠，
+		// 用 `^##\s*前提` 这种前缀锚会漏（实测踩过）。
+		const sectionOf = (prefixes) => {
+			const lines = content.split('\n');
+			let start = -1;
+			for (let i = 0; i < lines.length; i++) {
+				if (/^##\s+/u.test(lines[i]) && prefixes.some((p) => lines[i].includes(p))) {
+					start = i;
+					break;
+				}
+			}
+			if (start === -1) return '';
+			let end = start + 1;
+			while (end < lines.length && !lines[end].startsWith('## ')) end++;
+			return lines.slice(start + 1, end).join('\n').trim();
+		};
+		if (!sectionOf(['前提', '环境', 'prereq', 'Prereq'])) {
+			note(
+				'no-prereq',
+				'缺「## 前提 / 环境」：调用前要什么（路径、token、版本、启动方式）没写，下次还得重新摸索',
+			);
+		}
+		if (!sectionOf(['解决过什么', '解决过', 'solved', 'Solved'])) {
+			note('no-solved', '缺「## 解决过什么」：没有"用它干成过什么"，就判断不出这份台账值不值得信');
+		}
 	}
 
 	if (layer === '技能') {
@@ -298,6 +327,24 @@ export function checkArtifact(input) {
 			if (!/^status:\s*(candidate|active|retired)\s*$/mu.test(fm)) {
 				fail('no-status', 'frontmatter 的 status 缺失或不是 candidate|active|retired');
 			}
+		}
+		// 技能的定义是"可调用程序"：何时用 + 步骤 + 坑 + 验证。frontmatter 只是
+		// 登记信息，**正文里没有步骤**的技能根本没法被"照做"——它只是一个名字。
+		//
+		// ⚠️ 不能用 `\b`：中文与标点之间没有词边界，`## 步骤\b` 永远不匹配（实测踩过）。
+		const hasHeading = (names) =>
+			content.split('\n').some((l) => /^##\s+/u.test(l) && names.some((n) => l.includes(n)));
+		if (!hasHeading(['Procedure', '步骤', '做法', 'Steps'])) {
+			fail(
+				'no-procedure',
+				'缺步骤节（「## Procedure」/「## 步骤」）：技能是可调用程序，没有步骤它就不是技能，只是一段说明',
+			);
+		}
+		if (!hasHeading(['Verification', '验证', '检查'])) {
+			fail(
+				'no-verification',
+				'缺验证节（「## Verification」/「## 验证」）：说不出"怎么算做成了"，下次无法判断该不该信它',
+			);
 		}
 	}
 

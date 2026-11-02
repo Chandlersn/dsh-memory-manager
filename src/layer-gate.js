@@ -190,13 +190,38 @@ export function gateDao(input) {
 }
 
 /**
- * 法层准入判定 —— 纯函数。
+ * 判定两个来源功能域是否**无关**（用于「法必须跨 ≥2 个无关来源域」）。
  *
- * @param input 待写入的法条目。
- * @param input.principle 原则本体。
- * @param input.sources 来源 functions/ 功能域 slug 列表（已剔除不存在的）。
- * @returns `{ ok: true, tier, warnings }`；`tier` 为 `'法'` 或 `'专项'`。
+ * ## 为什么这条判据此前是空的（2026-11-02）
+ *
+ * `gateFa` 只数 `sources.length >= 2`，从不判"无关"。于是 `[clis, clis2]`
+ * 这种同族域也能凑成一条"法"——而这正是该规则要挡的东西：同一个实践面里
+ * 的两个功能，共享同一批假设，验不出普适性。
+ *
+ * ## 判据：不是语义相似度，是**归因是否同源**
+ *
+ * 真正让"跨域"有意义的是：两边的证据来自**不同的判断链**。这里用可判定的
+ * 近似——去掉共同的词缀/前缀后是否仍是不同词干，且不互为包含。它不完美，
+ * 但比"只数个数"强，且能说清为什么判无关/相关。
+ *
+ * @param a 来源域 slug。
+ * @param b 来源域 slug。
+ * @returns 是否可视为无关（不同来源）。
  */
+export function unrelatedSources(a, b) {
+	const x = String(a ?? '').trim().toLowerCase();
+	const y = String(b ?? '').trim().toLowerCase();
+	if (!x || !y) return false;
+	if (x === y) return false;
+	// 互为包含：`clis` vs `clis因果分层系统` 是同一个实践面的不同叫法
+	if (x.includes(y) || y.includes(x)) return false;
+	// 共同前缀超过较短者一半：视为同族（如 `dsh插件开发` / `dsh视频工坊`）
+	const shortLen = Math.min(x.length, y.length);
+	let common = 0;
+	while (common < shortLen && x[common] === y[common]) common++;
+	if (common >= Math.max(2, Math.floor(shortLen / 2))) return false;
+	return true;
+}
 export function gateFa(input) {
 	const warnings = [];
 	const principle = String(input.principle ?? '').trim();
@@ -211,8 +236,28 @@ export function gateFa(input) {
 	}
 
 	// 单源是**合法的**，只是降级为专项——不拒绝，但必须让调用方知道它进了哪一层。
-	const tier = sources.length >= MIN_FA_SOURCES ? '法' : '专项';
-	if (tier === '专项') {
+	//
+	// 2026-11-02：规则原文是「≥2 个**无关**来源域」，而此前只数个数、从不判无关。
+	// 现在真的判：若所有来源两两都相关（同族/互为包含），实际只有 1 个独立实践面，
+	// 仍降级为专项——否则"跨域验证"这个词就是空的。
+	let tier = sources.length >= MIN_FA_SOURCES ? '法' : '专项';
+	let independentCount = sources.length;
+	if (sources.length >= MIN_FA_SOURCES) {
+		// 取最大无关子集（贪心：任选一个起点，逐个看能否加入）
+		const picked = [];
+		for (const s of sources) {
+			if (picked.every((p) => unrelatedSources(p, s))) picked.push(s);
+		}
+		independentCount = picked.length;
+		if (independentCount < MIN_FA_SOURCES) {
+			tier = '专项';
+			warnings.push(
+				`${sources.length} 个来源域里只有 ${independentCount} 个**互相无关**（${sources.join('、')}）→ 归入「专项」：` +
+					'同族的域共享同一批假设，验不出普适性。补一个真正不同实践面的来源才算「法」。',
+			);
+		}
+	}
+	if (tier === '专项' && independentCount === sources.length) {
 		warnings.push(
 			`只有 ${sources.length} 个来源域 → 归入「专项」而非「法」：可以留在 insights/，` +
 				'但不要当普适原则用，也不要升级为道。补第二个无关来源域后才算法。',

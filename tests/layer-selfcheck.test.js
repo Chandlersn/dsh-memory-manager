@@ -202,7 +202,7 @@ console.log('\n--- 器层 / 技能层 ---');
 	ok(!checkArtifact({ layer: '器', content: '# 某工具\n\n## 调用方式\n\n', relPath: 'capabilities/x.md' }).ok, '器：调用方式空节 → 拒绝');
 }
 {
-	const fm = (name, desc, status) => `---\nname: ${name}\ndescription: ${desc}\nstatus: ${status}\n---\n\n# body\n`;
+	const fm = (name, desc, status) => `---\nname: ${name}\ndescription: ${desc}\nstatus: ${status}\n---\n\n# body\n\n## Procedure\n\n1. 做甲。\n2. 做乙。\n\n## Verification\n\n- 判据：跑通即算。\n`;
 	ok(checkArtifact({ layer: '技能', content: fm('detached-restart', 'Restart the DSH host from inside a session.', 'active'), relPath: 'skills/x/SKILL.md' }).ok, '技能：规范 frontmatter → 通过');
 	ok(!checkArtifact({ layer: '技能', content: fm('Detached_Restart', 'x', 'active'), relPath: 'skills/x/SKILL.md' }).ok, '技能：name 非 kebab-case → 拒绝（它同时是宿主目录名）');
 	ok(!checkArtifact({ layer: '技能', content: fm('ok-name', 'x', 'pending'), relPath: 'skills/x/SKILL.md' }).ok, '技能：status 非法 → 拒绝');
