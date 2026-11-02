@@ -56,5 +56,8 @@
       "immediately": true,
       "inject": []
     }
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

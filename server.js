@@ -4642,6 +4642,33 @@ export function apply(ctx, config) {
 		}),
 	);
 
+	// —— 向调度层贡献本领域的处境信号（2026-11-02）——
+	//
+	// 调度层（dsh-agent-mind）判断"此刻该先看什么"。它原本只有自己写的词表，
+	// 于是**本领域的词汇全是盲区**：实测「沉淀」「蒸馏」「五层」「判据属于哪层」
+	// 全部无信号 —— 而这些正是"该先查记忆"的时刻。
+	//
+	// 用广播而非 import：直接 import 会让 memory 反向依赖 mind，
+	// 于是"没装 mind 就装不上 memory"。广播没有方向性 —— 缺 mind 时
+	// 这条广播无人接收，memory 照常工作。
+	//
+	// 两类信号：记忆域（该回忆）与层级域（该查判据）。
+	try {
+		ctx.emit?.('mind/register-signal', {
+			name: 'memory-recall',
+			situation: 'recall',
+			owner: 'dsh-memory-manager',
+			weight: 3,
+			words: [
+				'沉淀', '蒸馏', '记忆', '回忆', '想不起来', '查一下记忆', '记忆里',
+				'五层', '层级', '判据属于哪层', '该升到', '降回', '专项', '道层', '法层', '术层',
+				'边界', '反面', '约束条件', '层级定义',
+			],
+		});
+	} catch {
+		/* 没有调度层 → 广播无人接收，memory 照常工作 */
+	}
+
 	// Panel API: optional — without a web server the tools keep working and the
 	// panel page shows its fallback text. Resolved lazily via ctx.inject because
 	// webServer may not be provided yet at apply time. The memory root is global
