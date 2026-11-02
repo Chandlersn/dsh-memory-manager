@@ -73,12 +73,113 @@ export function splitBlocks(text) {
 }
 
 /**
+ * 各层**必须声明边界**的节名（含同义写法）。
+ *
+ * ## 为什么边界是硬条件（2026-11-02 用户指出）
+ *
+ * 上一版自检只验结构（该有的节在不在、长度合不合规），于是出现一个荒唐的
+ * 通过：道文件有命题、有 7 条来源法，**却一个字没说它何时不成立** —— 自检
+ * 照样报 ✓。而层级的定义里，边界是区分"法"与"口号"的那条线：
+ *
+ * - 没有边界的法，会被跨域套用到它根本不成立的地方（本机真实代价：
+ *   「闸门只证没坏」被套到不需要闸门的场景，判据空转）
+ * - 没有边界的道，就是一句漂亮话 —— 而道层的判据恰恰是"换领域依然成立"，
+ *   说不出"哪里不成立"就证明它没被真正想清楚
+ *
+ * 所以：**边界缺失 = 不合格**，与"缺命题"同级。同义标题都认（`适用面` 是
+ * 模板里的写法，`边界` 是更直白的写法），但必须**有内容**、且不能只写
+ * 一句"视情况而定"这种不可执行的话。
+ */
+const BOUNDARY_HEADINGS = ['适用面', '边界', '局限', '不适用'];
+
+/** 边界节的正文最少字数（低于这个数基本是敷衍）。 */
+const BOUNDARY_MIN_CHARS = 20;
+
+/**
+ * 取某层文件的边界节正文（第一个命中的同义标题）。
+ *
+ * @param content 文件全文。
+ * @returns 边界节正文；没有该节时返回空串。
+ */
+export function boundarySectionOf(content) {
+	const lines = String(content ?? '').split('\n');
+	let start = -1;
+	for (let i = 0; i < lines.length; i++) {
+		if (/^##\s+/u.test(lines[i]) && BOUNDARY_HEADINGS.some((h) => lines[i].includes(h))) {
+			start = i;
+			break;
+		}
+	}
+	if (start === -1) return '';
+	let end = start + 1;
+	while (end < lines.length && !lines[end].startsWith('## ')) end++;
+	return lines.slice(start + 1, end).join('\n').trim();
+}
+
+/**
+ * 检查边界节是否合格：存在、非空、够具体、**说了"何时不成立"**。
+ *
+ * ## 为什么"存在"不够（2026-11-02 真机打回）
+ *
+ * 写入工具会自动补一个 `## 适用面` 标题，于是"有没有边界节"这条判据被
+ * 模板架空了 —— 探针文件一字未写边界，自检照样 ✓。
+ *
+ * 所以真正的判据是**内容形态**：边界节必须包含"不成立/失效/不适用"这类
+ * 反面表述。只写"适用于哪些场景"是适用范围（正向），不是边界（负向）；
+ * 说不出反面，就等于说不出这条法在哪里会骗人。
+ *
+ * 判据顺序决定用户拿到哪条修法，所以顺序本身是判据的一部分：
+ * 空话 → 过短 → 无反面，三者报的修法完全不同。
+ *
+ * @param content 文件全文。
+ * @param layer 层名（只用于措辞）。
+ * @returns 不合格时的 `{ code, message }`；合格时 undefined。
+ */
+export function boundaryDefect(content, layer) {
+	const body = boundarySectionOf(content);
+	if (!body) {
+		return {
+			code: 'no-boundary',
+			message: `缺边界节（「## 适用面」或「## 边界」）：说不出"何时不适用"，${layer}就只是一句口号——它会被套到根本不成立的地方`,
+		};
+	}
+	// 空话先判：`- 视情况而定` 只有 7 字，若先判长度会被报成"过短"，
+	// 那是在说"多写点字"，而真正的问题是这句话无法被反驳。
+	const stripped = body.replace(/^[\s\-*•]+/gmu, '').replace(/[\s。．.！!]+/gu, '');
+	if (/^(视情况而定|具体问题具体分析|看情况|不一定|视具体场景而定)$/u.test(stripped)) {
+		return {
+			code: 'boundary-vacuous',
+			message: '边界节是空话（"视情况而定"）：无法被任何反例推翻的话不携带信息，写清"哪种情况下不成立"',
+		};
+	}
+	if ([...body].length < BOUNDARY_MIN_CHARS) {
+		return {
+			code: 'boundary-thin',
+			message: `边界节只有 ${[...body].length} 字：至少要写清"适用于哪类场景"与"哪种情况下不成立"`,
+		};
+	}
+	// 反面表述：边界必须是**负向**的。模板会自动补标题，只有内容能证明作者
+	// 真的想过"哪里不成立"。没有反面词 → 那只是适用范围，不是边界。
+	const hasNegative =
+		/(不成立|失效|不适用|无效|会骗|误导|反而更糟|不能|不该|不覆盖|例外|反例|陷阱)/u.test(body);
+	if (!hasNegative) {
+		return {
+			code: 'boundary-one-sided',
+			message:
+				'边界节只写了"适用于哪些场景"，没写"哪种情况下不成立"：正向适用范围不等于边界——' +
+				'说不出反面，这条' + layer + '就会被套到它根本不成立的地方',
+		};
+	}
+	return undefined;
+}
+
+/**
  * 检查一件刚落盘的产物是否符合它所在层的定义。
  *
  * @param input.layer 层名（`术`/`法`/`道`/`器`/`技能`）。
  * @param input.content 从磁盘读回的全文。
  * @param input.relPath 相对记忆根的路径（只用于报错定位）。
- * @returns `{ ok, layer, findings }`；findings 每项 `{ code, message }`。
+ * @returns `{ ok, layer, findings, notes }`；findings 每项 `{ code, message }`。
  */
 export function checkArtifact(input) {
 	const layer = String(input.layer ?? '');
@@ -140,6 +241,10 @@ export function checkArtifact(input) {
 		else if (looksLikeProcedure(principle)) {
 			fail('principle-is-procedure', '核心原则是操作手册句式：能改写成步骤的是术，不是法');
 		}
+		// 边界是法层的**定义条件**，不是加分项：说不出"何时不成立"，
+		// 这条法就会被套到它根本不成立的地方（本机真实代价见 BOUNDARY_HEADINGS 注释）。
+		const bd = boundaryDefect(content, '法');
+		if (bd) fail(bd.code, bd.message);
 	}
 
 	if (layer === '道') {
@@ -155,6 +260,10 @@ export function checkArtifact(input) {
 		if (slugs.length < MIN_DAO_SOURCES) {
 			fail('source-section-unreadable', `来源法节读出 ${slugs.length} 条（< ${MIN_DAO_SOURCES}）：要么真缺依据，要么节标题被正文撞了前缀导致读不到`);
 		}
+		// 道层的边界比法层更硬：道的判据是"换领域依然成立"，说不出
+		// "哪里不成立"就证明它没被想清楚 —— 那不是道，是一句漂亮话。
+		const daoBd = boundaryDefect(content, '道');
+		if (daoBd) fail(daoBd.code, daoBd.message);
 	}
 
 	if (layer === '器') {

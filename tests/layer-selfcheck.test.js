@@ -17,6 +17,7 @@ import {
 	selfCheckLine,
 	selfCheckWarnings,
 	splitBlocks,
+	boundarySectionOf,
 	BLOCK_MAX_CHARS,
 	SUMMARY_MAX_CHARS,
 } from '../src/layer-selfcheck.js';
@@ -94,6 +95,10 @@ const faFile = (srcCount, principle = '判据要先量分布再定，不先发�
 		'',
 		`- ${principle}`,
 		'',
+		'## 适用面',
+		'',
+		'- 适用于多源汇总场景；当数据源本身不可信时不成立。',
+		'',
 	].join('\n');
 
 {
@@ -137,6 +142,10 @@ const daoFile = (name = '某道', links = 5, extraHeading = '', proposition = '�
 		DAO_SOURCE_HEADING,
 		'',
 		Array.from({ length: links }, (_, i) => `- [法${i + 1}](../insights/法${i + 1}.md)`).join('\n'),
+		'',
+		'## 边界',
+		'',
+		'- 当产出者不在被检回路之内时判据失效，需改用外物形态。',
 		'',
 	].join('\n');
 
@@ -194,6 +203,49 @@ console.log('\n--- 器层 / 技能层 ---');
 {
 	const empty = checkArtifact({ layer: '道', content: '   ', relPath: 'dao/x.md' });
 	ok(!empty.ok && has(empty, 'empty'), '空产物 → 拒绝（落盘失败不该被当成通过）');
+}
+
+// ---------------------------------------------------------------------------
+// 2026-11-02 用户补的判据：**边界是定义条件，不是加分项**
+//
+// 上一版自检只验结构，于是出现一个荒唐的通过：道有命题、有 7 条来源法，
+// 却一个字没说它何时不成立，自检照样报 ✓。而层级的定义里，"说不出边界"
+// 恰恰是法退化成口号、道退化成漂亮话的那条线。
+// ---------------------------------------------------------------------------
+console.log('\n--- 边界节：说不出"何时不成立"就不合格 ---');
+{
+	// 法层：模板里叫「适用面」，这里两种写法都认
+	const withScope = faFile(2) + '\n## 适用面\n\n- 任何多源汇总场景；但当数据源本身不可信时不成立。\n';
+	ok(checkArtifact({ layer: '法', content: withScope, relPath: 'insights/x.md' }).ok, '法：有「## 适用面」→ 通过');
+
+	const withBianjie = faFile(2) + '\n## 边界\n\n- 适用于组件数量会增长的场景；一次性脚本不成立。\n';
+	ok(checkArtifact({ layer: '法', content: withBianjie, relPath: 'insights/x.md' }).ok, '法：有「## 边界」→ 也通过（同义标题都认）');
+
+	const strip = (s) => s.replace(/\n## (?:适用面|边界)[\s\S]*$/, '\n');
+	const noBoundary = checkArtifact({ layer: '法', content: strip(faFile(2)), relPath: 'insights/x.md' });
+	ok(!noBoundary.ok && has(noBoundary, 'no-boundary'), '法：缺边界节 → **拒绝**（会被套到不成立的地方）');
+
+	const thin = checkArtifact({ layer: '法', content: strip(faFile(2)) + '\n## 边界\n\n- 多源时。\n', relPath: 'insights/x.md' });
+	ok(!thin.ok && has(thin, 'boundary-thin'), '法：边界节过短 → 拒绝（敷衍不算边界）');
+
+	const vacuous = checkArtifact({ layer: '法', content: strip(faFile(2)) + '\n## 边界\n\n- 视情况而定\n', relPath: 'insights/x.md' });
+	ok(!vacuous.ok && has(vacuous, 'boundary-vacuous'), '法：边界是空话「视情况而定」→ 拒绝（无法被反驳）');
+}
+{
+	const daoWithBoundary = (extra) => daoFile('某道', 5) + (extra ?? '\n## 边界\n\n- 当产出者不在被检回路之内时，这条判据失效，需改用外物形态。\n');
+	ok(checkArtifact({ layer: '道', content: daoWithBoundary(), relPath: 'dao/x.md' }).ok, '道：有边界 → 通过');
+
+	const daoNoBoundary = ['# 道 · 某道', '', '## 命题', '', '某抽象命题', '', '## 来源法', '', '- [法1](../insights/法1.md)', '- [法2](../insights/法2.md)', '- [法3](../insights/法3.md)', '- [法4](../insights/法4.md)', '- [法5](../insights/法5.md)', ''].join('\n');
+	const oneSided = checkArtifact({ layer: '法', content: faFile(2).replace(/\n## (?:适用面|边界)[\s\S]*$/, '\n') + '\n## 适用面\n\n- 适用于一切需要汇总的场合，非常通用。\n', relPath: 'insights/x.md' });
+	ok(!oneSided.ok && has(oneSided, 'boundary-one-sided'), '法：只有正向适用范围、没写反面 → 拒绝（模板会自动补标题，只有内容能证明想过）');
+
+	const noB = checkArtifact({ layer: '道', content: daoNoBoundary, relPath: 'dao/x.md' });
+	ok(!noB.ok && has(noB, 'no-boundary'), '道：缺边界 → **拒绝**（说不出"哪里不成立"就证明没想清楚）');
+}
+{
+	ok(boundarySectionOf('## 边界\n\n- 甲\n- 乙\n\n## 来源法\n\n- x') .includes('甲'), 'boundarySectionOf 只取边界节，不越过下一个 ##');
+	ok(boundarySectionOf('## 适用面（超出来源功能的部分）\n\n- 丙\n') .includes('丙'), 'boundarySectionOf 认得模板的「适用面（超出来源功能的部分）」');
+	ok(boundarySectionOf('# 无边界\n\ntext') === '', '没有边界节时返回空串');
 }
 
 // ---------------------------------------------------------------------------
