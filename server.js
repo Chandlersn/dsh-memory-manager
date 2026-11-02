@@ -2339,7 +2339,7 @@ function memoryWriteTool(opts) {
 	return defineTool({
 		name: 'memory_write',
 		description:
-			'Append ONE iteration block to functions/<feature>.md (distilled conclusion, not a process log; dates are tags, blocks are append-only) and refresh the file-head stable-state summary via `currentState`. The daily log (YYYY-MM-DD.md) is the RAW layer — the model/harness records whatever it wants there with any means; this tool never touches it. The MEMORY.md index row is written separately (memory_index) once a feature area stabilizes, so distillation flows daily → functions → index, one direction per step. A block is a DISTILLED conclusion (动因 / 改动 / 判据 / 待观察, one line each): per-step changelists, code-level enumerations and debugging process stay in the session, the daily log and the code — writing them into the block is the failure R14 flags.',
+			'Append ONE iteration block to functions/<feature>.md (distilled conclusion, not a process log; dates are tags, blocks are append-only) and refresh the file-head stable-state summary via `currentState`. The daily log (YYYY-MM-DD.md) is the RAW layer — the model/harness records whatever it wants there with any means; this tool never touches it. The MEMORY.md index row is written separately (memory_index) once a feature area stabilizes, so distillation flows daily → functions → index, one direction per step. Hard limits enforced on write: block body ≤900 chars, 概括 ≤110 chars (over-length is rejected as a process log, not a distilled conclusion). A block is a DISTILLED conclusion (动因 / 改动 / 判据 / 待观察, one line each): per-step changelists, code-level enumerations and debugging process stay in the session, the daily log and the code — writing them into the block is the failure R14 flags.',
 		parameters: {
 			// Declaration order is display order: the host's generic tool card shows
 			// `name · first string argument`, so the FIRST parameter must be the
@@ -2571,7 +2571,7 @@ function memoryInsightTool(opts) {
 	return defineTool({
 		name: 'memory_insight',
 		description:
-			'Distill a TRANSFERABLE PRINCIPLE (something you would RE-APPLY, not an operation you would re-run) into insights/<theme>.md with backlinks to its source feature files, and sync the MEMORY.md insights table. Consensus/rules and env constants belong in MEMORY.md instead; how-to steps belong in functions/. Writing the same idea into both zones is a rule violation.',
+			'Distill a TRANSFERABLE PRINCIPLE (something you would RE-APPLY, not an operation you would re-run) into insights/<theme>.md with backlinks to its source feature files, and sync the MEMORY.md insights table. Consensus/rules and env constants belong in MEMORY.md instead; how-to steps belong in functions/. Writing the same idea into both zones is a rule violation. The file must also carry a boundary section (适用面/边界) that says when the principle does NOT hold — a one-sided 适用范围 without a negative case is rejected (boundary-one-sided).',
 		parameters: {
 			theme: { type: 'string', required: true, description: '思想主题 slug（文件名，不含 .md），如“等待策略”。' },
 			principle: { type: 'string', required: true, description: '原则本体，具体地一句话说清（不要“注意性能”这类空话）。' },
@@ -2747,7 +2747,7 @@ function memoryDaoTool(opts) {
 	return defineTool({
 		name: 'memory_dao',
 		description:
-			'Write ONE 道 (dao) entry — the most abstract layer: a philosophical/dialectical proposition about how things ARE, from which concrete shoulds can be derived. HARD GATE (throws, does not warn): requires extractedFrom with >=5 existing insights/ laws, a proposition free of concrete tech/project/file markers, no procedure phrasing, and a layer size cap of 7. If the gate rejects, the reason states exactly what is missing — do not retry blindly: add laws first, or reconsider whether this is actually a 法 rather than a 道. Body goes to dao/<name>.md. This tool does NOT write MEMORY.md — add the dao-layer row by hand (体检 R24 会点名没有登记进索引的道)。',
+			'Write ONE 道 (dao) entry — the most abstract layer: a philosophical/dialectical proposition about how things ARE, from which concrete shoulds can be derived. HARD GATE (throws, does not warn): requires extractedFrom with >=5 existing insights/ laws, a proposition free of concrete tech/project/file markers, no procedure phrasing, and a layer size cap of 7. If the gate rejects, the reason states exactly what is missing — do not retry blindly: add laws first, or reconsider whether this is actually a 法 rather than a 道. Body goes to dao/<name>.md. This tool does NOT write MEMORY.md — add the dao-layer row by hand (体检 R24 会点名没有登记进索引的道)。 **Body structure is gated, not advisory** (src/dao-shape.js): it must contain a descriptive section (e.g. 三种形态 — world as it IS, no normative verbs like 必须/应当), a derivation section (依据展开 — must ARGUE how the laws jointly force the proposition, not restate them one by one), and a boundary section saying when the proposition does NOT hold. The proposition itself must carry philosophical shape: at least one of (对立/张力) or (生成性/演化) — a static assertion such as 「所有系统最终都会腐烂」 is rejected as an engineering conclusion, not a 道.',
 		parameters: {
 			name: { type: 'string', required: true, description: '道名 slug（文件名，不含 .md），如「静默失效」「判据在真实路径上」。' },
 			proposition: { type: 'string', required: true, description: '命题本体：一句话说清"世界是怎样的"。不得含具体技术/项目/文件名，不得含操作步骤。' },
@@ -3772,6 +3772,7 @@ const DISCIPLINE_TEXT = [
 	'- **用到的外部工具要登记**：只有**项目外部**的工具才进台账——第三方 CLI / MCP / 已装软件，且调用它需要摸索（确切命令、前提、踩过的坑）。不登记：harness 自带工具（shell/文件/网络等，模型本来就会）、本项目自己的脚本与 API（那是 functions/ 迭代块）。台账按工具一文件、就地更新——**不是流水账，是索引**。下次同类任务先 `action=list`，不要重新摸索同一个工具。',
 	'- **蒸馏不搬过程**：迭代块只写结论；逐条实现清单、调试经过属于每日原始层与会话/代码。块 >900 字或概括 >110 字写入告警，体检 R14 复查。',
 	'- **蒸馏后必须自检（2026-11-02 用户要求）**：`memory_write` / `memory_insight` / `memory_dao` / `memory_capability` / `memory_skill` 的回执里都带 `selfCheck`——它是**从磁盘回读产物、按该层自己的定义**核出来的结果（术=块只装结论、法=来源≥2 且原则非步骤、道=命题+≥5 条来源法、器=调用方式在场、技能=frontmatter/name/status 合规）。**`selfCheck.ok` 为假时不得当成已完成**：按它点名的那一项修正后重写，再向用户汇报。绿灯只证"写过了"，不证"写出的东西符合它那一层"。',
+	'- **层级判据是硬闸门，不是建议（2026-11-02）**：写入前就拒绝，不会先落盘再提醒。**道**：命题须有哲学形态（对立/张力 或 生成性/演化 至少其一；静态断言如「所有系统都会腐烂」被拒），正文须含描述节（说世界是什么，禁规范动词）、推演节（论证几条法如何**共同**逼出命题，不是逐条复述）、边界节（说出何时不成立）。**法**：须有边界节且含**反面**（只有「适用于哪些场景」会被判 boundary-one-sided）。**术**：块 ≤900 字、概括 ≤110 字。判据实现见 `src/layer-gate.js` / `layer-selfcheck.js` / `dao-shape.js`；回执里的 `selfCheck` 是磁盘回读结果。',
 	'- **经验三分**：会**重跑**的操作进 functions/；会**重套**的原则用 memory_insight 进 insights/；**反复重跑且被验证**的操作程序用 memory_skill 结晶为宿主技能目录包（`<dshHome>/skills/<kebab>/`，`agent_created: true` 是归属标记）；跨功能共识与环境常量只在 MEMORY.md。',
 	'- **使用信号让记忆自己排序**：召回命中与 memory_read 会自动记信号；用户纠正/明确认可时用 `memory_usage(action=record, kind=correction|positive)` 记一笔（这是分层判断里唯一不能自动获得的信号）。`memory_usage(action=report)` 给出 实验/专项/通用 建议；某域近 7 天纠正率 >40% 时体检 R18 报熔断——先重构再追加。',
 	'- **守护型**：低频但高价值的记忆（安全审计、关键踩坑、兜底规则）用 `memory_write(guard=true)` 标记，体检的冷记忆规则会跳过它——不要因为"很久没写"就删掉兜底经验。',
